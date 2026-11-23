@@ -1,0 +1,20 @@
+TITLE     NMR-STYLE TWO MODEL WATER
+MODEL        1
+ATOM      1  O   HOH A   1       0.000   0.000   0.117  1.00  0.00           O  
+ATOM      2  H1  HOH A   1       0.000   0.757  -0.469  1.00  0.00           H  
+ATOM      3  H2  HOH A   1       0.000  -0.757  -0.469  1.00  0.00           H  
+ENDMDL
+MODEL        2
+ATOM      1  O   HOH A   1       0.100   0.000   0.117  1.00  0.00           O  
+ATOM      2  H1  HOH A   1       0.100   0.800  -0.469  1.00  0.00           H  
+ATOM      3  H2  HOH A   1       0.100  -0.800  -0.469  1.00  0.00           H  
+ENDMDL
+MODEL        3
+ATOM      1  O   HOH A   1       0.200   0.000   0.117  1.00  0.00           O  
+ATOM      2  H1  HOH A   1       0.200   0.850  -0.469  1.00  0.00           H  
+ATOM      3  H2  HOH A   1       0.200  -0.850  -0.469  1.00  0.00           H  
+ENDMDL
+CONECT    1    2    3
+CONECT    2    1
+CONECT    3    1
+END

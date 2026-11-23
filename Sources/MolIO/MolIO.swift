@@ -1,4 +1,5 @@
+import Foundation
 import MolCore
 
-// Placeholder — replaced by the owning team.
-enum MolIOModule {}
+// MolIO public entry points (Lead 2). Format-specific readers live in their own files.
+public enum MolIO {}

@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<cml:cml xmlns:cml="http://www.xml-cml.org/schema">
+  <cml:molecule id="m1" formalCharge="1">
+    <cml:name>formaldehyde cation (2D)</cml:name>
+    <cml:atomArray atomID="a1 a2 a3 a4" elementType="C O H H" x2="0.0 1.2 -0.5 -0.5" y2="0.0 0.0 0.9 -0.9"/>
+    <cml:bondArray atomRef1="a1 a1 a1" atomRef2="a2 a3 a4" order="D S S"/>
+  </cml:molecule>
+</cml:cml>
