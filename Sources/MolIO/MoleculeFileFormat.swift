@@ -1,0 +1,123 @@
+import Foundation
+import MolCore
+
+/// Registry of supported molecule file formats with extension- and content-based detection.
+public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
+    case gaussianInput, gaussianOutput, formattedCheckpoint, cube, xyz, pdb, mol, sdf, cml
+
+    public var fileExtensions: [String] {
+        switch self {
+        case .gaussianInput: return ["gjf", "com", "gau"]
+        case .gaussianOutput: return ["log", "out"]
+        case .formattedCheckpoint: return ["fchk", "fch"]
+        case .cube: return ["cube", "cub"]
+        case .xyz: return ["xyz"]
+        case .pdb: return ["pdb", "ent"]
+        case .mol: return ["mol"]
+        case .sdf: return ["sdf", "sd"]
+        case .cml: return ["cml"]
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .gaussianInput: return "Gaussian Input"
+        case .gaussianOutput: return "Gaussian Output"
+        case .formattedCheckpoint: return "Formatted Checkpoint"
+        case .cube: return "Gaussian Cube"
+        case .xyz: return "XYZ"
+        case .pdb: return "Protein Data Bank (PDB)"
+        case .mol: return "MDL Molfile"
+        case .sdf: return "MDL SD File"
+        case .cml: return "Chemical Markup Language (CML)"
+        }
+    }
+
+    public var canRead: Bool { true }
+    public var canWrite: Bool { self != .gaussianOutput }
+
+    /// Extensions whose content is not decisive on its own; the content is sniffed first.
+    private static let ambiguousExtensions: Set<String> = ["out", "txt", "dat", ""]
+
+    public static func format(forExtension ext: String) -> MoleculeFileFormat? {
+        let e = ext.lowercased()
+        return allCases.first { $0.fileExtensions.contains(e) }
+    }
+
+    /// Extension first; if unknown or ambiguous (.out, .txt, none) the first ~4 KB are sniffed.
+    public static func detect(url: URL) -> MoleculeFileFormat? {
+        let ext = url.pathExtension.lowercased()
+        if !ambiguousExtensions.contains(ext), let f = format(forExtension: ext) { return f }
+        var head = ""
+        if let h = try? FileHandle(forReadingFrom: url) {
+            defer { try? h.close() }
+            if let d = try? h.read(upToCount: 4096) {
+                head = String(decoding: d, as: UTF8.self)
+                // a UTF-8 sequence cut at the 4 KB boundary decodes to a replacement char: harmless
+            }
+        }
+        if let f = detect(contents: head) { return f }
+        return format(forExtension: ext)
+    }
+
+    public static func detect(contents: String, fileName: String? = nil) -> MoleculeFileFormat? {
+        if let f = sniff(contents) { return f }
+        if let n = fileName {
+            return format(forExtension: (n as NSString).pathExtension)
+        }
+        return nil
+    }
+
+    private static func isInt(_ s: Substring) -> Bool { Int(s) != nil }
+    private static func isFloat(_ s: Substring) -> Bool { parseFortranDouble(s) != nil }
+
+    private static func sniff(_ contents: String) -> MoleculeFileFormat? {
+        let head = String(contents.prefix(4096))
+        let lines = splitLines(head)
+        if head.contains("Entering Gaussian System") || head.contains("Gaussian, Inc.") { return .gaussianOutput }
+        // fchk: title, "type method basis", then "Number of atoms   I   n"
+        for k in 2..<max(2, min(5, lines.count)) where lines[k].hasPrefix("Number of atoms") {
+            let t = tokens(lines[k])
+            if t.count >= 5, t[3] == "I" { return .formattedCheckpoint }
+        }
+        guard let firstIdx = lines.firstIndex(where: { !$0.allSatisfy({ $0 == " " || $0 == "\t" }) }) else { return nil }
+        let first = lines[firstIdx].drop { $0 == " " || $0 == "\t" }
+        if first.hasPrefix("<?xml") || first.hasPrefix("<cml") || first.hasPrefix("<molecule") {
+            if head.contains("<molecule") || head.contains("cml") { return .cml }
+        }
+        if first.hasPrefix("%") || first.hasPrefix("#") || first.hasPrefix("--Link1--") { return .gaussianInput }
+        if lines.count >= 4 {
+            if lines[3].contains("V2000") || lines[3].contains("V3000") {
+                return head.contains("$$$$") ? .sdf : .mol
+            }
+        }
+        if lines.contains(where: { $0.hasPrefix("$$$$") }) { return .sdf }
+        for l in lines {
+            if l.hasPrefix("ATOM  ") || l.hasPrefix("HETATM") || l.hasPrefix("HEADER") || l.hasPrefix("CRYST1")
+                || l.hasPrefix("MODEL ") { return .pdb }
+        }
+        // cube: line 3 = int + 3 floats (+ optional int), lines 4-6 = int + 3 floats
+        if lines.count >= 6 {
+            let t3 = tokens(lines[2])
+            var ok = (t3.count == 4 || t3.count == 5) && isInt(t3[0]) && t3[1...3].allSatisfy(isFloat)
+            if ok, t3.count == 5, !isInt(t3[4]) { ok = false }
+            if ok {
+                for k in 3..<6 {
+                    let t = tokens(lines[k])
+                    if !(t.count == 4 && isInt(t[0]) && t[1...3].allSatisfy(isFloat)) { ok = false; break }
+                }
+            }
+            if ok { return .cube }
+        }
+        // xyz: line 1 a single integer, atom lines "Sym x y z"
+        if lines.count >= 3 {
+            let t1 = tokens(lines[0])
+            if t1.count == 1, isInt(t1[0]) {
+                let t3 = tokens(lines[2])
+                if t3.count >= 4, t3[1...3].allSatisfy(isFloat) { return .xyz }
+                if Int(t1[0]) == 0 { return .xyz }
+            }
+        }
+        return nil
+    }
+}

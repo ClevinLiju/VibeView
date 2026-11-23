@@ -12,8 +12,8 @@ struct Check {
 
 struct CheckFailure: Error, CustomStringConvertible { let description: String }
 
-func expect(_ cond: @autoclosure () -> Bool, _ msg: @autoclosure () -> String = "", file: StaticString = #fileID, line: UInt = #line) throws {
-    if !cond() { throw CheckFailure(description: "\(file):\(line) \(msg())") }
+func expect(_ cond: @autoclosure () throws -> Bool, _ msg: @autoclosure () throws -> String = "", file: StaticString = #fileID, line: UInt = #line) throws {
+    if try !cond() { throw CheckFailure(description: "\(file):\(line) \(try msg())") }
 }
 
 func expectClose(_ a: Double, _ b: Double, tol: Double = 1e-6, file: StaticString = #fileID, line: UInt = #line) throws {
@@ -26,9 +26,13 @@ func testDataURL(_ name: String) -> URL {
 
 enum Checks {}
 
-let allChecks: [Check] = [
+let allChecks: [Check] = ([
     // TEAM REGISTRATION — add one line each, e.g.  Checks.core,
-]
+    Checks.core,
+    Checks.io,
+    Checks.analysis,
+    Checks.render,
+] as [[Check]]).flatMap { $0 }  // each team registers an array (fix by Lead 5, see CONTRACTS change log)
 
 @main
 struct CheckRunner {

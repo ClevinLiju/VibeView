@@ -1,0 +1,240 @@
+import Foundation
+import SceneKit
+import AppKit
+import simd
+import MolCore
+
+/// Result of a click on the 3D view.
+public struct PickEvent: Sendable {
+    public var target: PickTarget
+    public var modifiers: NSEvent.ModifierFlags
+    public var clickCount: Int
+    /// View coordinates (points, origin bottom-left as in AppKit).
+    public var location: CGPoint
+    public init(target: PickTarget, modifiers: NSEvent.ModifierFlags, clickCount: Int, location: CGPoint) {
+        self.target = target; self.modifiers = modifiers; self.clickCount = clickCount; self.location = location
+    }
+}
+
+/// Owns the SceneKit scene for one molecule and its interactive view. Main-actor only.
+///
+/// Typical use from the app:
+///   let r = MoleculeRenderer(); r.setMolecule(mol, fitCamera: true)
+///   r.onPick = { ev in ... }; r.options.style = .spaceFilling
+///   MoleculeSceneView(renderer: r)            // SwiftUI
+@MainActor public final class MoleculeRenderer: NSObject {
+    public let scene = SCNScene()
+    public let view: MoleculeSCNView
+    public let cameraNode = SCNNode()
+    public private(set) var camera: CameraController!
+    public let materials = MaterialLibrary()
+
+    public private(set) var molecule = Molecule()
+    public var options: RenderOptions { didSet { optionsChanged(from: oldValue) } }
+
+    /// Selected atom indices. Highlighted; set by built-in click/box handling when `autoSelect`.
+    public var selection: Set<Int> = [] { didSet { if selection != oldValue { rebuildHighlight(); onSelectionChange?(selection) } } }
+    public internal(set) var hovered: PickTarget = .none { didSet { if hovered != oldValue { rebuildHighlight(); onHover?(hovered) } } }
+
+    /// Built-in selection semantics: click = select atom, shift = add, cmd = toggle,
+    /// double-click = whole fragment, click on empty = clear. Box (shift-drag) adds atoms inside.
+    public var autoSelect = true
+    public var onPick: ((PickEvent) -> Void)?
+    public var onHover: ((PickTarget) -> Void)?
+    public var onSelectionChange: ((Set<Int>) -> Void)?
+    /// Atoms inside a rubber-band rectangle, with the modifiers at mouse-up.
+    public var onBoxSelect: ((Set<Int>, NSEvent.ModifierFlags) -> Void)?
+
+    public private(set) var isosurfaces: [String: Isosurface] = [:]
+    public private(set) var vibration: VibrationAnimator!
+    public private(set) var trajectory: TrajectoryPlayer!
+    public internal(set) var picking: PickingController!
+
+    // Layer containers (children rebuilt on change)
+    let root = SCNNode()
+    var atomLayer = SCNNode(), bondLayer = SCNNode(), highlightLayer = SCNNode()
+    var labelLayer = SCNNode(), measurementLayer = SCNNode(), cellLayer = SCNNode()
+    var vectorLayer = SCNNode()
+    let surfaceLayer = SCNNode()
+    private(set) var lighting: LightingRig!
+    private(set) var cachedBounds: (center: Vec3, radius: Double) = (.zero, 5)
+
+    public init(molecule: Molecule = Molecule(), options: RenderOptions = RenderOptions()) {
+        self.options = options
+        self.view = MoleculeSCNView(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
+        super.init()
+        root.name = NodeName.root
+        surfaceLayer.name = NodeName.surfaces
+        scene.rootNode.addChildNode(root)
+        cameraNode.name = NodeName.camera
+        cameraNode.camera = SCNCamera()
+        scene.rootNode.addChildNode(cameraNode)
+        camera = CameraController(node: cameraNode)
+        lighting = LightingRig(scene: scene, cameraNode: cameraNode)
+        camera.onChange = { [weak self] in
+            guard let self else { return }
+            self.lighting.updateFogRange(distance: self.camera.distance, radius: self.cachedBounds.radius)
+        }
+        picking = PickingController(renderer: self)
+        vibration = VibrationAnimator(renderer: self)
+        trajectory = TrajectoryPlayer(renderer: self)
+        view.scene = scene
+        view.pointOfView = cameraNode
+        view.renderer = self
+        view.antialiasingMode = .multisampling4X
+        view.allowsCameraControl = false
+        view.rendersContinuously = false
+        applyEnvironment()
+        setMolecule(molecule, fitCamera: true)
+    }
+
+    // MARK: Molecule
+
+    /// Replace the molecule and rebuild every layer. Selection indices beyond the new atom count are dropped.
+    public func setMolecule(_ m: Molecule, fitCamera: Bool = false) {
+        molecule = m
+        selection = selection.filter { $0 < m.atoms.count }
+        if case .atom(let i) = hovered, i >= m.atoms.count { hovered = .none }
+        if case .bond(let i) = hovered, i >= m.bonds.count { hovered = .none }
+        rebuildAll()
+        if fitCamera { fitToView(animated: false) }
+    }
+
+    /// Fast path for animation: same atoms/bonds, new coordinates (count must match).
+    public func updatePositions(_ positions: [Vec3]) {
+        guard positions.count == molecule.atoms.count else { return }
+        for i in positions.indices { molecule.atoms[i].position = positions[i] }
+        let okA = AtomLayerBuilder.updatePositions(atomLayer, molecule: molecule, options: options)
+        let okB = BondLayerBuilder.updatePositions(bondLayer, molecule: molecule, options: options)
+        if !okA { replace(&atomLayer, with: AtomLayerBuilder.build(molecule: molecule, options: options, colors: currentColors, materials: materials)) }
+        if !okB { replace(&bondLayer, with: BondLayerBuilder.build(molecule: molecule, options: options, colors: currentColors, materials: materials)) }
+        rebuildOverlays()
+    }
+
+    /// Display colors per atom for the current options.
+    public var currentColors: [RGBA] { RenderMetrics.atomColors(for: molecule, options: options) }
+
+    /// Bounding sphere of visible atoms (center, radius incl. display radii); radius >= 1.
+    public func boundingSphere() -> (center: Vec3, radius: Double) {
+        let atoms = molecule.atoms.filter { RenderMetrics.isAtomVisible($0, options: options) }
+        var pts = atoms.map(\.position)
+        if let cell = options.unitCell, options.showUnitCell { pts += cell.corners }
+        guard !pts.isEmpty else { return (.zero, 5) }
+        var lo = pts[0], hi = pts[0]
+        for p in pts { lo = simd_min(lo, p); hi = simd_max(hi, p) }
+        let c = (lo + hi) / 2
+        var r = 0.0
+        for a in atoms { r = max(r, simd_distance(a.position, c) + RenderMetrics.atomRadius(atomicNumber: a.atomicNumber, options: options)) }
+        if let cell = options.unitCell, options.showUnitCell { for p in cell.corners { r = max(r, simd_distance(p, c)) } }
+        return (c, max(r, 1))
+    }
+
+    public func fitToView(animated: Bool = true) {
+        let s = boundingSphere()
+        camera.fit(center: s.center, radius: s.radius, animated: animated)
+    }
+
+    /// Analytic hit-test at a view point (AppKit coordinates).
+    public func pick(at point: CGPoint) -> PickTarget { picking.hitTest(point) }
+
+    // MARK: Isosurfaces
+
+    public func setIsosurface(_ s: Isosurface) {
+        isosurfaces[s.id] = s
+        surfaceLayer.childNode(withName: "surface:\(s.id)", recursively: false)?.removeFromParentNode()
+        if s.visible { surfaceLayer.addChildNode(IsosurfaceNodeBuilder.build(s)) }
+    }
+    public func removeIsosurface(id: String) {
+        isosurfaces[id] = nil
+        surfaceLayer.childNode(withName: "surface:\(id)", recursively: false)?.removeFromParentNode()
+    }
+    public func removeAllIsosurfaces() {
+        isosurfaces.removeAll(); surfaceLayer.childNodes.forEach { $0.removeFromParentNode() }
+    }
+
+    // MARK: Displacement vectors
+
+    /// Show per-atom displacement arrows for a normal mode (nil hides them).
+    public func showDisplacementArrows(_ mode: NormalMode?, scale: Double = 1.5, color: RGBA = RGBA(0.1, 0.7, 0.2)) {
+        let n = mode.map { DisplacementArrowBuilder.build(molecule: molecule, mode: $0, scale: scale, color: color) } ?? emptyNode(NodeName.vectors)
+        replace(&vectorLayer, with: n)
+    }
+
+    // MARK: Building
+
+    func rebuildAll() {
+        cachedBounds = boundingSphere()
+        let colors = currentColors
+        materials.preset = options.material
+        replace(&atomLayer, with: AtomLayerBuilder.build(molecule: molecule, options: options, colors: colors, materials: materials))
+        replace(&bondLayer, with: BondLayerBuilder.build(molecule: molecule, options: options, colors: colors, materials: materials))
+        rebuildCell()
+        rebuildOverlays()
+        if surfaceLayer.parent == nil { root.addChildNode(surfaceLayer) }
+        if vectorLayer.parent == nil { vectorLayer.name = NodeName.vectors; root.addChildNode(vectorLayer) }
+    }
+
+    func rebuildOverlays() {
+        rebuildHighlight()
+        replace(&labelLayer, with: LabelLayerBuilder.build(molecule: molecule, options: options))
+        replace(&measurementLayer, with: MeasurementLayerBuilder.build(molecule: molecule, options: options))
+    }
+
+    func rebuildHighlight() {
+        replace(&highlightLayer, with: HighlightLayerBuilder.build(molecule: molecule, options: options, selection: selection, hovered: hovered))
+    }
+
+    func rebuildCell() {
+        let n = (options.showUnitCell ? options.unitCell : nil).map { UnitCellLayerBuilder.build(cell: $0, options: options) } ?? emptyNode(NodeName.cell)
+        replace(&cellLayer, with: n)
+    }
+
+    private func optionsChanged(from old: RenderOptions) {
+        if old == options { return }
+        var geometryChanged = old.style != options.style || old.colorScheme != options.colorScheme
+            || old.atomScale != options.atomScale || old.bondRadius != options.bondRadius || old.tubeRadius != options.tubeRadius
+            || old.wireWidth != options.wireWidth || old.splitBondColors != options.splitBondColors || old.bondColor != options.bondColor
+            || old.showBondOrders != options.showBondOrders || old.dashedBonds != options.dashedBonds
+            || old.showHydrogens != options.showHydrogens || old.geometryQuality != options.geometryQuality
+        if old.material != options.material { geometryChanged = true }
+        if geometryChanged {
+            rebuildAll()
+        } else {
+            if old.unitCell != options.unitCell || old.showUnitCell != options.showUnitCell { rebuildCell() }
+            if old.labelMode != options.labelMode || old.labelSize != options.labelSize || old.measurements != options.measurements
+                || old.selectionColor != options.selectionColor || old.hoverColor != options.hoverColor || old.theme != options.theme {
+                rebuildOverlays()
+            }
+        }
+        if old.projection != options.projection { camera.projection = options.projection }
+        applyEnvironment()
+    }
+
+    func applyEnvironment() {
+        lighting.apply(options: options)
+        view.backgroundColor = options.transparentBackground ? .clear : options.resolvedBackground.nsColor
+        if camera.projection != options.projection { camera.projection = options.projection }
+    }
+
+    func replace(_ layer: inout SCNNode, with new: SCNNode) {
+        layer.removeFromParentNode()
+        layer = new
+        root.addChildNode(new)
+    }
+
+    func emptyNode(_ name: String) -> SCNNode { let n = SCNNode(); n.name = name; return n }
+
+    // MARK: Introspection (used by checks and the app's status bar)
+
+    /// Number of SCNGeometry-bearing nodes in a layer (recursive).
+    public func geometryNodeCount(layer: String) -> Int {
+        guard let n = root.childNode(withName: layer, recursively: false) else { return 0 }
+        var c = 0
+        n.enumerateHierarchy { node, _ in if node.geometry != nil { c += 1 } }
+        return c
+    }
+    /// Layer names usable with `geometryNodeCount`.
+    public static let layerNames = (atoms: NodeName.atoms, bonds: NodeName.bonds, highlight: NodeName.highlight,
+                                    labels: NodeName.labels, measurements: NodeName.measurements,
+                                    surfaces: NodeName.surfaces, cell: NodeName.cell, vectors: NodeName.vectors)
+}
