@@ -50,6 +50,7 @@ struct OrbitalsView: View {
                     Text(String(format: "%.3f", editor.orbitalIsovalue)).monospacedDigit().font(.caption)
                         .frame(width: 40, alignment: .trailing)
                 }
+                OrbitalLookControls(editor: editor)
                 if !editor.orbitalStatus.isEmpty {
                     Text(editor.orbitalStatus).font(.caption).foregroundStyle(.secondary)
                 }

@@ -90,12 +90,12 @@ enum QuickLookRenderer {
         let table = rows.map { "<tr><th>\(esc($0.0))</th><td>\(esc($0.1))</td></tr>" }.joined()
         return page(title: url.lastPathComponent, subtitle: info.kind, body: """
         <div class="wrap"><div class="art">\(svg)</div><div class="card"><table>\(table)</table>
-        <p class="hint">Open in MolScope to rotate, edit and run calculations.</p></div></div>
+        <p class="hint">Open in VibeView to rotate, edit and run calculations.</p></div></div>
         """)
     }
 
     static func errorHTML(_ url: URL) -> String {
-        page(title: url.lastPathComponent, subtitle: "Structure file", body: "<p class=hint>MolScope could not read this file.</p>")
+        page(title: url.lastPathComponent, subtitle: "Structure file", body: "<p class=hint>VibeView could not read this file.</p>")
     }
 
     /// Orthographic view along the smallest principal axis, depth-sorted shaded spheres and bonds.
@@ -166,7 +166,7 @@ enum QuickLookRenderer {
         th { text-align:left; color:var(--muted); font-weight:500; padding:4px 14px 4px 0; vertical-align:top; white-space:nowrap; }
         td { padding:4px 0; font-variant-numeric: tabular-nums; word-break: break-word; }
         .hint { color:var(--muted); font-size:12px; margin-top:14px; }
-        </style></head><body><header><h1>\(esc(title))</h1><div class="sub">\(esc(subtitle)) · MolScope</div></header>\(body)</body></html>
+        </style></head><body><header><h1>\(esc(title))</h1><div class="sub">\(esc(subtitle)) · VibeView</div></header>\(body)</body></html>
         """
     }
 }

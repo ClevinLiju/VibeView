@@ -31,7 +31,32 @@ public struct Fragment: Identifiable, Sendable {
 
 public enum FragmentLibrary {
     public static let all: [Fragment] = FragmentFactory.buildAll()
-    public static func fragment(id: String) -> Fragment? { all.first { $0.id == id } }
+    public static func fragment(id: String) -> Fragment? { custom(id) ?? all.first { $0.id == id } }
+
+    // MARK: user fragments (e.g. a structure found by name lookup), registered at run time
+
+    private static let customLock = NSLock()
+    nonisolated(unsafe) private static var customStore: [String: Fragment] = [:]
+    private static func custom(_ id: String) -> Fragment? { customLock.lock(); defer { customLock.unlock() }; return customStore[id] }
+
+    /// Register (or replace) a run-time fragment; `fragment(id:)` finds it. Category is `.groups`.
+    public static func register(_ f: Fragment) { customLock.lock(); customStore[f.id] = f; customLock.unlock() }
+
+    /// Make a fragment from any molecule: the attachment atom is the first heavy atom carrying a hydrogen
+    /// (prefer carbon), the leaving atom one of its hydrogens. Returns nil if no heavy atom has a hydrogen
+    /// (such a structure can still be placed free with `Builder.place`).
+    public static func makeFragment(id: String, name: String, molecule m: Molecule) -> Fragment? {
+        var mol = m
+        mol.renumberAtomIDs()
+        let c = Editing.centroid(mol)
+        for i in mol.atoms.indices { mol.atoms[i].position -= c }
+        func firstH(_ i: Int) -> Int? { mol.buildNeighbors(of: i).first { mol.atoms[$0].atomicNumber == 1 && mol.buildNeighbors(of: $0).count == 1 } }
+        let heavy = mol.atoms.indices.filter { mol.atoms[$0].atomicNumber > 1 }
+        let anchor = heavy.first { mol.atoms[$0].atomicNumber == 6 && firstH($0) != nil } ?? heavy.first { firstH($0) != nil }
+        guard let a = anchor, let h = firstH(a) else { return nil }
+        mol.title = name
+        return Fragment(id: id, name: name, category: .groups, molecule: mol, anchor: a, leaving: h)
+    }
     public static func fragments(in c: FragmentCategory) -> [Fragment] { all.filter { $0.category == c } }
 }
 

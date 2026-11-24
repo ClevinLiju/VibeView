@@ -8,6 +8,14 @@ import MolCore
     unowned let renderer: MoleculeRenderer
     private var boxStart: CGPoint?
     private var boxLayer: CAShapeLayer?
+    var lassoPoints: [CGPoint] = []
+    var lassoLayer: CAShapeLayer?
+    var moveStart: [Vec3]?
+    private var lastHover: (point: CGPoint, revision: Int)?
+    private var lastHoverTime: TimeInterval = 0
+    private var pendingHoverPoint: CGPoint?
+    /// Minimum interval between hover picks (s): coalesces mouse-move bursts to ~display rate.
+    static let hoverInterval: TimeInterval = 1.0 / 120
 
     init(renderer: MoleculeRenderer) { self.renderer = renderer }
 
@@ -36,6 +44,7 @@ import MolCore
         switch target {
         case .atom(let i):
             if clickCount >= 2 {
+                if renderer.centerOnDoubleClick { renderer.centerOn(atom: i) }
                 let frag = Set(mol.fragment(containing: i))
                 if cmd { sel.formSymmetricDifference(frag.isSubset(of: sel) ? frag : frag.subtracting(sel)) }
                 else if shift { sel.formUnion(frag) }
@@ -56,9 +65,41 @@ import MolCore
         if sel != renderer.selection { renderer.selection = sel }
     }
 
-    func hover(at point: CGPoint?) {
-        let t: PickTarget = point.map { hitTest($0) } ?? .none
-        renderer.lastHoverLocation = point
+    /// Hover pick, throttled to `hoverInterval` (the last point of a burst is always picked) and cached:
+    /// the same point with an unchanged camera/scene (`renderer.hoverRevision`) is not re-picked.
+    func hover(at point: CGPoint?, throttled: Bool = false) {
+        guard let p = point else {
+            pendingHoverPoint = nil; lastHover = nil
+            renderer.lastHoverLocation = nil
+            if renderer.hovered != .none { renderer.hovered = .none } else { renderer.pushHoverTooltip() }
+            return
+        }
+        if let l = lastHover, l.revision == renderer.hoverRevision, abs(l.point.x - p.x) < 0.5, abs(l.point.y - p.y) < 0.5 { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let wait = Self.hoverInterval - (now - lastHoverTime)
+        if throttled && wait > 0 {
+            let first = pendingHoverPoint == nil
+            pendingHoverPoint = p
+            if first {
+                DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, let q = self.pendingHoverPoint else { return }
+                        self.pendingHoverPoint = nil
+                        self.pickHover(q)
+                    }
+                }
+            }
+            return
+        }
+        pendingHoverPoint = nil
+        pickHover(p)
+    }
+
+    private func pickHover(_ p: CGPoint) {
+        lastHoverTime = ProcessInfo.processInfo.systemUptime
+        lastHover = (p, renderer.hoverRevision)
+        let t = hitTest(p)
+        renderer.lastHoverLocation = p
         if t != renderer.hovered { renderer.hovered = t }
     }
 

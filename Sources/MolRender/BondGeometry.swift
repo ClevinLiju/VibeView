@@ -22,7 +22,7 @@ public enum BondGeometry {
     /// Radius factor of the individual lines of a multiple bond.
     public static let multiRadiusFactor = 0.5
     /// Center-to-center spacing of multiple-bond lines, in units of their (thin) radius.
-    public static let offsetFactor = 2.2
+    public static let offsetFactor = 2.6
 
     // MARK: Context (adjacency / rings), built lazily
 
@@ -82,6 +82,30 @@ public enum BondGeometry {
         return Context(molecule).offsetDirection(bondIndex)
     }
 
+    /// Half-spacing of the two lines of a double bond (about the atom-atom axis), in units of the thin line radius.
+    public static let doubleHalfFactor = 2.0
+
+    /// One circle per aromatic ring (center = ring centroid, normal = ring plane normal, radius = 0.6 x mean
+    /// center-to-atom distance). Empty unless the style is ball-and-stick with bond orders shown and `.circle`.
+    public static func aromaticRingCircles(molecule: Molecule, options: RenderOptions) -> [(center: Vec3, normal: Vec3, radius: Double)] {
+        guard options.aromaticStyle == .circle, options.showBondOrders, options.style == .ballAndStick else { return [] }
+        var out: [(center: Vec3, normal: Vec3, radius: Double)] = []
+        for ring in molecule.aromaticRings() where ring.count >= 3 {
+            let pts = ring.map { molecule.atoms[$0].position }
+            let c = pts.reduce(Vec3.zero, +) / Double(pts.count)
+            var n = Vec3.zero   // Newell normal
+            for k in pts.indices {
+                let p = pts[k] - c, q = pts[(k + 1) % pts.count] - c
+                n += simd_cross(p, q)
+            }
+            let nl = simd_length(n)
+            n = nl > 1e-9 ? n / nl : Vec3(0, 0, 1)
+            let mean = pts.reduce(0.0) { $0 + simd_distance($1, c) } / Double(pts.count)
+            out.append((c, n, 0.6 * mean))
+        }
+        return out
+    }
+
     // MARK: Segments
 
     /// All pieces to draw for the visible bonds. See task spec in the file header of BondLayer.
@@ -90,6 +114,7 @@ public enum BondGeometry {
         guard options.style != .spaceFilling, baseR > 0 else { return [] }
         let multi = options.showBondOrders && (options.style == .ballAndStick)
         var ctx: Context? = nil
+        var kekule: [BondOrder]? = nil
         var out: [BondSegment] = []
         out.reserveCapacity(molecule.bonds.count * 2)
         func color(_ i: Int) -> RGBA { i < colors.count ? colors[i] : options.bondColor }
@@ -105,10 +130,20 @@ public enum BondGeometry {
                 let u = ctx!.offsetDirection(bi)
                 let r = baseR * multiRadiusFactor
                 let s = r * offsetFactor
+                let h = r * doubleHalfFactor
                 switch bond.order {
-                case .double: lines = [(u * (-s / 2), r, dashed), (u * (s / 2), r, dashed)]
+                case .double: lines = [(u * (-h), r, dashed), (u * h, r, dashed)]
                 case .triple: lines = [(u * (-s), r, dashed), (.zero, r, dashed), (u * s, r, dashed)]
-                case .aromatic: lines = [(.zero, r, dashed), (u * s, r, true)]
+                case .aromatic:
+                    switch options.aromaticStyle {
+                    case .dashed: lines = [(u * (-h), r, dashed), (u * h, r, true)]
+                    case .circle: break
+                    case .kekule:
+                        if kekule == nil { kekule = molecule.kekuleDisplayOrders() }
+                        if bi < kekule!.count, kekule![bi] == .double {
+                            lines = [(u * (-h), r, dashed), (u * h, r, dashed)]
+                        }
+                    }
                 case .single: break
                 }
             }

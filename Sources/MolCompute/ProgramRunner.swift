@@ -59,6 +59,17 @@ public enum ProgramRunner {
                                     environment: [String: String]? = nil, stdin: String? = nil,
                                     timeout: TimeInterval? = nil, throwOnFailure: Bool = true,
                                     onOutput: @escaping @Sendable (String) -> Void) async throws -> ProcessOutput {
+        try await runCore(executable: executable, arguments: arguments, workingDirectory: workingDirectory,
+                          environment: environment, stdin: stdin, timeout: timeout, throwOnFailure: throwOnFailure,
+                          onChunk: { _, d in if let s = String(data: d, encoding: .utf8) { onOutput(s) } })
+    }
+
+    /// Core runner: `onChunk(isStdout, data)` is called on a background queue for every chunk read.
+    static func runCore(executable: URL, arguments: [String], workingDirectory: URL?,
+                        environment: [String: String]?, stdin: String?,
+                        timeout: TimeInterval?, throwOnFailure: Bool,
+                        onStart: (@Sendable () -> Void)? = nil,
+                        onChunk: @escaping @Sendable (Bool, Data) -> Void) async throws -> ProcessOutput {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -90,7 +101,7 @@ public enum ProgramRunner {
                             let d = h.availableData
                             if d.isEmpty { break }
                             state.withLock { if isOut { state.out.append(d) } else { state.err.append(d) } }
-                            if let s = String(data: d, encoding: .utf8) { onOutput(s) }
+                            onChunk(isOut, d)
                         }
                         group.leave()
                     }
@@ -103,6 +114,7 @@ public enum ProgramRunner {
                     cont.resume(throwing: ComputeError.processFailed(code: -1, stderr: error.localizedDescription))
                     return
                 }
+                onStart?()
                 reader(outPipe, isOut: true)
                 reader(errPipe, isOut: false)
                 DispatchQueue.global().async {

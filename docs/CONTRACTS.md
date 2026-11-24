@@ -254,3 +254,168 @@ Every parser throws `MolIOError` (never traps) on malformed or truncated input; 
 Module and directory names keep their Mol* prefix internally; only the user-facing product, bundle and executable are renamed.
 Feature ideas may come from general knowledge of GaussView, Avogadro 2, ChimeraX and VMD, but
 **never copy their code, icons, wording or layouts** (clean-room rule).
+
+## Round 3 — Lead D (Analysis + Compute) API (posted early; additive only, existing members unchanged)
+All value types / `enum` namespaces / `actor`s, `Sendable`, never touch the main thread.
+
+**Name lookup (MolCompute, `NameLookup.swift`)** — PubChem PUG REST + PubChem autocomplete, optional NCI CACTUS fallback.
+- `LookupCandidate: Sendable, Identifiable, Hashable` — `cid: Int`, `title` (PubChem preferred name), `iupacName: String?`, `formula: String?`,
+  `molecularWeight: Double?`, `canonicalSMILES: String?`, `synonyms: [String]` (≤ 5), `casNumber: String?` (from synonyms, check digit validated),
+  `depictionURL: URL` (`/compound/cid/<cid>/PNG?image_size=...`), `thumbnail: Data?` (PNG, fetched), `matchKind: .exact/.ambiguous/.spellingSuggestion/.cas/.smiles/.cid`,
+  `matchedQuery: String` (the string that actually hit, e.g. the autocomplete correction "caffeine" for "cafeine").
+- `LookupQueryKind.classify(_ query) -> .cid(Int) / .cas(String) / .smiles(String) / .name(String)`; `CASNumber.isValid(_:)`.
+- `NameLookup(timeout: 10, thumbnailSize: 160, useCactusFallback: true, session: .shared)` (an `actor`, caches results per query and per CID):
+  `suggest(_ query: String, limit: Int = 8) async -> [LookupCandidate]` (never throws; empty = nothing / offline; `lastError: ComputeError?` tells why),
+  `structure(for candidate: LookupCandidate) async throws -> Molecule` (3D SDF, else 2D + embedding, via `PubChemClient`),
+  `autocomplete(_ prefix:, limit:) async -> [String]`. Ambiguous names ("xylene") return several CIDs; typos fall back to autocomplete terms.
+  Requests are throttled to ≤ 5/s process-wide (`PubChemThrottle.shared`).
+  Implemented: `LookupMatchKind` is a String enum; `NameLookup(..., baseURL:)`; `lastError` is `public private(set)`; public parse helpers
+  `parseCIDs/parseProperties/parseSynonyms/parseAutocomplete`; `PubChemThrottle(minInterval: 0.2)`. Names that are not PubChem names but are a class
+  ("xylene") resolve the simplest autocomplete terms containing the word → o-/m-/p-xylene (`.ambiguous`); otherwise the top autocomplete terms
+  are `.spellingSuggestion`; then CACTUS. CAS-shaped strings with a bad check digit are searched as text. Live (2026-11-24): caffeine → 2519 + salts,
+  xylene → 7929/7809/7237 + derivatives, 58-08-2 → 2519 (.cas), aspirin → 2244, cafeine → 2519 (PubChem accepts it as a synonym).
+
+**xtb settings + live logs (MolCompute, `XTBSettings.swift`, `RunLog.swift`)**
+- `XTBSettings: Codable, Sendable, Equatable` — `method: XTBMethod` (`.gfn0 .gfn1 .gfn2 .gfnff`; `.gfn0` added), `task: XTBTask`, `optLevel: XTBOptLevel`
+  (`.crude .sloppy .loose .normal .tight .vtight .extreme`), `maxCycles: Int?` (`--cycles`), `solvationModel: XTBSolvationModel` (`.none .alpb .gbsa`),
+  `solvent: String?` (`XTBSolvents.alpb` / `.gbsa` name lists), `charge: Int?`/`uhf: Int?` (nil = from molecule), `electronicTemperature: Double?` (`--etemp`, K),
+  `accuracy: Double?` (`--acc`), `threads: Int` (OMP_NUM_THREADS + `-P`), `extraArguments: [String]`, `timeout: TimeInterval?`.
+  `arguments(inputFile: "input.xyz", molecule:) -> [String]`, `commandLine(molecule:) -> String` (preview, shell-quoted), `validationErrors() -> [String]` (empty = OK), `environment(base:)`.
+- `RunLogEvent: Sendable` — `.started(runDirectory: URL, commandLine: String)`, `.stdout(String)`, `.stderr(String)`, `.file(name: String, line: String)` (tailed output files), `.finished(exitCode: Int32)`. Events are whole lines.
+- `XTBRunner.run(_ molecule, settings: XTBSettings, runDirectory: URL? = nil, onEvent: (@Sendable (RunLogEvent) -> Void)? = nil) async throws -> XTBResult`
+  and `XTBRunner.stream(_ molecule, settings:, runDirectory:) -> XTBRunHandle` with `events: AsyncStream<RunLogEvent>`, `runDirectory: URL`, `result: Task<XTBResult, Error>`, `cancel()`.
+  `XTBResult` gains `converged: Bool?` (false when the cycle limit was hit, parsed from "FAILED TO CONVERGE"/"not converged"), `optimizationCycles: Int?`, `commandLine: String`.
+  The run directory is kept when the caller passes `runDirectory` (or `keepFiles = true`); `workingDirectory` is the path to show/open.
+  Implemented: `XTBRunHandle = RunHandle<XTBResult>` / `ProgramRunHandle = RunHandle<ProcessOutput>` (`events`, `runDirectory: URL?`, `result: Task`, `value` (async throws), `cancel()`).
+  `stream(...)` always keeps its run directory (temp `molscope-xtb-<uuid>` when none is passed); `run(...)` without `runDirectory` deletes its temp dir.
+  stdout is saved as `xtb.out`; `xtbopt.log` is tailed for optimizations. A non-converged optimization does NOT throw: it returns `converged == false`
+  (plus `exitCode`). Invalid settings throw `ComputeError.parse("invalid xtb settings: ...")`. `XTBMethod` gains `.gfn0`, `title`, `id`, Codable; `XTBTask` is Codable.
+  Helper: `shellQuoted(_ args:)`. `RunLogEvent.line` gives the text of a line event.
+- `ProgramRunner.runLogged(executable:arguments:workingDirectory:environment:stdin:timeout:throwOnFailure:tailFiles: [String] = [], stdoutFile: String? = nil, onEvent:)`
+  — same guarantees as `run` (no main thread, cancellation kills the child, timeout), line-buffered events, tails the named files in `workingDirectory` while running
+  (ORCA `job.out`, Gaussian `job.log`), optionally tees stdout to `stdoutFile`. `ProgramRunner.stream(...) -> ProgramRunHandle` (`events`, `result`, `cancel()`).
+
+**Orbital quality (MolAnalysis, `OrbitalSurfaces.swift`, `MeshProcessing.swift`)**
+- `OrbitalGridQuality: String, Codable, CaseIterable` — `.draft` (0.25 Å), `.normal` (0.15 Å), `.high` (0.10 Å), `.ultra` (0.07 Å); `spacing`, `maxPoints`.
+- `GridSpec.adaptive(_ wf: Wavefunction, quality:, threshold: 1e-4)` — box from basis-function extents (most diffuse primitive per atom where |φ| < threshold), not a fixed padding.
+- `OrbitalSurfaceRequest: Hashable, Sendable` — `orbital: Int` (0-based), `spin: WavefunctionSurfaces.Spin`, `isovalue: Double = 0.02`, `quality: OrbitalGridQuality = .normal`,
+  `smoothing: Int = 0` (Taubin iterations), `maxTriangles: Int? = 400_000` (decimate above).
+- `OrbitalSurfaceResult` — `meshes: [IsoSurfaceMesh]` (`[+lobe, −lobe]`), `isOccupied: Bool`, `isHOMO`, `isLUMO`, `energy: Double` (Hartree), `occupation: Double`, `grid: GridSpec`, `timings`.
+- `OrbitalSurfaceService` (actor; LRU cache of evaluated grids keyed by (wavefunction id, orbital, spin, quality)):
+  `init(wavefunction:, cacheLimit: 8)`, `surfaces(_ request) async throws -> OrbitalSurfaceResult`, `grid(orbital:spin:quality:) async throws -> VolumeGrid`, `clearCache()`.
+- `MeshProcessing.weld(_:tolerance:)`, `.taubinSmooth(_:iterations:lambda:mu:)`, `.decimate(_:targetTriangles:)` (vertex clustering), `.recomputeNormals(_:)`,
+  `.analyticNormals(_ mesh, evaluator:, coefficients:)` (normals from basis-function gradients).
+  Implemented: `OrbitalEvaluator.evaluateOrbitalFast(_:on:isCancelled:)` (single-MO path, folded coefficients, line clipping; used by the service),
+  `OrbitalEvaluator.valuesAndGradients(coefficients:atBohr:) -> (values, gradients /*per Bohr*/)`, `MeshProcessing.roughness(_:)`, `OrbitalSurfaceError.orbitalOutOfRange`.
+  Cache key is (orbital, spin, quality) per service instance (one service per wavefunction). `timings` keys "grid"/"mesh"/"post" (s). Decimation runs
+  before smoothing; marching-cubes normals are kept unless smoothing/decimation ran (call `analyticNormals` explicitly if wanted). `occupation` is 2 (restricted) or 1.
+  Fix: `OrbitalEvaluator.evaluateAsync` cancellation now reaches the parallel workers (it used `Task.isCancelled` on non-task threads).
+
+**Analysis models (MolAnalysis, `OrbitalLevels.swift`, `VibrationalAnalysis.swift`)**
+- `OrbitalLevelDiagram(wavefunction:)` / `(orbitals: [OrbitalInfo])` — `columns: [Column]` (alpha, and beta for unrestricted), each `levels: [Level]`
+  (`energy` Hartree, `energyEV`, `orbitalIndices` (degenerate group, tolerance 1e-3 Eh), `occupation`, `isHOMO`, `isLUMO`, `degeneracy`); `homoLumoGapEV`, `energyRange(window:)`.
+- `DensityOfStates.compute(energies: [Double] /*Eh*/, occupations:, fwhmEV: 0.3, shape: .gaussian, rangeEV:, pointCount:) -> Spectrum` (x eV, y states/eV; `sticks` = levels), plus occupied-only partial curve.
+- `VibrationalModeAnalysis.analyze(mode: NormalMode, molecule:) -> ModeCharacter` — `label` (e.g. "C=O stretch", "H–C–H bend", "C–H stretch (sym)"),
+  `contributions: [InternalContribution]` (coordinate kind .stretch/.bend/.torsion/.outOfPlane, atoms, signed amplitude, percent), `groups`, `dominant`. `labels(for modes:, molecule:) -> [String]`.
+  Implemented: percent is an approximate PED (k·s² with typical diagonal force constants). Bonds/orders are perceived when the molecule has none or only single bonds.
+  Labels on ORCA h2co: 1192 "C out-of-plane bend", 1265 "O–C–H bend", 1529 "H–C–H bend", 1862 "C=O stretch", 2864 "C–H stretch (sym)", 2923 "C–H stretch (asym)".
+  Mixed modes read "mixed: A + B" (top group < 45 %); imaginary modes get " (imaginary)".
+- NTO / difference density: only if the data provide transition amplitudes (current Molden/ORCA parsers do not), so they are not part of round 3.
+
+## Round 3 — Lead A (Data + Commands) public API (additive only)
+**Kekulé display (MolCore, `BondOrders.swift`) — for Lead B**
+- `Molecule.kekuleDisplayOrders() -> [BondOrder]`: parallel to `bonds`; every `.aromatic` bond becomes `.single`/`.double`
+  in one alternating Kekulé structure; other bonds unchanged; the molecule is NOT mutated. Best effort (never fails):
+  a pyrrole-type N without its H is treated as the donor, else a maximum partial assignment. Deterministic.
+- `Molecule.kekuleDisplayMolecule() -> Molecule` (copy with those orders). `kekulize()` unchanged (strict, returns false when impossible).
+
+**Companion-file autoload (MolIO, `Companions.swift`) — for Lead C**
+- `MolecularFileLoader.loadWithCompanions(url:) throws -> (file: LoadedMolecularFile, companions: [CompanionFile])`.
+  `load(url:)` is unchanged (no companions). `LoadedMolecularFile.companions: [CompanionFile]` (also filled by `CalcJobResults.collect`).
+- `CompanionFile` (`url`, `fileName`, `role: .wavefunction .hessian .gradient .trajectory .geometry .volume .log .binary`,
+  `used: Bool`, `note: String` e.g. "6 normal modes", "skipped: modes already present", or the `formchk`/`orca_2mkl` hint for .chk/.gbw).
+  Show the `used` ones in the UI ("Also loaded: job.molden.input, job.hess"); show `.binary` notes as a tip.
+- `CompanionFiles.baseName(of:)` (multi-dot aware: `job.molden.input`, `job_trj.xyz` → `job`), `candidates(for:)`,
+  `merge(into:primaryURL:) -> [CompanionFile]`, `isXTBRunDirectory(_:)`, `maxCubeBytes` (64 MB), `maxCubes` (8).
+- Rules: the primary file wins; companions fill gaps only (wavefunction+orbital energies from .molden.input/.molden/.fchk/.fch;
+  modes from .hess / xtb g98.out; frames from _trj.xyz / xtbopt.log; gradient from .engrad; cubes `job.cube`, `job_*.cube`, `job.*.cube`;
+  a sibling .out/.log fills result data when the primary is an fchk/hess/molden). Atom counts must match or the file is skipped.
+
+**MolCommand (`Sources/MolCommand`, `import MolCommand`) — for Lead C (console wiring)**
+Atom numbers in command TEXT are 1-based; every index crossing the Swift API (`selection`, `setHidden`, `setColor`,
+`addMeasurement`, `CommandValue.atoms`) is 0-based.
+- Wiring: make a document-side class conform to `CommandContext`, then
+  `let exec = CommandExecutor(context: ctx)`; `exec.execute(line) -> [CommandResult]` (one per `;`/newline-separated
+  command; stops at the first failure; a syntax error gives one failed result "syntax error: … (column N)").
+  `CommandResult`: `command`, `success`, `messages: [CommandMessage(level: .info/.warning/.error, text)]`, `value: CommandValue?`
+  (`.number(Double, unit:)`, `.text`, `.atoms(Set<Int>)`), `text` (messages joined).
+- `CommandContext: AnyObject` — required: `molecule: Molecule { get }`, `selection: Set<Int> { get set }`,
+  `currentDirectory: URL { get set }`. Optional (default no-op or throws "… is not supported here"):
+  `open(urls:)`, `save(to:format: MoleculeFileFormat?)`, `close()`, `setMolecule(_:actionName:)` (one undoable edit; used by
+  bond/unbond/element), `setHydrogensVisible(_:)`, `setHidden(_:hidden:)`, `setStyle(DisplayStyleName)` (.ball .stick
+  .spacefill .wire), `setColor(CommandColor, atoms:)` (rgba 0…1), `setLabels(LabelKind?)` (.atoms .charges, nil = off),
+  `addMeasurement(atoms:)`, `rotate(axis: Axis, degrees:)`, `fitView()`, `viewAlong(Axis)`, `addHydrogens()`,
+  `cleanGeometry()`, `runXTBOptimization(options:)` (synchronous entry; start your own Task), `showOrbital(OrbitalSelector)`
+  (`.homo(k)` `.lumo(k)` relative, `.index(n)` 1-based), `showVibration(Int?)` (1-based mode; nil = stop),
+  `exportImage(to:width:height:)`, `undo() -> Bool`, `redo() -> Bool`. Throw `CommandError("msg")` to report failures.
+- Commands (`CommandRegistry.standard`; unique prefixes and aliases resolve, typos get "Did you mean"):
+  `open <path…>` (globs), `save <path> [format]`, `cd [path]`, `pwd`, `ls [path|glob]`, `close`, `select [spec]`,
+  `hide|show [hydrogens|spec]`, `style ball|stick|spacefill|wire`, `color <spec> <name|#hex>`, `label on|off [atoms|charges]`,
+  `measure distance i j | angle i j k | dihedral i j k l`, `turn x|y|z <deg>`, `view [x|y|z]`, `bond i j [order]`,
+  `unbond i j`, `element i Sym`, `addh`, `clean`, `info`, `xtb opt [opts…]`, `orbital homo|lumo|homo-N|lumo+N|N`,
+  `vibration N|off`, `export image <path> [w h]`, `undo`, `redo`, `help [command]`.
+- Syntax: whitespace words, `'…'`/`"…"` quoting with backslash escapes, `;` or newline separates commands, `#` starts a
+  comment (except colour literals like `#ff8800`). Atom spec (`AtomSpec.parse`): `all none sel fragment N within R of X`,
+  lists `1-5,8,C,O`, combined with `| & ~` or `or and not`, parentheses.
+- Console helpers: `CommandHistory` (`add`, `previous()`, `next()`, `resetCursor()`, `save(to:)`, `load(from:)`, max 500),
+  `CommandCompleter.candidates(for: line, cursor:, cwd:, molecule:) -> [String]` (each candidate replaces the word being
+  completed: command names, paths for open/cd/ls/save/export, keywords, element symbols, colour names),
+  `CommandPaths.resolve/expand/hasWildcard`, `CommandRegistry.allNames`, `.lookup(_:)`, `.register(_:)` for app-specific
+  commands (`CommandDefinition(name:aliases:usage:summary:handler:)`).
+- Checks: `command.*` (`Sources/MolChecks/CommandChecks.swift`, parser + executor against a mock context).
+
+**CalculationInfo for more programs (MolIO) — for Lead C's info card**
+- Gaussian (`GaussianRunInfo.swift`, `GaussianLog.runInfo(text:)`, copied to `result.extras.info`): route → method/family/
+  reference (R/U/RO, RKS/UKS), basis, job types, SCRF model/solvent, dispersion (EmpiricalDispersion/GD3/GD3BJ), Link 0
+  `%nprocshared`/`%mem`, charge/multiplicity, NBasis, alpha+beta electrons, elapsed time (summed over steps); the program version is in `extras.programVersion`.
+- Q-Chem (`QChemRunInfo.swift`) and xtb (`XTBRunInfo.swift`, `XTBOutput.info`) fill the same struct. Checks: `io.gaussian.info.*`,
+  `io.qchem.info.*`, `io.xtb.info.*`.
+
+**Protein bond orders (MolIO, `PDBResidueBonds.swift`) — for Leads B/C**
+- `MolecularFileLoader.load` now returns PDB models passed through `PDBResidueBondOrders.prepared(_:records:)` when they contain
+  standard amino-acid ATOM records: missing bonds are added by distance (stated CONECT bonds/orders kept, as `IOBridge.prepared` does),
+  then residue templates set orders: backbone C=O (OXT single), one C=O for Asp/Glu/Asn/Gln, one C=N for Arg, Kekulé rings for
+  Phe/Tyr/Trp/His (His tautomer from HD1/HE2), everything else in standard residues single. Ligands/water untouched.
+  `PDBFormat.parse` is unchanged. Also `PDBResidueBondOrders.apply(to:records:)`, `doubleBondPairs(residue:atomNames:)`,
+  `standardResidues`, `PDBFile.withResidueBondOrders()`. Checks: `io.pdb.residueOrders.*` (fixture `TestData/io/pdb_peptide_orders.pdb`).
+  Note for Lead C: the app should NOT run `perceiveBondOrders()` on top of these (it only does so when bonds are empty, so it won't).
+
+Change log (Lead A, round 3):
+- Release builds: `swift build -c release` of `molscope-check` failed because the IO check files used `@testable import MolIO`
+  (release modules are built without `-enable-testing`; the error is reported as "unable to resolve Swift module dependency … 'MolIO'").
+  Fixed by using plain `import MolIO` in `Sources/MolChecks/IOChecks*.swift`. **Do not use `@testable import` in MolChecks.** Package.swift unchanged.
+- Lead A (round 3, replacement): the switch to plain `import MolIO` left `IOChecks+RunInfo.swift` / `IOChecks+RunInfo2.swift`
+  calling internal helpers, so the debug build of molscope-check broke. Now public: `OrcaOutput.runInfo(text:inputLines:keywordLines:)`,
+  `OrcaOutput.totalRunTime(_:)`, `QChemOutput.runInfo(lines: [Substring])`, `XTBOutput.runInfo(lines: [String])`; RunInfo2 no longer
+  uses `@testable`. Still `@testable import MolRender` (Lead B): `RenderChecks+Features.swift` and `RenderChecks+Vibration.swift`,
+  which failed `swift build -c release` of molscope-check in the same way. **Package.swift (release-build fix, Lead A):** every library
+  target now has `swiftSettings: testable` = `.unsafeFlags(["-enable-testing"], .when(configuration: .release))`, so `@testable import`
+  resolves in release too; `swift build -c release` of the whole package (VibeView + molscope-check) succeeds. Prefer plain imports anyway.
+  Also public now: `Link0.absorb(_:)`, `GaussianZMatrix.rowPositions()` (used by `IOChecks+GaussianInput.swift`).
+
+## Round 3 — Lead B (Visualization) MolRender API, additive only
+Existing members are unchanged. New `RenderOptions` keys decode leniently (old saved options still load).
+- **GPU vibration (default):** `VibrationAnimator.play` now builds one merged mesh with per-vertex displacement attributes and animates it in a SceneKit geometry shader. The per-frame scalar `amplitude·sin(phase)` is written on the render thread through `view.delegate` (an internal `SCNSceneRendererDelegate`; **don't set `renderer.view.delegate` yourself while a mode plays**). Bonds stretch and rotate correctly, because the shader rebuilds each tube around the displaced axis. The atom/bond layers are hidden while it plays. `renderer.molecule` keeps the base coordinates unless overlays follow atoms (labels, measurements, selection/hover highlight, H-bonds). In that case a light 60 Hz main-thread timer moves only those overlays. New members: `useGPU` (true; false = round-2 CPU path), `isGPUActive`, `lastFrameWork`. Unchanged: `amplitude`/`cyclesPerSecond` (changing them keeps the phase continuous, no rebuild), `pause`/`resume`, `stop`, `tick(time:)` (poses explicitly and holds the GPU mesh at that phase). Calling `updatePositions` during playback rebases the vibration on the new coordinates. `AnimationExporter.exportVibration` suspends a live vibration and resumes it afterwards.
+- **Bond orders / aromatic bonds:** every double bond is now drawn as two equal cylinders at ±d about the atom–atom axis, in the ring plane or a stable neighbor plane. Triple bonds are three equal cylinders at 0 and ±d. The radius and spacing scale with the bond radius, and the outer edge stays below 0.8× the smaller atom radius (checked). Constants: `BondGeometry.doubleHalfFactor` (2.0), `offsetFactor` (2.6), `multiRadiusFactor` (0.5). `RenderOptions.aromaticStyle: AromaticBondStyle` has three cases. `.kekule` is the default and draws aromatic bonds as single/double from MolCore `Molecule.kekuleDisplayOrders()`. `.dashed` draws a symmetric solid and dashed pair. `.circle` draws single lines plus a torus inside each aromatic ring (node `bond:ringcircle:<k>`, ball-and-stick below the merge threshold; `BondGeometry.aromaticRingCircles(molecule:options:)`). Known gap: a linear molecule's triple bond uses a fixed perpendicular, so viewed exactly along it the three lines overlap.
+- **Drag tools:** `MoleculeRenderer.dragTool: DragTool` (`.rotate` default, `.boxSelect`, `.lasso`, `.moveSelection`). With `.rotate`, shift-option-drag gives a lasso. Lasso semantics: no modifier replaces, shift adds, command or option subtracts. `onLassoSelect: (Set<Int>, ModifierFlags)`. `.moveSelection`: drag translates the selected atoms in the view plane, option-drag rotates them about their centroid, and an empty selection orbits. **`onSelectionMoved: ([Vec3] before, [Vec3] after)`** fires at mouse-up; the renderer already shows `after`, so the app commits it to the document with undo. Programmatic: `performLassoSelect(_:modifiers:)`, `performSelectionDrag(dx:dy:rotate:)`, `atomsInViewPolygon(_:)`. Pure helpers: `LassoMath`, `SelectionCombine`, `SelectionMoveMath`.
+- **Hover:** picks are throttled to 120 Hz (the last point of a burst is always picked) and cached per camera/coordinate revision. Tooltip model `HoverTooltip` (`title` "C3", `subtitle` "Carbon"/"Double bond", `rows` [label, value]: charge, label, bonded neighbors, bond length, and the values of any `options.measurements` the target is part of, `accent`, `plainText`), `HoverTooltip.make(_ HoverInfo, molecule:, measurements:)`. **Drop-in UI:** `ZStack { MoleculeSceneView(renderer: r); HoverTooltipOverlay(renderer: r) }` (it doesn't take hits; appears after `r.hoverTooltipModel.showDelay` = 60 ms and moves instantly between targets) or `HoverTooltipView(tooltip:)` directly. `renderer.hoverTooltipModel: HoverTooltipModel` (ObservableObject: `tooltip`, `location`, `visible`).
+- **Overlays/features:** `showHydrogenBonds` (false), `hydrogenBondMaxDistance` (2.5 Å H···A), `hydrogenBondMinAngle` (120°), `hydrogenBondColor`; `HydrogenBonds.find(in:maxDistance:minAngle:) -> [HydrogenBond]` (`donor`, `hydrogen`, `acceptor`, `distance`, `angle`), `renderer.hydrogenBonds()`. Slab: `slabNear`/`slabFar: Double?` (Å in front of/behind the camera target; nil = no clip; follows zoom). `showAxes` (corner xyz triad), `showScaleBar` (Å bar at the target depth); both are live-view CALayer overlays and don't appear in exported images. `centerOnDoubleClick` (true; double-clicking an atom also re-targets the camera), `centerOn(atom:animated:)`. Live measurement monitors: `measurementValues() -> [Double]`, `onMeasurementValues: ([Double]) -> Void` (fires on every overlay rebuild: trajectory frames, vibration overlay updates, edits). `worldPerPointAtTarget()`.
+- **Orbitals / isosurfaces:**
+  - `SurfaceDisplayMode` is now `.solid, .transparent, .wireframe, .mesh, .points`; `.mesh` is kept as a legacy alias for line rendering. Lead C should add UI entries for `.transparent` and `.wireframe`.
+  - `OrbitalColorScheme` (`positive`, `negative`, `.occupied` red/blue, `.virtual` green/yellow, `forOccupation(occupied:)`). Pick it by occupation with `Isosurface(id:meshes:colors:)` or `isosurface.apply(scheme)`. `positiveColor`/`negativeColor` stay user-editable.
+  - `Isosurface.smoothingIterations` (4, Taubin smoothing that preserves volume, after welding) and `transparentOpacity` (0.55).
+  - **Default change:** `Isosurface.opacity` is now 1.0 (opaque `.solid`). Set it explicitly for a translucent `.solid`, or use `.transparent`.
+  - `IsosurfaceSmoothing.weld/taubin/smoothNormals/signedVolume`.
+  - Transparent mode draws back faces, then front faces.
+  - `fitToView`/`boundingSphere` now include visible isosurfaces, so lobes are no longer clipped.
+  - Grid recommendation for Lead D: 0.15–0.18 Å spacing for small molecules (0.15 Å was smooth for H2CO), keeping the `maxPoints` cap.

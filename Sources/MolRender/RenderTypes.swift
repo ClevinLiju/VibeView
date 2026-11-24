@@ -35,6 +35,11 @@ public enum LabelMode: String, Sendable, Codable, CaseIterable {
     case none, element, index, elementIndex, charge, custom   // custom = Atom.label
 }
 
+/// How aromatic bonds (BondOrder.aromatic) are drawn when `showBondOrders` is on.
+/// kekule = alternating single/double from a Kekulé structure, inner line offset toward the ring center (default);
+/// dashed = one solid line plus a dashed inner line; circle = single bonds plus a ring circle inside each aromatic ring.
+public enum AromaticBondStyle: String, Sendable, Codable, CaseIterable { case kekule, dashed, circle }
+
 public enum ProjectionMode: String, Sendable, Codable, CaseIterable { case perspective, orthographic }
 
 /// Surface look. All presets except `.flat` are physically based (energy-conserving, work with
@@ -135,6 +140,8 @@ public struct RenderOptions: Sendable, Hashable, Codable {
     public var bondColor: RGBA = RGBA(0.6, 0.6, 0.6)
     /// Draw double/triple/aromatic bonds as multiple cylinders.
     public var showBondOrders: Bool = true
+    /// Aromatic bond drawing (round 3). Default `.kekule`.
+    public var aromaticStyle: AromaticBondStyle = .kekule
     /// Bonds drawn dashed (partial bonds, TS bonds, H-bonds).
     public var dashedBonds: Set<AtomPair> = []
     public var showHydrogens: Bool = true
@@ -169,6 +176,23 @@ public struct RenderOptions: Sendable, Hashable, Codable {
     public var depthOfField: Bool = false
     public var depthOfFieldFStop: Double = 2.8
     public var projection: ProjectionMode = .perspective
+
+    // Round 3 overlays
+    /// Dashed hydrogen-bond lines D-H...A (A, D in N/O/F/S/Cl) with H...A <= `hydrogenBondMaxDistance` Å
+    /// and angle D-H...A >= `hydrogenBondMinAngle` degrees. Computed, not stored as bonds.
+    public var showHydrogenBonds: Bool = false
+    public var hydrogenBondMaxDistance: Double = 2.5
+    public var hydrogenBondMinAngle: Double = 120
+    public var hydrogenBondColor: RGBA = RGBA(0.25, 0.65, 1.0)
+    /// Slab clipping relative to the camera target, in Å along the view direction: geometry nearer than
+    /// `target - slabNear` (toward the camera) or farther than `target + slabFar` is cut. nil = no clip.
+    public var slabNear: Double? = nil
+    public var slabFar: Double? = nil
+    /// Corner axis triad (x red, y green, z blue) following the camera orientation.
+    public var showAxes: Bool = false
+    /// Scale bar in Å (length chosen automatically) at the bottom of the view; valid in both projections
+    /// at the camera-target depth.
+    public var showScaleBar: Bool = false
 
     public var selectionColor: RGBA = RGBA(1.0, 0.85, 0.1, 0.55)
     public var hoverColor: RGBA = RGBA(0.3, 0.8, 1.0, 0.45)
@@ -221,7 +245,7 @@ extension RenderOptions {
         func d<T: Decodable>(_ k: CodingKeys, _ v: inout T) { if let x = try? c.decodeIfPresent(T.self, forKey: k) { v = x } }
         d(.style, &style); d(.colorScheme, &colorScheme); d(.atomScale, &atomScale); d(.bondRadius, &bondRadius)
         d(.tubeRadius, &tubeRadius); d(.wireWidth, &wireWidth); d(.splitBondColors, &splitBondColors); d(.bondColor, &bondColor)
-        d(.showBondOrders, &showBondOrders); d(.dashedBonds, &dashedBonds); d(.showHydrogens, &showHydrogens)
+        d(.showBondOrders, &showBondOrders); d(.aromaticStyle, &aromaticStyle); d(.dashedBonds, &dashedBonds); d(.showHydrogens, &showHydrogens)
         d(.geometryQuality, &geometryQuality); d(.labelMode, &labelMode); d(.labelSize, &labelSize); d(.measurements, &measurements)
         if c.contains(.unitCell) { unitCell = try? c.decodeIfPresent(UnitCell.self, forKey: .unitCell) }
         d(.showUnitCell, &showUnitCell); d(.theme, &theme)
@@ -233,5 +257,10 @@ extension RenderOptions {
         if c.contains(.outlineColor) { outlineColor = try? c.decodeIfPresent(RGBA.self, forKey: .outlineColor) }
         d(.depthOfField, &depthOfField); d(.depthOfFieldFStop, &depthOfFieldFStop); d(.projection, &projection)
         d(.selectionColor, &selectionColor); d(.hoverColor, &hoverColor)
+        d(.showHydrogenBonds, &showHydrogenBonds); d(.hydrogenBondMaxDistance, &hydrogenBondMaxDistance)
+        d(.hydrogenBondMinAngle, &hydrogenBondMinAngle); d(.hydrogenBondColor, &hydrogenBondColor)
+        if c.contains(.slabNear) { slabNear = try? c.decodeIfPresent(Double.self, forKey: .slabNear) }
+        if c.contains(.slabFar) { slabFar = try? c.decodeIfPresent(Double.self, forKey: .slabFar) }
+        d(.showAxes, &showAxes); d(.showScaleBar, &showScaleBar)
     }
 }

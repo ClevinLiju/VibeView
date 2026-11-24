@@ -62,7 +62,12 @@ enum ProgramLocator {
             if let x = env["XTBHOME"], !x.isEmpty { c += ["\(x)/bin/xtb", "\(x)/xtb"] }
             for d in pathDirs(env: env) { c.append("\(d)/xtb") }
             c += ["/opt/homebrew/bin/xtb", "/usr/local/bin/xtb"]
-            for m in ["miniconda3", "miniforge3", "mambaforge", "anaconda3"] { c.append("\(home)/\(m)/bin/xtb") }
+            for m in ["miniconda3", "miniforge3", "mambaforge", "anaconda3"] {
+                c.append("\(home)/\(m)/bin/xtb")
+                // Named conda environments, e.g. ~/miniconda3/envs/science/bin/xtb
+                let envs = "\(home)/\(m)/envs"
+                for e in ((try? FileManager.default.contentsOfDirectory(atPath: envs)) ?? []).sorted() { c.append("\(envs)/\(e)/bin/xtb") }
+            }
         }
         var seen = Set<String>()
         return c.filter { seen.insert($0).inserted }

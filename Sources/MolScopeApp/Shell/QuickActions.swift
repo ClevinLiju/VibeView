@@ -20,7 +20,7 @@ extension EditorModel {
         guard let exe = XTBAvailability.executable else {
             let a = NSAlert()
             a.messageText = "xtb is not installed"
-            a.informativeText = "MolScope uses the free xtb program (GFN2-xTB) for fast optimizations. Install it (for example with “brew install xtb” or conda-forge) or set its location in Settings ▸ Programs. Meanwhile you can use Clean Up Geometry (⇧⌘K), which runs the built-in force field."
+            a.informativeText = "VibeView uses the free xtb program (GFN2-xTB) for fast optimizations. Install it (for example with “brew install xtb” or conda-forge) or set its location in Settings ▸ Programs. Meanwhile you can use Clean Up Geometry (⇧⌘K), which runs the built-in force field."
             a.addButton(withTitle: "Clean Up Instead")
             a.addButton(withTitle: "Cancel")
             if a.runModal() == .alertFirstButtonReturn { cleanGeometry() }
@@ -129,7 +129,7 @@ struct PubChemSheet: View {
     }
 
     private func openInNewWindow(_ m: Molecule, name: String) throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("MolScope-PubChem", isDirectory: true)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("VibeView-PubChem", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let safe = name.replacingOccurrences(of: "/", with: "-").prefix(60)
         let url = dir.appendingPathComponent("\(safe).mol")

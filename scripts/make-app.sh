@@ -1,22 +1,25 @@
 #!/bin/bash
-# Build MolScope in release mode and assemble an ad-hoc signed MolScope.app.
+# Build VibeView in release mode and assemble an ad-hoc signed VibeView.app.
 # Usage: scripts/make-app.sh [output-dir]   (default: ./dist)
 set -euo pipefail
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/dist}"
-SCRATCH="${MOLSCOPE_SCRATCH:-$ROOT/.build-app}"
-VERSION="${MOLSCOPE_VERSION:-0.1.0}"
-APP="$OUT/MolScope.app"
+SCRATCH="${VIBEVIEW_SCRATCH:-${MOLSCOPE_SCRATCH:-$ROOT/.build-app}}"
+FILE_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)"
+VERSION="${VIBEVIEW_VERSION:-${MOLSCOPE_VERSION:-${FILE_VERSION:-0.3.0}}}"
+APP="$OUT/VibeView.app"
 
 echo "==> Building release (scratch: $SCRATCH)"
-swift build -c release --product MolScope --package-path "$ROOT" --scratch-path "$SCRATCH"
-BIN="$(swift build -c release --product MolScope --package-path "$ROOT" --scratch-path "$SCRATCH" --show-bin-path)/MolScope"
+swift build -c release --product VibeView --package-path "$ROOT" --scratch-path "$SCRATCH"
+BIN="$(swift build -c release --product VibeView --package-path "$ROOT" --scratch-path "$SCRATCH" --show-bin-path)/VibeView"
 
 echo "==> Assembling $APP"
+# remove stale pre-rename artifacts
+rm -rf "$OUT/MolScope.app" "$OUT"/MolScope*.dmg
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/MolScope"
+cp "$BIN" "$APP/Contents/MacOS/VibeView"
 # SwiftPM resource bundles (if any target ships resources)
 BINDIR="$(dirname "$BIN")"
 for b in "$BINDIR"/*.bundle; do
@@ -28,8 +31,13 @@ done
 echo "==> Generating icon"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-swift "$ROOT/scripts/make-icon.swift" "$TMP/MolScope.iconset" >/dev/null
-iconutil -c icns "$TMP/MolScope.iconset" -o "$APP/Contents/Resources/MolScope.icns"
+# Rendered by the app itself (MolRender, two waters forming a "W"); the drawn fallback needs no GPU/window server.
+if ! "$BIN" --render-icon "$TMP/VibeView.iconset" >/dev/null 2>&1 || [ ! -f "$TMP/VibeView.iconset/icon_512x512@2x.png" ]; then
+  echo "    (renderer icon unavailable, using scripts/make-icon.swift)"
+  rm -rf "$TMP/VibeView.iconset"
+  swift "$ROOT/scripts/make-icon.swift" "$TMP/VibeView.iconset" >/dev/null
+fi
+iconutil -c icns "$TMP/VibeView.iconset" -o "$APP/Contents/Resources/VibeView.icns"
 
 echo "==> Writing Info.plist"
 doc() { # name uti role rank exts...
@@ -38,42 +46,45 @@ doc() { # name uti role rank exts...
 }
 uti() { # uti desc conforms exts...
   local id="$1" desc="$2" conf="$3"; shift 3
-  printf '    <dict>\n      <key>UTTypeIdentifier</key><string>%s</string>\n      <key>UTTypeDescription</key><string>%s</string>\n      <key>UTTypeConformsTo</key><array><string>%s</string></array>\n      <key>UTTypeIconFile</key><string>MolScope</string>\n      <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array>' "$id" "$desc" "$conf"
+  printf '    <dict>\n      <key>UTTypeIdentifier</key><string>%s</string>\n      <key>UTTypeDescription</key><string>%s</string>\n      <key>UTTypeConformsTo</key><array><string>%s</string></array>\n      <key>UTTypeIconFile</key><string>VibeView</string>\n      <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array>' "$id" "$desc" "$conf"
   for e in "$@"; do printf '<string>%s</string>' "$e"; done
   printf '</array></dict>\n    </dict>\n'
 }
 # name | uti | role | conforms | extensions  (must match Sources/MolScopeApp/Core/MoleculeDocument.swift)
 FORMATS=(
-  "Gaussian Input|org.molscope.gaussian-input|Editor|public.plain-text|gjf com"
-  "Calculation Output|org.molscope.gaussian-output|Viewer|public.plain-text|log out"
-  "ORCA Input|org.molscope.orca-input|Viewer|public.plain-text|inp"
-  "Molden File|org.molscope.molden|Viewer|public.plain-text|molden"
-  "ORCA Hessian|org.molscope.orca-hessian|Viewer|public.plain-text|hess"
-  "Formatted Checkpoint|org.molscope.fchk|Viewer|public.plain-text|fchk fch"
-  "Cube File|org.molscope.cube|Viewer|public.plain-text|cube cub"
-  "XYZ Coordinates|org.molscope.xyz|Editor|public.plain-text|xyz"
-  "Protein Data Bank File|org.molscope.pdb|Editor|public.plain-text|pdb ent"
-  "MDL Molfile|org.molscope.mol|Editor|public.plain-text|mol"
-  "SD File|org.molscope.sdf|Editor|public.plain-text|sdf sd"
-  "Chemical Markup Language|org.molscope.cml|Editor|public.xml|cml"
+  "Gaussian Input|io.github.clevinliju.vibeview.gaussian-input|Editor|public.plain-text|gjf com"
+  "Calculation Output|io.github.clevinliju.vibeview.gaussian-output|Viewer|public.plain-text|log out"
+  "ORCA Input|io.github.clevinliju.vibeview.orca-input|Viewer|public.plain-text|inp"
+  "Molden File|io.github.clevinliju.vibeview.molden|Viewer|public.plain-text|molden"
+  "ORCA Hessian|io.github.clevinliju.vibeview.orca-hessian|Viewer|public.plain-text|hess"
+  "Formatted Checkpoint|io.github.clevinliju.vibeview.fchk|Viewer|public.plain-text|fchk fch"
+  "Cube File|io.github.clevinliju.vibeview.cube|Viewer|public.plain-text|cube cub"
+  "XYZ Coordinates|io.github.clevinliju.vibeview.xyz|Editor|public.plain-text|xyz"
+  "Protein Data Bank File|io.github.clevinliju.vibeview.pdb|Editor|public.plain-text|pdb ent"
+  "MDL Molfile|io.github.clevinliju.vibeview.mol|Editor|public.plain-text|mol"
+  "SD File|io.github.clevinliju.vibeview.sdf|Editor|public.plain-text|sdf sd"
+  "Chemical Markup Language|io.github.clevinliju.vibeview.cml|Editor|public.xml|cml"
 )
 DOCS=""; UTIS=""
+SESSION_ID="io.github.clevinliju.vibeview.session"
 for f in "${FORMATS[@]}"; do
   IFS='|' read -r name id role conf exts <<<"$f"
   DOCS+="$(doc "$name" "$id" "$role")"$'\n'
   # shellcheck disable=SC2086
   UTIS+="$(uti "$id" "$name" "$conf" $exts)"$'\n'
 done
+DOCS+="$(doc "VibeView Session" "$SESSION_ID" "Editor")"$'\n'
+UTIS+="$(uti "$SESSION_ID" "VibeView Session" "public.json" vibeview)"$'\n'
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>MolScope</string>
-  <key>CFBundleDisplayName</key><string>MolScope</string>
-  <key>CFBundleIdentifier</key><string>org.molscope.MolScope</string>
-  <key>CFBundleExecutable</key><string>MolScope</string>
-  <key>CFBundleIconFile</key><string>MolScope</string>
+  <key>CFBundleName</key><string>VibeView</string>
+  <key>CFBundleDisplayName</key><string>VibeView</string>
+  <key>CFBundleIdentifier</key><string>io.github.clevinliju.VibeView</string>
+  <key>CFBundleExecutable</key><string>VibeView</string>
+  <key>CFBundleIconFile</key><string>VibeView</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
@@ -84,7 +95,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-  <key>NSHumanReadableCopyright</key><string>MolScope — open-source molecular builder and viewer.</string>
+  <key>NSHumanReadableCopyright</key><string>VibeView — open-source molecular builder and viewer. MIT License.</string>
   <key>CFBundleDocumentTypes</key>
   <array>
 $DOCS    <dict>
@@ -109,11 +120,11 @@ for f in "$ROOT"/Sources/MolCore/*.swift "$ROOT"/Sources/MolIO/*.swift; do
   sed -E '/^(@_exported )?import (MolCore|MolIO)$/d' "$f" > "$QLSRC/${d}_$(basename "$f")"
 done
 cp "$ROOT"/Extensions/QuickLook/*.swift "$QLSRC/"
-APPEX="$APP/Contents/PlugIns/MolScopeQuickLook.appex"
+APPEX="$APP/Contents/PlugIns/VibeViewQuickLook.appex"
 mkdir -p "$APPEX/Contents/MacOS"
-xcrun swiftc -O -parse-as-library -application-extension -module-name MolScopeQuickLook \
+xcrun swiftc -O -parse-as-library -application-extension -module-name VibeViewQuickLook \
   -target arm64-apple-macos14.0 -swift-version 5 -framework QuickLookUI \
-  -Xlinker -e -Xlinker _NSExtensionMain "$QLSRC"/*.swift -o "$APPEX/Contents/MacOS/MolScopeQuickLook"
+  -Xlinker -e -Xlinker _NSExtensionMain "$QLSRC"/*.swift -o "$APPEX/Contents/MacOS/VibeViewQuickLook"
 QLUTIS=""
 for f in "${FORMATS[@]}"; do IFS='|' read -r _ id _ _ _ <<<"$f"; QLUTIS+="        <string>$id</string>"$'\n'; done
 python3 - "$ROOT/Extensions/QuickLook/Info.plist" "$APPEX/Contents/Info.plist" "$VERSION" "$QLUTIS" <<'PY'

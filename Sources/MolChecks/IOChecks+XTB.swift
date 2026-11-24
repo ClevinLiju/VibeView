@@ -1,7 +1,7 @@
 import simd
 import Foundation
 import MolCore
-@testable import MolIO
+import MolIO
 
 // xtb checks (worker W1). xtb is not installed here: the fixtures in TestData/io/xtb/ are hand-written
 // from the public xtb documentation (stdout summary, xtbopt.xyz/xtbopt.log, Turbomole-style `gradient`,

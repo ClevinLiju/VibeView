@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-@testable import MolIO
+import MolIO
 
 // MARK: helpers (fileprivate, unique to this file)
 

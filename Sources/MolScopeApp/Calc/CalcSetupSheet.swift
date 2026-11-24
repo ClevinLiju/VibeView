@@ -12,6 +12,7 @@ struct CalcSetupSheet: View {
     @Environment(\.openWindow) private var openWindow
     @State private var setup: CalcSetup
     @State private var message = ""
+    @State private var iterations = CalcIterations()
 
     init(editor: EditorModel) {
         self.editor = editor
@@ -48,7 +49,9 @@ struct CalcSetupSheet: View {
     }
 
     private var problems: [String] { setup.validate(molecule: editor.molecule) }
-    private var inputText: String { setup.inputText(molecule: editor.molecule) }
+    private var inputText: String {
+        iterations.apply(to: setup.inputText(molecule: editor.molecule), program: setup.program, jobType: setup.jobType)
+    }
     private var inputName: String { "job." + setup.program.inputExtension }
     private var preview: String {
         guard setup.program == .xtb else { return inputText }
@@ -200,10 +203,16 @@ struct CalcSetupSheet: View {
             if setup.program == .gaussian {
                 Picker("Output detail", selection: $setup.printLevel) { ForEach(PrintLevel.allCases) { Text($0.title).tag($0) } }
             }
+            if CalcIterations.supports(setup.program) {
+                OptionalCountField(title: "SCF max iterations", value: $iterations.scfMaxIter, prompt: "default")
+                if setup.jobType != .energy && setup.jobType != .frequency && setup.jobType != .nmr && setup.jobType != .excitedStates {
+                    OptionalCountField(title: "Optimization max steps", value: $iterations.optMaxIter, prompt: "default")
+                }
+            }
             TextField(setup.program == .qchem ? "Extra $rem lines" : "Extra keywords", text: $setup.extraKeywords,
                       prompt: Text(extraPrompt))
                 .font(.system(.body, design: .monospaced))
-            TextField("Title", text: $setup.title, prompt: Text(editor.molecule.title.isEmpty ? "MolScope calculation" : editor.molecule.title))
+            TextField("Title", text: $setup.title, prompt: Text(editor.molecule.title.isEmpty ? "VibeView calculation" : editor.molecule.title))
         }
     }
 
@@ -264,7 +273,7 @@ struct CalcSetupSheet: View {
 
     private func run() {
         do {
-            try queue.submit(setup: setup, molecule: editor.molecule, name: Self.baseName(editor), documentURL: editor.fileURL)
+            try queue.submit(setup: setup, molecule: editor.molecule, name: Self.baseName(editor), documentURL: editor.fileURL, iterations: iterations)
             editor.statusMessage = "Queued \(setup.program.title) job"
             openWindow(id: "job-queue")
             dismiss()

@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-@testable import MolIO
+import MolIO
 
 // Calculation-setup extraction (CalculationInfo) from real ORCA 6.1.1 outputs in TestData/io/orca/.
 

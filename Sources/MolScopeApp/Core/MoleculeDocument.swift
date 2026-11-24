@@ -7,18 +7,18 @@ import MolIO
 // SHARED APP CORE (owned by Lead 4). Reading/writing is delegated to IOBridge.
 
 public extension UTType {
-    static let gaussianInput = UTType(exportedAs: "org.molscope.gaussian-input", conformingTo: .plainText)
-    static let gaussianOutput = UTType(exportedAs: "org.molscope.gaussian-output", conformingTo: .plainText)
-    static let formattedCheckpoint = UTType(exportedAs: "org.molscope.fchk", conformingTo: .plainText)
-    static let cubeFile = UTType(exportedAs: "org.molscope.cube", conformingTo: .plainText)
-    static let xyzFile = UTType(exportedAs: "org.molscope.xyz", conformingTo: .plainText)
-    static let pdbFile = UTType(exportedAs: "org.molscope.pdb", conformingTo: .plainText)
-    static let mdlMolFile = UTType(exportedAs: "org.molscope.mol", conformingTo: .plainText)
-    static let sdfFile = UTType(exportedAs: "org.molscope.sdf", conformingTo: .plainText)
-    static let cmlFile = UTType(exportedAs: "org.molscope.cml", conformingTo: .xml)
-    static let orcaInput = UTType(exportedAs: "org.molscope.orca-input", conformingTo: .plainText)
-    static let moldenFile = UTType(exportedAs: "org.molscope.molden", conformingTo: .plainText)
-    static let orcaHessian = UTType(exportedAs: "org.molscope.orca-hessian", conformingTo: .plainText)
+    static let gaussianInput = UTType(exportedAs: "io.github.clevinliju.vibeview.gaussian-input", conformingTo: .plainText)
+    static let gaussianOutput = UTType(exportedAs: "io.github.clevinliju.vibeview.gaussian-output", conformingTo: .plainText)
+    static let formattedCheckpoint = UTType(exportedAs: "io.github.clevinliju.vibeview.fchk", conformingTo: .plainText)
+    static let cubeFile = UTType(exportedAs: "io.github.clevinliju.vibeview.cube", conformingTo: .plainText)
+    static let xyzFile = UTType(exportedAs: "io.github.clevinliju.vibeview.xyz", conformingTo: .plainText)
+    static let pdbFile = UTType(exportedAs: "io.github.clevinliju.vibeview.pdb", conformingTo: .plainText)
+    static let mdlMolFile = UTType(exportedAs: "io.github.clevinliju.vibeview.mol", conformingTo: .plainText)
+    static let sdfFile = UTType(exportedAs: "io.github.clevinliju.vibeview.sdf", conformingTo: .plainText)
+    static let cmlFile = UTType(exportedAs: "io.github.clevinliju.vibeview.cml", conformingTo: .xml)
+    static let orcaInput = UTType(exportedAs: "io.github.clevinliju.vibeview.orca-input", conformingTo: .plainText)
+    static let moldenFile = UTType(exportedAs: "io.github.clevinliju.vibeview.molden", conformingTo: .plainText)
+    static let orcaHessian = UTType(exportedAs: "io.github.clevinliju.vibeview.orca-hessian", conformingTo: .plainText)
 }
 
 /// One entry per supported format. `ext` is the canonical extension passed to IOBridge.
@@ -82,7 +82,7 @@ public struct MoleculeDocument: FileDocument {
         // Never write structure text over a calculation log or other read-only source file.
         guard let fmt = MolFormat.all.first(where: { $0.type == configuration.contentType }), fmt.canWrite else {
             throw CocoaError(.fileWriteUnsupportedScheme, userInfo: [NSLocalizedDescriptionKey:
-                "This file type is read-only in MolScope. Use File ▸ Save As… or Duplicate to save the structure as .gjf, .xyz, .mol, .pdb or .cml."])
+                "This file type is read-only in VibeView. Use File ▸ Save As… or Duplicate to save the structure as .gjf, .xyz, .mol, .pdb or .cml."])
         }
         let data = try IOBridge.write(molecule, ext: fmt.ext)
         return FileWrapper(regularFileWithContents: data)

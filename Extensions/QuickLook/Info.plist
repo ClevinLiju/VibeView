@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleDisplayName</key><string>MolScope Preview</string>
-  <key>CFBundleExecutable</key><string>MolScopeQuickLook</string>
-  <key>CFBundleIdentifier</key><string>org.molscope.MolScope.QuickLook</string>
+  <key>CFBundleDisplayName</key><string>VibeView Preview</string>
+  <key>CFBundleExecutable</key><string>VibeViewQuickLook</string>
+  <key>CFBundleIdentifier</key><string>io.github.clevinliju.VibeView.QuickLook</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>MolScopeQuickLook</string>
+  <key>CFBundleName</key><string>VibeViewQuickLook</string>
   <key>CFBundlePackageType</key><string>XPC!</string>
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundleVersion</key><string>__VERSION__</string>
@@ -15,7 +15,7 @@
   <key>NSExtension</key>
   <dict>
     <key>NSExtensionPointIdentifier</key><string>com.apple.quicklook.preview</string>
-    <key>NSExtensionPrincipalClass</key><string>MolScopeQuickLook.PreviewProvider</string>
+    <key>NSExtensionPrincipalClass</key><string>VibeViewQuickLook.PreviewProvider</string>
     <key>NSExtensionAttributes</key>
     <dict>
       <key>QLIsDataBasedPreview</key><true/>

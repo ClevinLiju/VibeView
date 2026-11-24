@@ -232,7 +232,12 @@ public struct GaussianLog: Sendable, Codable, Equatable {
     public static func parse(_ text: String) throws -> GaussianLog {
         var p = GaussianLogParser(lines: splitLines(text))
         try p.run()
-        return try p.finish()
+        var log = try p.finish()
+        if var x = log.result.extras {
+            x.info = runInfo(text: text)
+            log.result.extras = x
+        }
+        return log
     }
 
     public static func read(url: URL) throws -> GaussianLog {

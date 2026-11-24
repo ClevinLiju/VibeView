@@ -39,7 +39,10 @@ struct JobQueueView: View {
                 List(selection: $selection) {
                     ForEach(queue.jobs.reversed()) { job in
                         JobRow(job: job).tag(job.id)
+                            .contentShape(Rectangle())
+                            .simultaneousGesture(TapGesture(count: 2).onEnded { LogWindow.show(job: job) })
                             .contextMenu {
+                                Button("Show Log") { LogWindow.show(job: job) }
                                 Button("Reveal in Finder") { queue.reveal(job.id) }
                                 if job.status.isActive { Button("Cancel") { queue.cancel(job.id) } }
                                 else { Button("Remove") { queue.remove(job.id) } }
@@ -110,6 +113,8 @@ private struct JobDetail: View {
                 if job.status.isActive {
                     Button { queue.cancel(job.id) } label: { Label("Cancel", systemImage: "stop.fill") }
                 }
+                Button { LogWindow.show(job: job) } label: { Label("Show Log", systemImage: "text.alignleft") }
+                    .help("Open the streaming log viewer in its own window")
                 Button { queue.reveal(job.id) } label: { Label("Reveal in Finder", systemImage: "folder") }
                 Button { queue.openResult(job.id) } label: { Label("Open Result", systemImage: "doc.text.magnifyingglass") }
                     .disabled(!FileManager.default.fileExists(atPath: job.outputURL.path))

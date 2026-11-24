@@ -2,11 +2,18 @@ import Foundation
 import MolCore
 import MolIO
 
-public enum XTBTask: String, Sendable, CaseIterable { case singlePoint, optimize, hessian }
-public enum XTBMethod: String, Sendable, CaseIterable {
-    case gfn2, gfn1, gfnff
-    var flag: [String] {
-        switch self { case .gfn2: return ["--gfn", "2"]; case .gfn1: return ["--gfn", "1"]; case .gfnff: return ["--gfnff"] }
+public enum XTBTask: String, Sendable, CaseIterable, Codable { case singlePoint, optimize, hessian }
+public enum XTBMethod: String, Sendable, CaseIterable, Codable, Identifiable {
+    case gfn2, gfn1, gfnff, gfn0
+    public var id: String { rawValue }
+    public var title: String {
+        switch self { case .gfn2: "GFN2-xTB"; case .gfn1: "GFN1-xTB"; case .gfn0: "GFN0-xTB"; case .gfnff: "GFN-FF" }
+    }
+    public var flag: [String] {
+        switch self {
+        case .gfn2: return ["--gfn", "2"]; case .gfn1: return ["--gfn", "1"]; case .gfn0: return ["--gfn", "0"]
+        case .gfnff: return ["--gfnff"]
+        }
     }
 }
 
@@ -18,7 +25,15 @@ public struct XTBResult: Sendable {
     public var frequencies: [Double]     // cm^-1
     public var irIntensities: [Double]   // km/mol
     public var log: String
+    /// Run directory (input.xyz, xtb.out, xtbopt.xyz/log, ...). Deleted after the run unless the caller
+    /// passed `runDirectory`, set `keepFiles`, or used `stream(...)`.
     public var workingDirectory: URL
+    /// Optimizations: false when xtb stopped at the cycle limit without converging; nil for single points.
+    public var converged: Bool? = nil
+    /// Optimization cycles performed (from the CYCLE banners in the log).
+    public var optimizationCycles: Int? = nil
+    public var commandLine: String = ""
+    public var exitCode: Int32 = 0
 }
 
 public struct XTBRunner: Sendable {
@@ -50,58 +65,109 @@ public struct XTBRunner: Sendable {
 
     public func run(_ molecule: Molecule, task: XTBTask, method: XTBMethod = .gfn2, solvent: String? = nil,
                     threads: Int = 4, accuracy: Double = 1.0) async throws -> XTBResult {
-        let exe: URL
+        var st = XTBSettings(method: method, task: task, threads: threads)
+        if let s = solvent, !s.isEmpty { st.solvationModel = .alpb; st.solvent = s }
+        if accuracy != 1.0 { st.accuracy = accuracy }
+        return try await run(molecule, settings: st)
+    }
+
+    func resolveExecutable() throws -> URL {
         if let given = executable {
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: given.path, isDirectory: &isDir), !isDir.boolValue,
                   FileManager.default.isExecutableFile(atPath: given.path) else {
                 throw ComputeError.notInstalled(program: "xtb", searched: [given.path])
             }
-            exe = given
+            return given
         } else if let found = Self.locate(searchDirectories: searchDirectories) {
-            exe = found
-        } else {
-            throw ComputeError.notInstalled(program: "xtb", searched: searchDirectories ?? ProgramLocator.searchDirectories(for: "xtb"))
+            return found
         }
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("molscope-xtb-\(UUID().uuidString)")
+        throw ComputeError.notInstalled(program: "xtb", searched: searchDirectories ?? ProgramLocator.searchDirectories(for: "xtb"))
+    }
+
+    static func newRunDirectory() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("molscope-xtb-\(UUID().uuidString)")
+    }
+
+    /// Runs xtb with full settings. `onEvent` receives live lines: stdout/stderr and new lines of `xtbopt.log`
+    /// (tailed while running). stdout is also saved as `xtb.out` in the run directory. A passed `runDirectory`
+    /// is created if needed and kept. Throws `.invalidSettings`-style `ComputeError.parse` for invalid settings.
+    public func run(_ molecule: Molecule, settings: XTBSettings, runDirectory: URL? = nil,
+                    onEvent: (@Sendable (RunLogEvent) -> Void)? = nil) async throws -> XTBResult {
+        let problems = settings.validationErrors(molecule: molecule)
+        if !problems.isEmpty { throw ComputeError.parse("invalid xtb settings: " + problems.joined(separator: " ")) }
+        let exe = try resolveExecutable()
+        let dir = runDirectory ?? Self.newRunDirectory()
+        let keep = keepFiles || runDirectory != nil
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var ok = false
-        defer { if !ok && !keepFiles { try? FileManager.default.removeItem(at: dir) } }
+        defer { if !ok && !keep { try? FileManager.default.removeItem(at: dir) } }
         try XYZFormat.write(molecule).write(to: dir.appendingPathComponent("input.xyz"), atomically: true, encoding: .utf8)
-        var args = ["input.xyz"] + method.flag
-        switch task {
-        case .singlePoint: break
-        case .optimize: args += ["--opt"]
-        case .hessian: args += ["--ohess"]
-        }
-        args += ["--chrg", String(molecule.charge), "--uhf", String(max(0, molecule.multiplicity - 1))]
-        if let s = solvent, !s.isEmpty { args += ["--alpb", s] }
-        if accuracy != 1.0 { args += ["--acc", String(accuracy)] }
-        args += ["-P", String(max(1, threads))]
-        var env = ProcessInfo.processInfo.environment
-        env["OMP_NUM_THREADS"] = "\(max(1, threads)),1"
-        env["OMP_STACKSIZE"] = "512M"
-        let out = try await ProgramRunner.run(executable: exe, arguments: args, workingDirectory: dir, environment: env)
+        let args = settings.arguments(molecule: molecule)
+        let cmd = settings.commandLine(molecule: molecule, executable: exe.path)
+        let sink = onEvent ?? { _ in }
+        let out = try await ProgramRunner.runLogged(
+            executable: exe, arguments: args, workingDirectory: dir, environment: settings.environment(),
+            timeout: settings.timeout, throwOnFailure: false,
+            tailFiles: settings.task == .singlePoint ? [] : ["xtbopt.log"], stdoutFile: "xtb.out", onEvent: sink)
         let log = out.stdout
         guard let energy = Self.parseEnergy(log) else {
+            if out.exitCode != 0 {
+                throw ComputeError.processFailed(code: out.exitCode, stderr: out.stderr.isEmpty ? String(log.suffix(1500)) : out.stderr)
+            }
             throw ComputeError.parse("xtb output has no TOTAL ENERGY\n" + String(log.suffix(400)))
         }
         var mol = molecule
         let optURL = dir.appendingPathComponent("xtbopt.xyz")
-        if task != .singlePoint, let t = try? String(contentsOf: optURL, encoding: .utf8),
+        if settings.task != .singlePoint, let t = try? String(contentsOf: optURL, encoding: .utf8),
            let g = Self.parseXYZCoordinates(t), g.count == mol.atoms.count {
             for i in 0..<g.count { mol.atoms[i].position = g[i] }
         }
         var freqs: [Double] = [], ir: [Double] = []
-        if task == .hessian, let t = try? String(contentsOf: dir.appendingPathComponent("vibspectrum"), encoding: .utf8) {
+        if settings.task == .hessian, let t = try? String(contentsOf: dir.appendingPathComponent("vibspectrum"), encoding: .utf8) {
             (freqs, ir) = Self.parseVibSpectrum(t)
         }
-        let result = XTBResult(energy: energy, gradientNorm: Self.parseGradientNorm(log),
+        var result = XTBResult(energy: energy, gradientNorm: Self.parseGradientNorm(log),
                                homoLumoGap: Self.parseGap(log), molecule: mol, frequencies: freqs,
                                irIntensities: ir, log: log, workingDirectory: dir)
+        if settings.task != .singlePoint {
+            let notConv = FileManager.default.fileExists(atPath: dir.appendingPathComponent("NOT_CONVERGED").path)
+            result.converged = Self.parseConverged(log).map { $0 && !notConv } ?? (notConv ? false : nil)
+            result.optimizationCycles = Self.parseCycleCount(log)
+        }
+        result.commandLine = cmd
+        result.exitCode = out.exitCode
         ok = true
-        if !keepFiles { try? FileManager.default.removeItem(at: dir) }
+        if !keep { try? FileManager.default.removeItem(at: dir) }
         return result
+    }
+
+    /// Starts xtb and returns a handle with a live `events` stream, the run directory (kept after the run),
+    /// and the result task. `handle.cancel()` terminates xtb.
+    public func stream(_ molecule: Molecule, settings: XTBSettings, runDirectory: URL? = nil) -> XTBRunHandle {
+        let dir = runDirectory ?? Self.newRunDirectory()
+        let runner = self
+        return .make(runDirectory: dir) { emit in
+            try await runner.run(molecule, settings: settings, runDirectory: dir, onEvent: emit)
+        }
+    }
+
+    /// true = "GEOMETRY OPTIMIZATION CONVERGED", false = "FAILED TO CONVERGE", nil = no optimization in the log.
+    public static func parseConverged(_ log: String) -> Bool? {
+        let u = log.uppercased()
+        if u.contains("FAILED TO CONVERGE GEOMETRY") || u.contains("GEOMETRY OPTIMIZATION DID NOT CONVERGE") { return false }
+        if u.contains("GEOMETRY OPTIMIZATION CONVERGED") || u.contains("*** GEOMETRY OPTIMIZATION CONVERGED") { return true }
+        return nil
+    }
+
+    /// Number of optimization cycles (highest "CYCLE n" banner).
+    public static func parseCycleCount(_ log: String) -> Int? {
+        var best: Int?
+        for line in log.split(whereSeparator: \.isNewline) where line.contains(" CYCLE ") {
+            let toks = line.split(separator: " ")
+            if let i = toks.firstIndex(of: "CYCLE"), i + 1 < toks.count, let n = Int(toks[i + 1]) { best = max(best ?? 0, n) }
+        }
+        return best
     }
 
     // MARK: parsers (internal-public for tests)

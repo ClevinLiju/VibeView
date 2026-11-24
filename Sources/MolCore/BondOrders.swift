@@ -304,24 +304,62 @@ extension Molecule {
     /// aromatic sub-graph). Returns false (molecule unchanged) if no Kekulé structure exists.
     @discardableResult
     public mutating func kekulize() -> Bool {
+        guard bonds.contains(where: { $0.order == .aromatic }) else { return true }
+        guard let orders = kekuleAssignment(relaxPyrroleN: false, allowPartial: false) else { return false }
+        for k in bonds.indices { bonds[k].order = orders[k] }
+        return true
+    }
+
+    /// Bond orders for display (parallel to `bonds`), with every `.aromatic` bond shown as single or double
+    /// in one alternating Kekulé structure. The molecule itself is not changed (stored aromatic orders stay).
+    /// Non-aromatic bonds keep their order. Best effort: when no perfect structure exists (e.g. a pyrrole-type
+    /// N without its explicit H), the ambiguous N is treated as the lone-pair donor; failing that, a maximum
+    /// partial assignment is returned (unmatched bonds single). Deterministic for a given molecule.
+    public func kekuleDisplayOrders() -> [BondOrder] {
+        guard bonds.contains(where: { $0.order == .aromatic }) else { return bonds.map(\.order) }
+        return kekuleAssignment(relaxPyrroleN: false, allowPartial: false)
+            ?? kekuleAssignment(relaxPyrroleN: true, allowPartial: false)
+            ?? kekuleAssignment(relaxPyrroleN: true, allowPartial: true)
+            ?? bonds.map { $0.order == .aromatic ? .single : $0.order }
+    }
+
+    /// A copy of the molecule with `kekuleDisplayOrders()` applied (for exporters/renderers that cannot draw 1.5).
+    public func kekuleDisplayMolecule() -> Molecule {
+        var m = self
+        let o = kekuleDisplayOrders()
+        for k in m.bonds.indices { m.bonds[k].order = o[k] }
+        return m
+    }
+
+    private func kekuleAssignment(relaxPyrroleN: Bool, allowPartial: Bool) -> [BondOrder]? {
         let n = atoms.count
-        let arom = bonds.indices.filter { bonds[$0].order == .aromatic }
-        if arom.isEmpty { return true }
+        let arom = bonds.indices.filter { bonds[$0].order == .aromatic && bonds[$0].a < n && bonds[$0].b < n }
+        var out = bonds.map(\.order)
+        if arom.isEmpty { return out }
         var deg = [Int](repeating: 0, count: n)
         var hasExoDouble = [Bool](repeating: false, count: n)
         var inArom = [Bool](repeating: false, count: n)
-        for b in bonds {
+        for b in bonds where b.a < n && b.b < n {
             deg[b.a] += 1; deg[b.b] += 1
             if b.order == .double || b.order == .triple { hasExoDouble[b.a] = true; hasExoDouble[b.b] = true }
         }
         for k in arom { inArom[bonds[k].a] = true; inArom[bonds[k].b] = true }
+        var smallRingN = [Bool](repeating: false, count: n)
+        if relaxPyrroleN {
+            // deg-2 N/P whose aromatic rings are all five-membered: may be the pyrrole-type donor
+            let rings = smallestSetOfSmallestRings()
+            for i in 0..<n where inArom[i] && [7, 15].contains(atoms[i].atomicNumber) && deg[i] == 2 {
+                let mine = rings.filter { $0.contains(i) }
+                if !mine.isEmpty && mine.allSatisfy({ $0.count == 5 }) { smallRingN[i] = true }
+            }
+        }
         var need = [Bool](repeating: false, count: n)
         for i in 0..<n where inArom[i] {
             let z = atoms[i].atomicNumber
             if hasExoDouble[i] { continue }
             switch z {
             case 6, 14, 5: need[i] = true
-            case 7, 15: need[i] = deg[i] == 2 || (deg[i] == 3 && atoms[i].charge > 0.5)
+            case 7, 15: need[i] = (deg[i] == 2 && !smallRingN[i]) || (deg[i] == 3 && atoms[i].charge > 0.5)
             default: need[i] = false
             }
         }
@@ -335,13 +373,15 @@ extension Molecule {
         }
         var bm = BlossomMatcher(n: cnt, g: g, match: [Int](repeating: -1, count: cnt))
         bm.augmentAll()
-        if bm.match.contains(-1) { return false }
+        if relaxPyrroleN && !allowPartial {
+            // at most one relaxed donor per ring system is fine; require all other atoms matched
+            if bm.match.contains(-1) { return nil }
+        } else if !allowPartial && bm.match.contains(-1) { return nil }
         for k in arom {
             let b = bonds[k]
-            if sid[b.a] >= 0 && sid[b.b] >= 0 && bm.match[sid[b.a]] == sid[b.b] { bonds[k].order = .double }
-            else { bonds[k].order = .single }
+            out[k] = (sid[b.a] >= 0 && sid[b.b] >= 0 && bm.match[sid[b.a]] == sid[b.b]) ? .double : .single
         }
-        return true
+        return out
     }
 
     // MARK: formal charges

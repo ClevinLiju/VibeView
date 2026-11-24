@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-@testable import MolIO
+import MolIO
 
 // fchk / CalcSpec / loader checks (Lead A, round 2).
 

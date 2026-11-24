@@ -198,10 +198,13 @@ public struct OrbitalEvaluator: Sendable {
     /// Async wrapper that honours Swift task cancellation.
     public func evaluateAsync(_ field: Field, on grid: GridSpec) async throws -> VolumeGrid {
         let me = self
+        // `Task.isCancelled` is always false on the concurrentPerform worker threads (no current task), so
+        // cancellation is carried by a shared flag set from the cancellation handler.
+        let flag = EvaluatorCancelFlag()
         let task = Task.detached(priority: .userInitiated) { () -> VolumeGrid? in
-            me.evaluate(field, on: grid, isCancelled: { Task.isCancelled })
+            me.evaluate(field, on: grid, isCancelled: { flag.isSet })
         }
-        let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        let result = await withTaskCancellationHandler { await task.value } onCancel: { flag.set(); task.cancel() }
         guard let result else { throw CancellationError() }
         return result
     }
@@ -221,4 +224,11 @@ final class ManagedAtomicFlag: @unchecked Sendable {
     private let lock = NSLock()
     var value: Bool { lock.lock(); defer { lock.unlock() }; return flag }
     func set() { lock.lock(); flag = true; lock.unlock() }
+}
+
+final class EvaluatorCancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }

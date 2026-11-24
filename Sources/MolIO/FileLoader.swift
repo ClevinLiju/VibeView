@@ -19,6 +19,9 @@ public struct LoadedMolecularFile: Sendable {
     public var sdfProperties: [[SDFProperty]] = []
     /// Gaussian/ORCA/Q-Chem input: the program-neutral job when it could be recovered (best effort).
     public var program: QCProgram?
+    /// Sibling files considered by `MolecularFileLoader.loadWithCompanions(url:)` / `CalcJobResults.collect`
+    /// (`used` marks the ones merged). Empty for a plain `load`.
+    public var companions: [CompanionFile] = []
 
     public var molecule: Molecule { molecules.last ?? Molecule() }
 }
@@ -62,7 +65,7 @@ public enum MolecularFileLoader {
         case .xyz:
             return try done(try XYZFormat.parse(text))
         case .pdb:
-            return try done(try PDBFormat.parse(text).models)
+            return try done(try PDBFormat.parse(text).withResidueBondOrders().models)
         case .mol, .sdf:
             let recs = try MDLMolFormat.parse(text)
             var o = try done(recs.map(\.molecule))

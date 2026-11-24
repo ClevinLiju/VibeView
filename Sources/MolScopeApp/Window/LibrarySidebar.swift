@@ -30,8 +30,11 @@ struct LibrarySidebar: View {
                             Button {
                                 editor.payload = .fragment(f.id); editor.tool = .build
                             } label: {
-                                Label(f.name, systemImage: Self.symbol(for: cat.id))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                HStack(spacing: 8) {
+                                    FragmentThumbnail(id: f.id, side: 30)
+                                    Text(f.name)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -87,7 +90,7 @@ private struct SketchHint: View {
         if editor.tool == .build {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Sketching").font(.caption.weight(.semibold))
-                Text("Click empty space to place · click an atom to grow · click a hydrogen to replace it · click a bond to cycle its order")
+                Text("Click empty space to place · click a hydrogen to substitute it · click a heavy atom to replace it in place · ⌥-click an atom to grow from it · click a bond to cycle its order")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             .padding(10)

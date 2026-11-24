@@ -3,33 +3,108 @@ import AppKit
 import MolCore
 import MolRender
 
-final class MolScopeAppDelegate: NSObject, NSApplicationDelegate {
+final class VibeViewAppDelegate: NSObject, NSApplicationDelegate {
+    /// Files named on the command line of a bare binary launch (`VibeView job.log`).
+    private let argumentFiles: [URL] = LaunchFiles.fromArguments(CommandLine.arguments)
+    /// Set once any document request arrives (Finder, `open -a`, argv) before the launch settles.
+    private var receivedFileRequest = false
+    private var launchSettled = false
+
+    override init() {
+        // AppKit would also treat command-line file arguments as open requests (without showing a window
+        // reliably); with two concurrent opens a slow file can appear twice. We open argv files ourselves.
+        // Launching with files shows exactly those files: no windows restored from an earlier run (File ▸ Open
+        // Recent and sessions cover that).
+        UserDefaults.standard.register(defaults: ["NSTreatUnknownArgumentsAsOpen": "NO", "ApplePersistenceIgnoreState": "YES",
+                                                  "NSQuitAlwaysKeepsWindows": false])
+        super.init()
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        if !argumentFiles.isEmpty { receivedFileRequest = true }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if IconRenderer.runIfRequested() { return }
         NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor in WindowSnapshots.scheduleIfRequested() }
-        // Files passed on the command line (bare SwiftPM binary launch).
-        let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
-        for a in args where FileManager.default.fileExists(atPath: a) {
-            Task { @MainActor in DocumentOpener.open(URL(fileURLWithPath: a)) }
+        Task { @MainActor in
+            GalleryJobs.registerGallery()
+            WindowSnapshots.scheduleIfRequested()
+            GalleryJobs.runXTBSelfTestIfRequested()
         }
+        for u in argumentFiles {
+            Task { @MainActor in
+                if u.pathExtension.lowercased() == "vibeview" { SessionStore.open(u) } else { DocumentOpener.open(u) }
+            }
+        }
+        // SwiftUI's DocumentGroup creates a blank document at launch before the files of an `open -a` / Finder /
+        // command-line launch arrive (and doesn't route those through this delegate). Remember the blank documents
+        // that exist during launch; as soon as a file-backed document appears, close them if still blank and unedited.
+        // Big files can take a while to load, so watch for up to 30 s.
+        var launchBlank = Set<ObjectIdentifier>()
+        func sweep(_ t: Double, elapsed: Double) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                let now = elapsed + t
+                let docs = NSDocumentController.shared.documents
+                if now <= 1.5 { for d in docs where d.fileURL == nil { launchBlank.insert(ObjectIdentifier(d)) } }
+                if docs.contains(where: { $0.fileURL != nil }) {
+                    for d in docs where launchBlank.contains(ObjectIdentifier(d)) && d.fileURL == nil && !d.isDocumentEdited {
+                        debugLog("closing blank launch document \(d.displayName ?? "?")")
+                        d.close()
+                    }
+                    if now > 1.5 { self?.launchSettled = true; return }
+                }
+                if now < 30 { sweep(0.25, elapsed: now) } else { self?.launchSettled = true }
+            }
+        }
+        sweep(0.1, elapsed: 0)
     }
 
-    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        !CommandLine.arguments.dropFirst().contains { !$0.hasPrefix("-") && FileManager.default.fileExists(atPath: $0) }
-    }
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { !receivedFileRequest }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        for u in urls { Task { @MainActor in DocumentOpener.open(u) } }
+        if !launchSettled { receivedFileRequest = true }
+        for u in urls where !argumentFiles.contains(where: { $0.standardizedFileURL == u.standardizedFileURL }) || launchSettled {
+            Task { @MainActor in
+                if u.pathExtension.lowercased() == "vibeview" { SessionStore.open(u) } else { DocumentOpener.open(u) }
+            }
+        }
+    }
+}
+
+/// Launch-time document bookkeeping: argv parsing and removal of the spare "Untitled" window.
+enum LaunchFiles {
+    static func fromArguments(_ argv: [String]) -> [URL] {
+        var out: [URL] = []
+        var skipNext = false
+        for a in argv.dropFirst() {
+            if skipNext { skipNext = false; continue }
+            if a.hasPrefix("-") { skipNext = a.hasPrefix("-NS") || a.hasPrefix("-Apple"); continue }   // `-NSFoo YES`
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: a, isDirectory: &isDir), !isDir.boolValue {
+                out.append(URL(fileURLWithPath: a).standardizedFileURL)
+            }
+        }
+        return out
+    }
+
+    /// Returns true once a real (file-backed) document exists, i.e. the sweep is finished.
+    @discardableResult
+    @MainActor static func closeBlankUntitledDocuments() -> Bool {
+        let docs = NSDocumentController.shared.documents
+        guard docs.contains(where: { $0.fileURL != nil }) else { return false }
+        for d in docs where d.fileURL == nil && !d.isDocumentEdited {
+            debugLog("closing blank launch document \(d.displayName ?? "?")")
+            d.close()
+        }
+        return true
     }
 }
 
 @main
-struct MolScopeMain: App {
-    @NSApplicationDelegateAdaptor(MolScopeAppDelegate.self) private var delegate
+struct VibeViewMain: App {
+    @NSApplicationDelegateAdaptor(VibeViewAppDelegate.self) private var delegate
 
     var body: some Scene {
         DocumentGroup(newDocument: MoleculeDocument()) { file in
@@ -37,7 +112,7 @@ struct MolScopeMain: App {
                 .frame(minWidth: 860, minHeight: 560)
         }
         .defaultSize(width: 1280, height: 820)
-        .commands { MolScopeCommands() }
+        .commands { VibeViewCommands() }
 
         Window("Job Queue", id: "job-queue") { JobQueueView() }
             .defaultSize(width: 900, height: 560)
@@ -47,7 +122,7 @@ struct MolScopeMain: App {
     }
 }
 
-struct MolScopeCommands: Commands {
+struct VibeViewCommands: Commands {
     @FocusedValue(\.editor) private var editor: EditorModel?
     @AppStorage("viewport.calcInfo.visible") private var showCalcInfo = true
     @Environment(\.openWindow) private var openWindow
@@ -55,13 +130,21 @@ struct MolScopeCommands: Commands {
     private var hasAtoms: Bool { !(editor?.molecule.atoms.isEmpty ?? true) }
 
     var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About \(AppInfo.name)") { AboutPanel.show() }
+        }
         CommandGroup(after: .newItem) {
-            Button("Open from PubChem…") { editor?.showPubChem = true }
+            Button("Find Molecule by Name…") { editor?.showPubChem = true }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
                 .disabled(editor == nil)
         }
         CommandGroup(after: .saveItem) {
             Divider()
+            Button("Save Session…") { if let e = editor { SessionStore.save(e) } }
+                .keyboardShortcut("s", modifiers: [.command, .option])
+                .disabled(editor == nil)
+            Button("Open Session…") { SessionStore.openPanel() }
+                .keyboardShortcut("o", modifiers: [.command, .option])
             Button("Export Image…") { editor?.exportImage() }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(editor == nil)
@@ -76,7 +159,7 @@ struct MolScopeCommands: Commands {
         }
         CommandGroup(after: .pasteboard) {
             Button("Copy Image") { editor?.copyImage() }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .keyboardShortcut("c", modifiers: [.command, .shift, .option])
                 .disabled(editor == nil)
             Divider()
             Button("Select All Atoms") { editor?.selectAll() }
@@ -138,6 +221,9 @@ struct MolScopeCommands: Commands {
                 .keyboardShortcut("l", modifiers: [.command, .option])
             Button((editor?.showInspector ?? true) ? "Hide Inspector" : "Show Inspector") { editor?.showInspector.toggle() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
+            Button((editor?.showConsole ?? false) ? "Hide Command Line" : "Show Command Line") { editor?.showConsole.toggle() }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(editor == nil)
             Button((editor?.showResults ?? true) ? "Hide Results" : "Show Results") { editor?.showResults.toggle() }
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 .disabled(editor?.result == nil)
@@ -173,6 +259,9 @@ struct MolScopeCommands: Commands {
                 .disabled(!hasAtoms)
             Button("Optimize with xtb") { editor?.optimizeWithXTB() }
                 .disabled(!hasAtoms)
+            Button("xtb Settings…") { editor?.showXTBSettings = true }
+                .keyboardShortcut("x", modifiers: [.command, .option])
+                .disabled(editor == nil)
             Divider()
             Button("Show Job Queue") { openWindow(id: "job-queue") }
         }

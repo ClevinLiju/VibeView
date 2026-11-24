@@ -93,6 +93,8 @@ public struct XTBOutput: Sendable, Codable, Equatable {
     public var thermochemistry: ThermochemistrySummary?
     public var messages: [String] = []
     public var normalTermination = false
+    /// Calculation setup recovered from the output (method, solvation, job types, time).
+    public var info: CalculationInfo?
 
     public static func read(url: URL) throws -> XTBOutput { try parse(try readText(url)) }
 
@@ -159,6 +161,7 @@ public struct XTBOutput: Sendable, Codable, Equatable {
             i += 1
         }
         if haveTh { th.electronicEnergy = o.totalEnergy; o.thermochemistry = th }
+        o.info = runInfo(lines: L.map(String.init))
         return o
     }
 
@@ -177,6 +180,7 @@ public struct XTBOutput: Sendable, Codable, Equatable {
         x.homoLumoGapEV = homoLumoGapEV
         x.optimizationConverged = optimizationConverged
         x.messages = messages
+        x.info = info
         r.extras = x
         return r
     }

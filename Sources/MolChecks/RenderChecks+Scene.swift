@@ -173,13 +173,15 @@ extension Checks {
         Check("render.scene.aromatic.dashed") {
             var m = RenderFixtures.benzene
             for i in 0..<6 { m.bonds[i].order = .aromatic }
-            let o = opts { $0.splitBondColors = false }
+            let o = opts { $0.splitBondColors = false; $0.aromaticStyle = .dashed }
             let s = segs(m, o).filter { $0.bondIndex == 0 }
             try expect(s.count == 2 && s.filter(\.dashed).count == 1, "one full one dashed")
             let full = s.first { !$0.dashed }!, dash = s.first(where: \.dashed)!
             let u = BondGeometry.offsetDirection(bondIndex: 0, in: m)
             let dv = (dash.start + dash.end) / 2 - (full.start + full.end) / 2
-            try expect(simd_dot(dv, u) > 0 && closeV(simd_normalize(dv), u, 1e-9), "offset toward ring center")
+            try expect(simd_dot(dv, u) > 0 && closeV(simd_normalize(dv), u, 1e-9), "dashed line toward ring center")
+            let mid = (m.atoms[m.bonds[0].a].position + m.atoms[m.bonds[0].b].position) / 2
+            try expect(simd_distance((full.start + full.end + dash.start + dash.end) / 4, mid) < 1e-9, "symmetric about axis")
         },
         Check("render.scene.dashedBonds") {
             let m = RenderFixtures.water

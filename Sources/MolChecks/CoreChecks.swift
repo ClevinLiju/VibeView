@@ -4,7 +4,7 @@ import MolCore
 
 // Core team (Lead 1) checks. Worker files CoreChecksA/B/C.swift add coreA/coreB/coreC.
 extension Checks {
-    static let core: [Check] = coreLead + coreA + coreB + coreC
+    static let core: [Check] = coreLead + coreA + coreB + coreC + coreKekule
 
     private static func counts(_ m: Molecule) -> [Int: Int] {
         var d: [Int: Int] = [:]

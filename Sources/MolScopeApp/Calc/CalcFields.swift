@@ -80,3 +80,20 @@ struct ScanCoordinateEditor: View {
         picks.count == kind.atomCount ? picks.map { $0 + 1 } : nil
     }
 }
+
+/// Optional positive integer: blank means "use the program default".
+struct OptionalCountField: View {
+    let title: String
+    @Binding var value: Int?
+    var prompt = "default"
+
+    var body: some View {
+        TextField(title, text: Binding(
+            get: { value.map(String.init) ?? "" },
+            set: { t in
+                let digits = t.filter(\.isNumber)
+                if let n = Int(digits), n > 0 { value = min(n, 100_000) } else { value = nil }
+            }), prompt: Text(prompt))
+            .multilineTextAlignment(.trailing)
+    }
+}
