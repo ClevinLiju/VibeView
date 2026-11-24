@@ -82,6 +82,8 @@ public final class EditorModel: ObservableObject {
     @Published public var showInspector = true
     @Published public var showLibrary = true
     @Published public var showResults = true
+    /// Selected tab of the results panel (kept here so commands and scripts can switch it).
+    @Published var resultsTab: ResultsTab = .trajectory
 
     /// The 3-D view for this window (one renderer per document window).
     private(set) lazy var viewport: ViewportSync = ViewportSync(editor: self)

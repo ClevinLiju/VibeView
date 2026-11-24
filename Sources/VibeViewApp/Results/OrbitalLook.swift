@@ -60,13 +60,22 @@ struct OrbitalLookControls: View {
                     .font(.caption).monospacedDigit().frame(width: 92, alignment: .trailing)
             }
             .help("Grid spacing used to compute the orbital: finer grids give smoother surfaces but take longer")
-            HStack(spacing: 10) {
-                colorPair("Occupied", \.occupied)
-                colorPair("Virtual", \.virtual)
-                Spacer()
-                Button("Reset") { let q = editor.orbitalLook.quality, m = editor.orbitalLook.mode
-                    editor.orbitalLook = OrbitalLook(); editor.orbitalLook.quality = q; editor.orbitalLook.mode = m }
-                    .controlSize(.small).help("Back to red/blue (occupied) and green/yellow (virtual)")
+            // One row when the panel is wide enough, otherwise colours and Reset on two rows.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    colorPair("Occupied", \.occupied)
+                    colorPair("Virtual", \.virtual)
+                    Spacer(minLength: 4)
+                    resetButton
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    colorPair("Occupied", \.occupied)
+                    HStack(spacing: 10) {
+                        colorPair("Virtual", \.virtual)
+                        Spacer(minLength: 4)
+                        resetButton
+                    }
+                }
             }
         }
         .onChange(of: editor.orbitalLook) { _, l in l.save() }
@@ -77,9 +86,16 @@ struct OrbitalLookControls: View {
                 set: { editor.orbitalLook.quality = OrbitalGridQuality.allCases[max(0, min(3, Int($0.rounded())))] })
     }
 
+    private var resetButton: some View {
+        Button("Reset") { let q = editor.orbitalLook.quality, m = editor.orbitalLook.mode
+            editor.orbitalLook = OrbitalLook(); editor.orbitalLook.quality = q; editor.orbitalLook.mode = m }
+            .controlSize(.small).fixedSize().help("Back to red/blue (occupied) and green/yellow (virtual)")
+    }
+
     private func colorPair(_ title: String, _ kp: WritableKeyPath<OrbitalLook, OrbitalColorScheme>) -> some View {
         HStack(spacing: 3) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                .layoutPriority(1)
             ColorPicker("+", selection: Binding(get: { editor.orbitalLook[keyPath: kp].positive.color },
                                                 set: { editor.orbitalLook[keyPath: kp].positive = RGBA($0) }), supportsOpacity: false)
                 .labelsHidden().help("\(title) orbitals, positive lobe")

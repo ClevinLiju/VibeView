@@ -24,14 +24,13 @@ enum ResultsTab: String, CaseIterable, Identifiable {
 /// Tabs over a loaded calculation result. Only tabs with data are shown.
 struct ResultsPanel: View {
     @ObservedObject var editor: EditorModel
-    @State private var tab: ResultsTab = .trajectory
 
     var body: some View {
         if let r = editor.result {
             let tabs = ResultsTab.available(for: r)
-            let current = tabs.contains(tab) ? tab : tabs[0]
+            let current = tabs.contains(editor.resultsTab) ? editor.resultsTab : tabs[0]
             VStack(spacing: 0) {
-                Picker("Results", selection: Binding(get: { current }, set: { tab = $0 })) {
+                Picker("Results", selection: Binding(get: { current }, set: { editor.resultsTab = $0 })) {
                     ForEach(tabs) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden()

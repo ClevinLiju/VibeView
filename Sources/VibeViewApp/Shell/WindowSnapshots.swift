@@ -17,6 +17,10 @@ enum WindowSnapshots {
                 if let ed = EditorRegistry.live.last { UIGallery.capture(to: url, editor: ed) }
             }
         }
+        if AppEnv.value("README_SHOTS") != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { _ = ReadmeShots.runIfRequested(dir: url) }
+            return
+        }
         if AppEnv.isSet("SELFTEST") {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { SelfTest.run(dir: url) }
         } else {
@@ -27,31 +31,64 @@ enum WindowSnapshots {
     static func capture(to dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for (n, w) in NSApp.windows.enumerated() where w.isVisible {
-            guard let root = w.contentView?.superview ?? w.contentView else { continue }
-            let b = root.bounds
-            guard let rep = root.bitmapImageRepForCachingDisplay(in: b) else { continue }
-            root.cacheDisplay(in: b, to: rep)
-            let img = NSImage(size: b.size)
-            img.lockFocus()
-            // 3-D views first, then the window drawing on top (the SCNView area is transparent in the cache,
-            // so SwiftUI overlays such as the command palette stay visible).
-            for (k, v) in allSubviews(root).compactMap({ $0 as? SCNView }).enumerated() {
-                let shot = v.snapshot()
-                shot.draw(in: v.convert(v.bounds, to: root))
-                if let t = shot.tiffRepresentation, let b = NSBitmapImageRep(data: t), let png = b.representation(using: .png, properties: [:]) {
-                    try? png.write(to: dir.appendingPathComponent("scene-\(n)-\(k).png"))
-                }
-            }
-            NSImage(cgImage: rep.cgImage!, size: b.size).draw(in: NSRect(origin: .zero, size: b.size), from: .zero, operation: .sourceOver, fraction: 1)
-            img.unlockFocus()
-            if let tiff = img.tiffRepresentation, let bmp = NSBitmapImageRep(data: tiff),
-               let png = bmp.representation(using: .png, properties: [:]) {
-                try? png.write(to: dir.appendingPathComponent("window-\(n)-\(w.title.replacingOccurrences(of: "/", with: "-")).png"))
-            }
+            guard let rep = composite(w), let png = rep.representation(using: .png, properties: [:]) else { continue }
+            try? png.write(to: dir.appendingPathComponent("window-\(n)-\(w.title.replacingOccurrences(of: "/", with: "-")).png"))
         }
     }
 
     private static func allSubviews(_ v: NSView) -> [NSView] { v.subviews + v.subviews.flatMap(allSubviews) }
+
+    /// The whole window with its 3-D views filled in. `cacheDisplay` paints each SCNView's area as a flat
+    /// placeholder colour, so every pixel there that still shows that colour is replaced by the scene's own
+    /// snapshot, and pixels that differ (SwiftUI overlays such as the info card) are kept.
+    static func composite(_ w: NSWindow) -> NSBitmapImageRep? {
+        guard let root = w.contentView?.superview ?? w.contentView else { return nil }
+        let b = root.bounds
+        guard let rep = root.bitmapImageRepForCachingDisplay(in: b) else { return nil }
+        root.cacheDisplay(in: b, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / max(b.width, 1)
+        for v in allSubviews(root).compactMap({ $0 as? SCNView }) where !v.isHiddenOrHasHiddenAncestor {
+            var r = v.convert(v.bounds, to: root)
+            if !root.isFlipped { r.origin.y = b.height - r.maxY }      // bitmap rows run top-down
+            let px = Int((r.minX * scale).rounded()), py = Int((r.minY * scale).rounded())
+            let pw = Int((r.width * scale).rounded()), ph = Int((r.height * scale).rounded())
+            guard pw > 8, ph > 8, let scene = bitmap(of: v.snapshot(), width: pw, height: ph) else { continue }
+            func windowPixel(_ x: Int, _ y: Int) -> [Int] {
+                var p = [Int](repeating: 0, count: 4); rep.getPixel(&p, atX: x, y: y); return p
+            }
+            // Placeholder colour: the most common value among a few interior samples.
+            var counts: [[Int]: Int] = [:]
+            for fx in stride(from: 0.1, through: 0.9, by: 0.2) {
+                for fy in stride(from: 0.1, through: 0.9, by: 0.2) {
+                    counts[windowPixel(px + Int(Double(pw) * fx), py + Int(Double(ph) * fy)), default: 0] += 1
+                }
+            }
+            guard let key = counts.max(by: { $0.value < $1.value })?.key else { continue }
+            var p = [Int](repeating: 0, count: 4), s = [Int](repeating: 0, count: 4)
+            for y in 0..<ph where py + y < rep.pixelsHigh {
+                for x in 0..<pw where px + x < rep.pixelsWide {
+                    rep.getPixel(&p, atX: px + x, y: py + y)
+                    guard abs(p[0] - key[0]) <= 2, abs(p[1] - key[1]) <= 2, abs(p[2] - key[2]) <= 2 else { continue }
+                    scene.getPixel(&s, atX: x, y: y)
+                    s[3] = 255
+                    rep.setPixel(&s, atX: px + x, y: py + y)
+                }
+            }
+        }
+        return rep
+    }
+
+    /// `image` redrawn into an RGBA bitmap of exactly `width`×`height` pixels, in the window bitmap's layout.
+    private static func bitmap(of image: NSImage, width: Int, height: Int) -> NSBitmapImageRep? {
+        guard let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 32) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: out)
+        image.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+        NSGraphicsContext.restoreGraphicsState()
+        return out
+    }
 }
 
 /// Scripted end-to-end exercise of the editor through the real renderer (clicks via `performClick`).

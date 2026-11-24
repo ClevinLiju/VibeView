@@ -29,7 +29,47 @@ Licensed under the MIT License (see `LICENSE`).
 
 ## Screenshots
 
-_TODO: add screenshots to `docs/screenshots/`._
+### Orbitals
+
+Orbitals load straight from ORCA/Gaussian output. Same-named Molden or fchk files are picked up automatically. Occupied orbitals are drawn red/blue and virtual orbitals green/yellow, as solid, transparent, wireframe or point surfaces.
+
+![VibeView showing the HOMO of formaldehyde with the orbital list](docs/screenshots/window-orbitals.png)
+
+<p align="center">
+  <img src="docs/screenshots/orbital-homo-solid.png" width="32%" alt="HOMO, solid">
+  <img src="docs/screenshots/orbital-lumo-solid.png" width="32%" alt="LUMO, solid">
+  <img src="docs/screenshots/orbital-lumo-wireframe.png" width="32%" alt="LUMO, wireframe">
+</p>
+<p align="center"><sub>Formaldehyde, B3LYP/def2-SVP: HOMO (solid), LUMO (solid) and LUMO (wireframe)</sub></p>
+
+### Vibrations and IR spectra
+
+Pick a mode in the table, or click its peak, and the molecule vibrates. The animation runs on the GPU, so the view stays smooth while you rotate. Spectra use adjustable broadening and frequency scaling.
+
+![Vibrations tab with the broadened IR spectrum and normal-mode table](docs/screenshots/window-vibrations-ir.png)
+
+### UV-Vis from TD-DFT
+
+![UV-Vis tab with the broadened absorption spectrum and excited-state table](docs/screenshots/window-uvvis.png)
+
+### Proteins and large structures
+
+PDB files open with full connectivity and residue bond orders. Merged geometry keeps structures with thousands of atoms responsive. This is hemoglobin (4HHB, 4,779 atoms).
+
+![Hemoglobin 4HHB rendered as ball and stick](docs/screenshots/window-protein.png)
+
+### Building, command line and xtb
+
+<p align="center">
+  <img src="docs/screenshots/periodic-table.png" width="62%" alt="Periodic table picker">
+  <img src="docs/screenshots/kekule-naphthalene.png" width="34%" alt="Naphthalene with Kekulé bonds">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/console.png" width="58%" alt="Built-in command line">
+  <img src="docs/screenshots/xtb-settings.png" width="38%" alt="xtb settings sheet">
+</p>
+<p align="center"><sub>The full periodic table, aromatic rings as Kekulé structures, the built-in command line (⌘⇧C), and the xtb settings sheet with its command preview</sub></p>
 
 ## Quick install
 
