@@ -45,4 +45,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.dmg --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Keep a DMG that was already attached by hand; only add it when missing.
+            gh release upload "$GITHUB_REF_NAME" dist/*.dmg || echo "DMG already attached; leaving it"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.dmg --generate-notes
+          fi
