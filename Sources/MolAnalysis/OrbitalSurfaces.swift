@@ -313,11 +313,7 @@ public actor OrbitalSurfaceService {
         let spec = GridSpec.adaptive(wavefunction, quality: quality)
         let coeffs = Array(set.orbital(orbital))
         let ev = evaluator
-        let flag = ManagedAtomicFlag()
-        let task = Task.detached(priority: .userInitiated) { () -> VolumeGrid? in
-            ev.evaluateOrbitalFast(coeffs, on: spec, isCancelled: { flag.value })
-        }
-        let result = await withTaskCancellationHandler { await task.value } onCancel: { flag.set() }
+        let result = await runCancellableWork { isCancelled in ev.evaluateOrbitalFast(coeffs, on: spec, isCancelled: isCancelled) }
         guard let g = result, !Task.isCancelled else { throw CancellationError() }
         cache[key] = g; order.append(key)
         while order.count > cacheLimit { cache[order.removeFirst()] = nil }
@@ -331,7 +327,7 @@ public actor OrbitalSurfaceService {
         let ev = evaluator
         let coeffs = Array(set.orbital(request.orbital))
         let req = request
-        let task = Task.detached(priority: .userInitiated) { () -> ([IsoSurfaceMesh], Double, Double) in
+        let work = await runCancellableWork { _ -> ([IsoSurfaceMesh], Double, Double)? in
             let t0 = DispatchTime.now()
             var meshes = MarchingCubes.orbitalLobes(grid: grid, isovalue: req.isovalue)
             let t1 = DispatchTime.now()
@@ -344,7 +340,7 @@ public actor OrbitalSurfaceService {
             _ = coeffs
             return (meshes, Double(t1.uptimeNanoseconds - t0.uptimeNanoseconds) / 1e9, Double(t2.uptimeNanoseconds - t1.uptimeNanoseconds) / 1e9)
         }
-        let (meshes, tMesh, tPost) = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        guard let (meshes, tMesh, tPost) = work else { throw CancellationError() }
         try Task.checkCancellation()
         let occ = request.spin == .beta ? wf.betaElectrons : wf.alpha.occupiedCount
         let perOrbital = (wf.beta != nil || wf.alphaElectrons != wf.betaElectrons) ? 1.0 : 2.0
