@@ -17,6 +17,7 @@ let package = Package(
         .target(name: "MolAnalysis", dependencies: ["MolCore", "MolIO"]),
         .target(name: "MolRender", dependencies: ["MolCore", "MolAnalysis"]),
         .target(name: "MolCompute", dependencies: ["MolCore", "MolIO", "MolBuild"]),
+        .target(name: "MolCommand", dependencies: ["MolCore", "MolIO"]),
         .executableTarget(
             name: "MolScopeApp",
             dependencies: ["MolCore", "MolIO", "MolBuild", "MolAnalysis", "MolRender", "MolCompute", "MolCommand"]
