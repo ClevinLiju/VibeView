@@ -81,6 +81,12 @@ extension EditorModel {
             statusMessage = "Geometry cleaned"
         } else { statusMessage = "Geometry cleanup unavailable" }
     }
+    func centerAtOrigin() {
+        apply("Center at Origin") { m in let c = m.centroid; for i in m.atoms.indices { m.atoms[i].position -= c } }
+    }
+    func rebuildBonds() {
+        apply("Rebuild Bonds") { m in m.bonds = []; m.perceiveBonds(); m.perceiveBondOrders() }
+    }
     func invertStructure() { apply("Invert") { BuildOps.invert(&$0) } }
     func mirrorStructure() { apply("Mirror") { BuildOps.mirror(&$0) } }
 }

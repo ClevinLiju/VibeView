@@ -1,5 +1,6 @@
 import SwiftUI
 import MolCore
+import MolRender
 
 struct InspectorView: View {
     @ObservedObject var editor: EditorModel
@@ -20,6 +21,8 @@ struct InspectorView: View {
                 } else {
                     SummarySection(editor: editor)
                 }
+                Divider().padding(.vertical, 4)
+                DisplaySection(editor: editor)
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -32,17 +35,16 @@ private struct NumberField: View {
     let value: Double
     var format = "%.5f"
     let commit: (Double) -> Void
-    @StateObject private var box = StateBox("")
+    @State private var text = ""
     @FocusState private var focused: Bool
-    private var text: String { get { box.value } nonmutating set { box.value = newValue } }
     var body: some View {
         HStack {
             Text(label).frame(width: 24, alignment: .leading)
-            TextField("", text: $box.value).textFieldStyle(.roundedBorder).focused($focused)
+            TextField("", text: $text).textFieldStyle(.roundedBorder).focused($focused)
                 .onSubmit { if let v = Double(text) { commit(v) }; text = String(format: format, value) }
         }
         .onAppear { text = String(format: format, value) }
-        .onChange(of: value) { v in if !focused { text = String(format: format, v) } }
+        .onChange(of: value) { _, v in if !focused { text = String(format: format, v) } }
     }
 }
 
@@ -124,5 +126,30 @@ private struct SummarySection: View {
         LabeledContent("Bonds", value: "\(m.bonds.count)")
         Stepper("Charge: \(m.charge)", value: Binding(get: { m.charge }, set: { v in editor.apply("Set Charge") { $0.charge = v } }), in: -10...10)
         Stepper("Multiplicity: \(m.multiplicity)", value: Binding(get: { m.multiplicity }, set: { v in editor.apply("Set Multiplicity") { $0.multiplicity = v } }), in: 1...10)
+    }
+}
+
+private struct DisplaySection: View {
+    @ObservedObject var editor: EditorModel
+    var body: some View {
+        Text("Display").font(.headline)
+        Picker("Style", selection: Binding(get: { editor.renderOptions.style }, set: { editor.setStyle($0) })) {
+            ForEach(RenderStyle.allCases, id: \.self) { s in Image(systemName: s.symbol).help(s.title).tag(s) }
+        }
+        .pickerStyle(.segmented)
+        Picker("Labels", selection: Binding(get: { editor.renderOptions.labelMode }, set: { editor.setLabels($0) })) {
+            ForEach(LabelMode.menuCases, id: \.self) { Text($0.title).tag($0) }
+        }
+        Picker("Material", selection: Binding(get: { editor.renderOptions.material }, set: { editor.setMaterial($0) })) {
+            ForEach(MaterialPreset.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+        }
+        Toggle("Hydrogens", isOn: Binding(get: { editor.renderOptions.showHydrogens }, set: { _ in editor.toggleHydrogens() }))
+        Toggle("Bond orders", isOn: $editor.renderOptions.showBondOrders)
+        Toggle("Ambient occlusion", isOn: Binding(get: { editor.renderOptions.ambientOcclusion }, set: { _ in editor.toggleAmbientOcclusion() }))
+        Toggle("Depth cueing", isOn: Binding(get: { editor.renderOptions.depthCueing }, set: { _ in editor.toggleDepthCue() }))
+        Toggle("Orthographic", isOn: Binding(get: { editor.renderOptions.projection == .orthographic }, set: { _ in editor.toggleProjection() }))
+        LabeledContent("Atom size") {
+            Slider(value: $editor.renderOptions.atomScale, in: 0.12...0.5)
+        }
     }
 }

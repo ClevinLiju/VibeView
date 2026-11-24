@@ -1,162 +1,196 @@
 import SwiftUI
 import Charts
-import AppKit
+import MolBuild
 
-/// Local job queue window: list of runs, SCF energy trace and live log of the selected run.
+/// The "Job Queue" window: sidebar of runs, detail with live log and energy chart, footer with program discovery.
 struct JobQueueView: View {
     @ObservedObject private var queue = JobQueue.shared
-    @StateObject private var selBox = VMBox<UUID?>(nil)
-
-    private var selected: GaussianJobRun? {
-        queue.jobs.first { $0.id == selBox.value } ?? queue.jobs.last
-    }
+    @State private var selection: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
-            if !queue.gaussianAvailable { banner }
-            if queue.jobs.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "tray").font(.largeTitle).foregroundStyle(.secondary)
-                    Text("No jobs yet").font(.headline)
-                    Text("Use Calculation Setup \u{2192} Save & Run to queue a Gaussian job.").foregroundStyle(.secondary)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                HSplitView {
-                    jobList.frame(minWidth: 260, idealWidth: 300)
-                    detail.frame(minWidth: 380)
-                }
-            }
-        }
-        .frame(minWidth: 720, minHeight: 420)
-        .onAppear { queue.refreshAvailability() }
-    }
-
-    private var banner: some View {
-        HStack {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(GaussianLocator.notFoundMessage).font(.callout)
-            Spacer()
-            Button("Open Settings\u{2026}") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
-            Button("Recheck") { queue.refreshAvailability() }
-        }
-        .padding(8)
-        .background(Color.orange.opacity(0.15))
-    }
-
-    private var jobList: some View {
-        VStack(spacing: 0) {
-            List(selection: $selBox.value) {
-                ForEach(queue.jobs) { job in
-                    JobRow(job: job).tag(job.id)
+            NavigationSplitView {
+                sidebar
+                    .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+            } detail: {
+                if let id = selection, let job = queue.jobs.first(where: { $0.id == id }) {
+                    JobDetail(job: job)
+                } else {
+                    ContentUnavailableView("No Job Selected", systemImage: "list.bullet.rectangle",
+                                           description: Text("Pick a job on the left to see its log and energies."))
                 }
             }
             Divider()
-            HStack {
-                Button("Clear Finished") { queue.clearFinished() }
-                    .disabled(!queue.jobs.contains { !$0.status.isActive })
-                Spacer()
-            }.padding(8)
+            ProgramFooter(queue: queue)
+        }
+        .frame(minWidth: 820, minHeight: 520)
+        .onAppear { queue.refreshAvailability() }
+        .onChange(of: queue.jobs.count) { _, _ in
+            if selection == nil || !queue.jobs.contains(where: { $0.id == selection }) { selection = queue.jobs.last?.id }
         }
     }
 
-    @ViewBuilder private var detail: some View {
-        if let job = selected {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(job.name).font(.title3.bold())
-                        Text(job.status.label).foregroundStyle(statusColor(job.status))
+    private var sidebar: some View {
+        Group {
+            if queue.jobs.isEmpty {
+                ContentUnavailableView("No Jobs", systemImage: "tray",
+                                       description: Text("Calculations you run from Calculation Setup appear here."))
+            } else {
+                List(selection: $selection) {
+                    ForEach(queue.jobs.reversed()) { job in
+                        JobRow(job: job).tag(job.id)
+                            .contextMenu {
+                                Button("Reveal in Finder") { queue.reveal(job.id) }
+                                if job.status.isActive { Button("Cancel") { queue.cancel(job.id) } }
+                                else { Button("Remove") { queue.remove(job.id) } }
+                            }
                     }
-                    Spacer()
-                    if job.status.isActive {
-                        Button("Cancel") { queue.cancel(job.id) }
-                    } else {
-                        Button("Remove") { queue.remove(job.id) }
-                    }
-                    Button("Open Result") { queue.openResult(job.id) }
-                        .disabled(job.status.isActive && job.status != .running || !FileManager.default.fileExists(atPath: job.logURL.path))
                 }
-                if job.energies.count >= 2 {
-                    GroupBox("SCF energy (Hartree)") {
-                        Chart(Array(job.energies.enumerated()), id: \.offset) { i, e in
-                            LineMark(x: .value("SCF", i + 1), y: .value("E", e))
-                            PointMark(x: .value("SCF", i + 1), y: .value("E", e)).symbolSize(14)
-                        }
-                        .chartYScale(domain: .automatic(includesZero: false))
-                        .frame(height: 110)
-                    }
-                } else if let e = job.lastEnergy {
-                    Text(String(format: "Last SCF energy: %.8f Eh", e)).font(.system(.body, design: .monospaced))
-                }
-                LiveLogView(text: job.liveLog)
             }
-            .padding()
+        }
+        .toolbar {
+            ToolbarItem {
+                Button { queue.clearFinished() } label: { Label("Clear Finished", systemImage: "trash") }
+                    .help("Remove all finished jobs from the list")
+                    .disabled(!queue.jobs.contains { !$0.status.isActive })
+            }
         }
     }
+}
 
-    private func statusColor(_ s: JobStatus) -> Color {
-        switch s {
-        case .queued: .secondary
-        case .running: .blue
-        case .finished(let n): n ? .green : .red
-        case .failed: .red
-        case .cancelled: .orange
-        }
+private func statusColor(_ s: JobStatus) -> Color {
+    switch s {
+    case .queued: .secondary
+    case .running: .blue
+    case .finished(let n): n ? .green : .orange
+    case .failed: .red
+    case .cancelled: .secondary
     }
+}
+
+private func format(_ t: TimeInterval) -> String {
+    let s = Int(t)
+    return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
 }
 
 private struct JobRow: View {
-    let job: GaussianJobRun
+    let job: JobRun
     var body: some View {
         HStack(spacing: 8) {
-            icon.frame(width: 18)
+            Image(systemName: job.status.symbol).foregroundStyle(statusColor(job.status)).frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(job.name).lineLimit(1)
                 HStack(spacing: 6) {
+                    Text(job.program.title)
+                    Text("\u{00B7}")
                     if job.startDate != nil {
-                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                            Text(Self.format(job.elapsed(at: ctx.date)))
-                        }
-                    }
-                    if let e = job.lastEnergy { Text(String(format: "%.6f", e)) }
-                    if job.stepCount > 0 { Text("\(job.stepCount) SCF") }
+                        TimelineView(.periodic(from: .now, by: 1)) { ctx in Text(format(job.elapsed(at: ctx.date))).monospacedDigit() }
+                    } else { Text(job.status.label) }
                 }
-                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                .font(.caption).foregroundStyle(.secondary)
             }
         }
-    }
-
-    @ViewBuilder private var icon: some View {
-        switch job.status {
-        case .queued: Image(systemName: "clock").foregroundStyle(.secondary)
-        case .running: ProgressView().controlSize(.small)
-        case .finished(let n): Image(systemName: n ? "checkmark.circle.fill" : "xmark.octagon.fill").foregroundStyle(n ? .green : .red)
-        case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-        case .cancelled: Image(systemName: "stop.circle").foregroundStyle(.orange)
-        }
-    }
-
-    static func format(_ t: TimeInterval) -> String {
-        let s = Int(t)
-        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
+        .padding(.vertical, 2)
     }
 }
 
-/// Monospaced text that keeps scrolled to the bottom as new output arrives.
-private struct LiveLogView: View {
-    let text: String
+private struct JobDetail: View {
+    let job: JobRun
+    @ObservedObject private var queue = JobQueue.shared
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            if job.energies.count >= 2 { chart }
+            logView
+        }
+        .padding()
+        .toolbar {
+            ToolbarItemGroup {
+                if job.status.isActive {
+                    Button { queue.cancel(job.id) } label: { Label("Cancel", systemImage: "stop.fill") }
+                }
+                Button { queue.reveal(job.id) } label: { Label("Reveal in Finder", systemImage: "folder") }
+                Button { queue.openResult(job.id) } label: { Label("Open Result", systemImage: "doc.text.magnifyingglass") }
+                    .disabled(!FileManager.default.fileExists(atPath: job.outputURL.path))
+                Button { queue.remove(job.id) } label: { Label("Remove", systemImage: "minus.circle") }
+                    .disabled(job.status.isActive)
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Image(systemName: job.status.symbol).foregroundStyle(statusColor(job.status))
+                Text(job.name).font(.title2.bold())
+                Spacer()
+                if job.startDate != nil {
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        Text(format(job.elapsed(at: ctx.date))).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Text("\(job.program.title) \u{00B7} \(job.setup.jobType.title) \u{00B7} \(job.status.label)")
+                .foregroundStyle(.secondary)
+            if let e = job.lastEnergy {
+                Text(String(format: "Last energy: %.8f  (%d step%@)", e, job.stepCount, job.stepCount == 1 ? "" : "s"))
+                    .font(.callout.monospacedDigit())
+            }
+            if let m = job.message { Label(m, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
+            Text(job.directory.path).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+        }
+    }
+
+    private var chart: some View {
+        Chart(Array(job.energies.enumerated()), id: \.offset) { item in
+            LineMark(x: .value("Step", item.offset + 1), y: .value("Energy (Eh)", item.element))
+            PointMark(x: .value("Step", item.offset + 1), y: .value("Energy (Eh)", item.element)).symbolSize(16)
+        }
+        .chartYScale(domain: .automatic(includesZero: false))
+        .chartXAxisLabel("Step")
+        .chartYAxisLabel("Energy (Eh)")
+        .frame(height: 150)
+    }
+
+    private var logView: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                Text(text.isEmpty ? "(no output yet)" : text)
-                    .font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-                Color.clear.frame(height: 1).id("bottom")
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(job.liveLog.isEmpty ? "Waiting for output\u{2026}" : job.liveLog)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Color.clear.frame(height: 1).id("end")
+                }
+                .padding(8)
             }
             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            .onChange(of: text) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: job.liveLog) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
+            .onAppear { proxy.scrollTo("end", anchor: .bottom) }
         }
+    }
+}
+
+private struct ProgramFooter: View {
+    @ObservedObject var queue: JobQueue
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach(QCProgram.allCases) { p in
+                let url = queue.locations[p]
+                HStack(spacing: 5) {
+                    Circle().fill(url != nil ? Color.green : Color.secondary.opacity(0.5)).frame(width: 8, height: 8)
+                    Text(p.title).font(.caption.bold())
+                    Text(url?.path ?? "not found").font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: 170, alignment: .leading)
+                }
+                .help(url?.path ?? "\(p.title) was not found. Set its path in Settings.")
+            }
+            Spacer()
+            Button { queue.refreshAvailability() } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.borderless).help("Look for programs again")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(.bar)
     }
 }

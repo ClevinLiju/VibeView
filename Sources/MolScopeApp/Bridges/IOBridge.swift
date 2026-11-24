@@ -2,106 +2,179 @@ import Foundation
 import MolCore
 import MolIO
 
-// INTEGRATION BRIDGE (owned by Lead 4). Single place where the app talks to MolIO.
-// Until MolIO lands this contains minimal local fallbacks (XYZ + simple Gaussian input).
+// INTEGRATION BRIDGE (Lead C). The single place where the app talks to MolIO.
 
 public struct LoadedFile: Sendable {
     public var molecule: Molecule
     public var result: CalculationResult?
+    /// Basis + MO coefficients (from .fchk) for orbital surfaces.
+    public var wavefunction: Wavefunction?
 }
 
 public enum IOBridgeError: Error, LocalizedError {
-    case unsupported(String), parse(String)
+    case unsupported(String), parse(String), empty
     public var errorDescription: String? {
-        switch self { case .unsupported(let e): "Format '\(e)' is not supported yet."; case .parse(let m): "Could not read file: \(m)" }
+        switch self {
+        case .unsupported(let e): "MolScope can't read “.\(e)” files."
+        case .parse(let m): "The file could not be read: \(m)"
+        case .empty: "The file contains no atoms."
+        }
     }
 }
 
 public enum IOBridge {
-    public static func read(data: Data, ext: String) throws -> LoadedFile {
-        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else { throw IOBridgeError.parse("not text") }
-        switch ext.lowercased() {
-        case "xyz": return LoadedFile(molecule: try FallbackIO.readXYZ(text), result: nil)
-        case "gjf", "com": return LoadedFile(molecule: try FallbackIO.readGJF(text), result: nil)
-        default: throw IOBridgeError.unsupported(ext)
+    /// Read any supported file. `ext` is a hint; the content is sniffed when it is ambiguous.
+    public static func read(data: Data, ext: String, fileName: String? = nil) throws -> LoadedFile {
+        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+            throw IOBridgeError.parse("not a text file")
+        }
+        if let special = try readProgramOutput(text: text, ext: ext.lowercased()) {
+            return try finish(special)
+        }
+        let format = MoleculeFileFormat.detect(contents: String(text.prefix(4096)), fileName: fileName)
+            ?? MoleculeFileFormat.format(forExtension: ext)
+        do {
+            return try finish(try read(text: text, format: format, ext: ext))
+        } catch let e as MolIOError {
+            throw IOBridgeError.parse(e.description)
         }
     }
+
+    private static func finish(_ l: LoadedFile) throws -> LoadedFile {
+        do {
+            var loaded = l
+            if loaded.molecule.atoms.isEmpty && (loaded.result?.steps.isEmpty ?? true) { throw IOBridgeError.empty }
+            loaded.molecule = prepared(loaded.molecule)
+            if var r = loaded.result {
+                r.steps = r.steps.map { prepared($0, perceiveOrders: false) }
+                loaded.result = r
+            }
+            return loaded
+        } catch let e as MolIOError {
+            throw IOBridgeError.parse(e.description)
+        }
+    }
+
+    /// ORCA / Q-Chem / xtb / Molden files, recognised by content (their extensions are ambiguous).
+    private static func readProgramOutput(text: String, ext: String) throws -> LoadedFile? {
+        let head = String(text.prefix(20000))
+        func fromResult(_ r: CalculationResult, fallback: Molecule = Molecule()) -> LoadedFile {
+            LoadedFile(molecule: r.steps.last ?? fallback, result: r)
+        }
+        do {
+            if head.contains("O   R   C   A") || head.contains("* O   R   C   A *") {
+                return fromResult(try OrcaOutput.parse(text).result)
+            }
+            if head.contains("Welcome to Q-Chem") || head.contains("Q-Chem, Inc.") {
+                return fromResult(try QChemOutput.parse(text).result)
+            }
+            if head.contains("[Molden Format]") || ext == "molden" {
+                let f = try MoldenFile.parse(text)
+                return LoadedFile(molecule: f.geometries.last ?? f.molecule, result: f.result, wavefunction: f.wavefunction)
+            }
+            if ext == "inp", head.contains("*") {
+                let f = try OrcaInputFile.parse(text)
+                return LoadedFile(molecule: f.molecule, result: nil)
+            }
+            if ext == "in" || head.contains("$molecule") {
+                if let m = try QChemInputFile.parse(text).jobs.compactMap(\.molecule).first { return LoadedFile(molecule: m, result: nil) }
+            }
+        } catch let e as MolIOError {
+            throw IOBridgeError.parse(e.description)
+        }
+        return nil
+    }
+
+    public static func read(url: URL) throws -> LoadedFile {
+        let data = try Data(contentsOf: url)
+        return try read(data: data, ext: url.pathExtension, fileName: url.lastPathComponent)
+    }
+
+    private static func read(text: String, format: MoleculeFileFormat?, ext: String) throws -> LoadedFile {
+        guard let format else { throw IOBridgeError.unsupported(ext) }
+        switch format {
+        case .xyz:
+            let frames = try XYZFormat.parse(text)
+            return multiFrame(frames)
+        case .gaussianInput:
+            guard let job = try GaussianInputReader.parse(text).first else { throw IOBridgeError.empty }
+            var m = job.molecule
+            if let cm = job.chargeMultiplicities.first { m.charge = cm.charge; m.multiplicity = cm.multiplicity }
+            if m.title.isEmpty { m.title = job.title }
+            return LoadedFile(molecule: m, result: nil)
+        case .gaussianOutput:
+            let log = try GaussianLog.parse(text)
+            var r = log.result
+            if r.routeSection.isEmpty { r.routeSection = log.firstRoute }
+            let m = r.steps.last ?? log.inputOrientations.last ?? Molecule()
+            return LoadedFile(molecule: m, result: r)
+        case .formattedCheckpoint:
+            let f = try FormattedCheckpoint.parse(text)
+            var m = f.molecule
+            if m.title.isEmpty { m.title = f.title }
+            return LoadedFile(molecule: m, result: f.calculationResult, wavefunction: f.wavefunction)
+        case .cube:
+            let c = try CubeFile.parse(text)
+            var r = CalculationResult()
+            r.steps = [c.molecule]
+            for (k, g) in c.grids.enumerated() {
+                let key = c.orbitalIndices.indices.contains(k) ? "MO \(c.orbitalIndices[k])" : (c.grids.count == 1 ? "cube" : "cube \(k + 1)")
+                r.volumes[key] = g
+            }
+            var m = c.molecule
+            if m.title.isEmpty { m.title = c.title }
+            return LoadedFile(molecule: m, result: r)
+        case .pdb:
+            let p = try PDBFormat.parse(text)
+            return multiFrame(p.models)
+        case .mol, .sdf:
+            let recs = try MDLMolFormat.parse(text)
+            return multiFrame(recs.map(\.molecule))
+        case .cml:
+            return multiFrame(try CMLFormat.parse(text))
+        default:
+            // TODO(Lead C): wire ORCA / Q-Chem / xtb / Molden readers from MolIO.
+            throw IOBridgeError.unsupported(ext)
+        }
+    }
+
+    /// One frame = plain structure; several = a trajectory the frame player can step through.
+    private static func multiFrame(_ frames: [Molecule]) -> LoadedFile {
+        guard let first = frames.first else { return LoadedFile(molecule: Molecule(), result: nil) }
+        if frames.count == 1 { return LoadedFile(molecule: first, result: nil) }
+        var r = CalculationResult()
+        r.steps = frames
+        r.normalTermination = true
+        return LoadedFile(molecule: frames.last ?? first, result: r)
+    }
+
+    /// Ensure connectivity exists so the structure draws and edits sensibly.
+    static func prepared(_ m: Molecule, perceiveOrders: Bool = true) -> Molecule {
+        var m = m
+        m.renumberAtomIDs()
+        if m.bonds.isEmpty && m.atoms.count > 1 && m.atoms.count < 20000 {
+            m.perceiveBonds()
+            if perceiveOrders && m.atoms.count < 2000 { m.perceiveBondOrders() }
+        }
+        return m
+    }
+
+    // MARK: Writing
 
     public static func write(_ m: Molecule, ext: String) throws -> Data {
-        switch ext.lowercased() {
-        case "xyz": return Data(FallbackIO.writeXYZ(m).utf8)
-        case "gjf", "com": return Data(FallbackIO.writeGJF(m, route: "#p b3lyp/6-31g(d) opt", link0: []).utf8)
+        let text: String
+        switch MoleculeFileFormat.format(forExtension: ext) {
+        case .xyz?: text = XYZFormat.write(m)
+        case .pdb?: text = PDBFormat.write(m)
+        case .mol?: text = MDLMolFormat.write(m)
+        case .sdf?: text = MDLMolFormat.writeSDF([SDFRecord(molecule: m)])
+        case .cml?: text = CMLFormat.write(m)
+        case .gaussianInput?, nil:
+            var job = GaussianJob(molecule: m, route: GaussianRoute(parsing: "#p B3LYP/6-31G(d) Opt"), title: m.title.isEmpty ? "MolScope structure" : m.title)
+            job.chargeMultiplicities = [ChargeMultiplicity(charge: m.charge, multiplicity: m.multiplicity)]
+            text = job.inputText
         default: throw IOBridgeError.unsupported(ext)
         }
-    }
-
-    /// Full Gaussian input text from a job description (route etc.) plus molecule.
-    public static func gaussianInput(_ m: Molecule, route: String, title: String, link0: [String], charge: Int, multiplicity: Int, trailer: String = "") -> String {
-        var mm = m; mm.charge = charge; mm.multiplicity = multiplicity; mm.title = title
-        return FallbackIO.writeGJF(mm, route: route, link0: link0, trailer: trailer)
-    }
-
-    /// Parse a (possibly partial) Gaussian log for the job runner / results.
-    public static func parseLog(_ text: String) -> CalculationResult? { nil }
-}
-
-enum FallbackIO {
-    static func symbol(_ z: Int) -> String { BuildElementsShim.symbol(z) }
-
-    static func readXYZ(_ text: String) throws -> Molecule {
-        let lines = text.components(separatedBy: .newlines)
-        guard let n = Int(lines.first?.trimmingCharacters(in: .whitespaces) ?? ""), lines.count >= n + 2 else { throw IOBridgeError.parse("bad XYZ header") }
-        var m = Molecule(title: lines[1])
-        for i in 0..<n {
-            let f = lines[i + 2].split(whereSeparator: { $0 == " " || $0 == "\t" })
-            guard f.count >= 4, let x = Double(f[1]), let y = Double(f[2]), let z = Double(f[3]) else { throw IOBridgeError.parse("line \(i + 3)") }
-            let zn = BuildElementsShim.atomicNumber(String(f[0])) ?? Int(f[0]) ?? 0
-            m.atoms.append(Atom(id: i, atomicNumber: zn, position: Vec3(x, y, z)))
-        }
-        return m
-    }
-
-    static func writeXYZ(_ m: Molecule) -> String {
-        var s = "\(m.atoms.count)\n\(m.title)\n"
-        for a in m.atoms { s += String(format: "%-3@ %14.8f %14.8f %14.8f\n", symbol(a.atomicNumber) as NSString, a.position.x, a.position.y, a.position.z) }
-        return s
-    }
-
-    static func readGJF(_ text: String) throws -> Molecule {
-        let lines = text.components(separatedBy: .newlines)
-        var i = 0
-        while i < lines.count, lines[i].hasPrefix("%") { i += 1 }
-        while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).isEmpty { i += 1 }  // route
-        i += 1
-        var title = ""
-        while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).isEmpty { title += lines[i]; i += 1 }
-        i += 1
-        guard i < lines.count else { throw IOBridgeError.parse("no charge/multiplicity") }
-        let cm = lines[i].split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Int($0) }
-        var m = Molecule(title: title)
-        if cm.count >= 2 { m.charge = cm[0]; m.multiplicity = cm[1] }
-        i += 1
-        while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).isEmpty {
-            let f = lines[i].split(whereSeparator: { $0 == " " || $0 == "," || $0 == "\t" })
-            let nums = f.dropFirst().compactMap { Double($0) }
-            if f.count >= 4, nums.count >= 3 {
-                let sym = String(f[0].prefix { $0.isLetter })
-                let zn = BuildElementsShim.atomicNumber(sym) ?? 0
-                let p = Vec3(nums[nums.count - 3], nums[nums.count - 2], nums[nums.count - 1])
-                m.atoms.append(Atom(id: m.atoms.count, atomicNumber: zn, position: p))
-            }
-            i += 1
-        }
-        return m
-    }
-
-    static func writeGJF(_ m: Molecule, route: String, link0: [String], trailer: String = "") -> String {
-        var s = link0.map { $0.hasPrefix("%") ? $0 : "%" + $0 }.joined(separator: "\n")
-        if !s.isEmpty { s += "\n" }
-        s += route + "\n\n" + (m.title.isEmpty ? "MolScope job" : m.title) + "\n\n\(m.charge) \(m.multiplicity)\n"
-        for a in m.atoms { s += String(format: " %-3@ %14.8f %14.8f %14.8f\n", symbol(a.atomicNumber) as NSString, a.position.x, a.position.y, a.position.z) }
-        s += "\n"
-        if !trailer.isEmpty { s += trailer.trimmingCharacters(in: .newlines) + "\n\n" }
-        return s
+        return Data(text.utf8)
     }
 }

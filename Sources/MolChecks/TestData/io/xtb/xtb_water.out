@@ -1,0 +1,59 @@
+      -----------------------------------------------------------
+     |                   =====================                   |
+     |                           x T B                           |
+     |                   =====================                   |
+     |                         S. Grimme                         |
+     |          Mulliken Center for Theoretical Chemistry        |
+     |                    University of Bonn                     |
+      -----------------------------------------------------------
+
+   * xtb version 6.7.1 (edcfbbe) compiled by 'conda@1efc2f54142f' on 2024-05-14
+
+   xtb is free software: you can redistribute it and/or modify it under
+   the terms of the GNU Lesser General Public License.
+
+           -------------------------------------------------
+          | Hand-written fixture following the xtb 6.x log  |
+           -------------------------------------------------
+
+   #   Z          covCN         q      C6AA      α(0)
+    1   8 O        1.972    -0.58427    16.62847     5.27640
+    2   1 H        0.987     0.29214     1.63562     0.77230
+    3   1 H        0.987     0.29214     1.63562     0.77230
+
+   Mol. C6AA /au·bohr⁶  :         39.7285
+   Mol. α(0) /au        :          6.8210
+
+molecular dipole:
+                 x           y           z       tot (Debye)
+ q only:        0.000       0.000      -0.357
+   full:        0.000       0.000      -0.357       0.909
+
+         :::::::::::::::::::::::::::::::::::::::::::::::::::::
+         ::                     SUMMARY                     ::
+         :::::::::::::::::::::::::::::::::::::::::::::::::::::
+         :: total energy              -5.070544440612 Eh    ::
+         :: gradient norm              0.000123456789 Eh/a0 ::
+         :: HOMO-LUMO gap             14.612345678901 eV    ::
+         :::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+   *** GEOMETRY OPTIMIZATION CONVERGED AFTER 5 ITERATIONS ***
+
+           -------------------------------------------------
+          | TOTAL ENERGY               -5.070544440612 Eh   |
+          | GRADIENT NORM               0.000123456789 Eh/α |
+          | HOMO-LUMO GAP              14.612345678901 eV   |
+           -------------------------------------------------
+
+           ------------------------------------------------- 
+          |                Thermodynamics                   |
+           ------------------------------------------------- 
+         :: zero point energy          0.021460000000 Eh    ::
+         :: G(RRHO) contrib.           0.000980000000 Eh    ::
+         :: total enthalpy            -5.045300000000 Eh    ::
+         :: total free energy         -5.069564440612 Eh    ::
+
+------------------------------------------------------------------------
+ * finished run on 2024/05/14 at 12:00:00.000
+------------------------------------------------------------------------
+normal termination of xtb

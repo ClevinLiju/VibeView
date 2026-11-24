@@ -4,67 +4,142 @@ import UniformTypeIdentifiers
 import MolCore
 import MolBuild
 
-/// "Calculation Setup": build a Gaussian input for the current molecule, save it, or queue it.
+/// "Calculation Setup": one sheet for Gaussian, ORCA, Q-Chem and xtb. Live input preview, save, or run.
 struct CalcSetupSheet: View {
     @ObservedObject var editor: EditorModel
+    @ObservedObject private var queue = JobQueue.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
-    @StateObject private var model: CalcModel
+    @State private var setup: CalcSetup
+    @State private var message = ""
 
     init(editor: EditorModel) {
         self.editor = editor
         let d = UserDefaults.standard
-        var s = CalcSpec(molecule: editor.molecule)
-        if let m = d.string(forKey: AppSettings.defaultMethodKey), !m.isEmpty { s.method = m }
-        if let b = d.string(forKey: AppSettings.defaultBasisKey), !b.isEmpty { s.basis = b }
-        let np = d.integer(forKey: AppSettings.processorsKey)
-        if np > 0 { s.nprocShared = np }
-        if let mem = d.string(forKey: AppSettings.memoryKey), !mem.isEmpty { s.memory = mem }
-        let base = editor.fileURL?.deletingPathExtension().lastPathComponent ?? "molecule"
+        let program = d.string(forKey: AppSettings.lastProgramKey).flatMap(QCProgram.init(rawValue:)) ?? .gaussian
+        var s = CalcSetup(molecule: editor.molecule, program: program)
+        Self.applyStored(&s, defaults: d)
+        let base = Self.baseName(editor)
         s.checkpoint = base + ".chk"
         s.title = editor.molecule.title
-        _model = StateObject(wrappedValue: CalcModel(spec: s, checkpointName: base + ".chk"))
+        _setup = State(initialValue: s)
     }
 
-    private var problems: [String] { model.spec.validate(molecule: editor.molecule) }
-    private var preview: String { model.spec.inputText(molecule: editor.molecule) }
+    private static func baseName(_ editor: EditorModel) -> String {
+        editor.fileURL?.deletingPathExtension().lastPathComponent ?? "molecule"
+    }
+
+    private static func methodKey(_ p: QCProgram) -> String { "molscope.calc.method.\(p.rawValue)" }
+    private static func basisKey(_ p: QCProgram) -> String { "molscope.calc.basis.\(p.rawValue)" }
+
+    /// Last used method/basis for the program, else the Preferences defaults (Gaussian), else the catalog defaults.
+    private static func applyStored(_ s: inout CalcSetup, defaults d: UserDefaults) {
+        let p = s.program
+        if let m = d.string(forKey: methodKey(p)), !m.isEmpty { s.method = m }
+        else if p == .gaussian, let m = d.string(forKey: AppSettings.defaultMethodKey), !m.isEmpty { s.method = m }
+        if p != .xtb {
+            if let b = d.string(forKey: basisKey(p)), !b.isEmpty { s.basis = b }
+            else if p == .gaussian, let b = d.string(forKey: AppSettings.defaultBasisKey), !b.isEmpty { s.basis = b }
+        }
+        if p == .xtb, let x = XTBMethod.allCases.first(where: { $0.title == s.method }) { s.xtbMethod = x }
+        let np = d.integer(forKey: AppSettings.processorsKey)
+        if np > 0 { s.nprocs = np }
+        if let mem = d.string(forKey: AppSettings.memoryKey), let mb = CalcSetup.parseMemoryMB(mem) { s.memoryMB = mb }
+    }
+
+    private var problems: [String] { setup.validate(molecule: editor.molecule) }
+    private var inputText: String { setup.inputText(molecule: editor.molecule) }
+    private var inputName: String { "job." + setup.program.inputExtension }
+    private var preview: String {
+        guard setup.program == .xtb else { return inputText }
+        return "# " + setup.commandLine(program: "xtb", inputFileName: inputName) + "\n# \(inputName):\n\n" + inputText
+    }
+    private var programMissing: Bool { !queue.isAvailable(setup.program) }
 
     var body: some View {
         VStack(spacing: 0) {
+            Picker("Program", selection: programBinding) {
+                ForEach(QCProgram.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            .padding([.horizontal, .top]).padding(.bottom, 8)
+            Divider()
             HStack(alignment: .top, spacing: 0) {
-                Form { jobSection; theorySection; chargeSection; environmentSection; resourcesSection; extrasSection }
+                Form { jobSection; theorySection; stateSection; solventSection; resourcesSection; extrasSection }
                     .formStyle(.grouped)
                     .frame(minWidth: 400, idealWidth: 430)
                 Divider()
-                previewPane.frame(minWidth: 360)
+                previewPane.frame(minWidth: 380)
             }
             Divider()
             footer
         }
-        .frame(minWidth: 840, minHeight: 640)
-        .navigationTitle("Calculation Setup")
+        .frame(minWidth: 860, minHeight: 560)
+        .onAppear { queue.refreshAvailability() }
+    }
+
+    // MARK: Bindings
+
+    private var programBinding: Binding<QCProgram> {
+        Binding(get: { setup.program }, set: { p in
+            guard p != setup.program else { return }
+            var s = setup
+            s.setProgram(p)
+            Self.applyStored(&s, defaults: .standard)
+            if s.jobType != setup.jobType, !s.supportedJobTypes.contains(s.jobType) { s.jobType = .optimize }
+            setup = s
+            UserDefaults.standard.set(p.rawValue, forKey: AppSettings.lastProgramKey)
+        })
+    }
+
+    private var methodBinding: Binding<String> {
+        Binding(get: { setup.method }, set: { setup.method = $0; UserDefaults.standard.set($0, forKey: Self.methodKey(setup.program)) })
+    }
+    private var basisBinding: Binding<String> {
+        Binding(get: { setup.basis }, set: { setup.basis = $0; UserDefaults.standard.set($0, forKey: Self.basisKey(setup.program)) })
+    }
+    private var xtbBinding: Binding<XTBMethod> {
+        Binding(get: { setup.xtbMethod }, set: { setup.xtbMethod = $0; setup.method = $0.title; UserDefaults.standard.set($0.title, forKey: Self.methodKey(.xtb)) })
+    }
+
+    private var solvationKind: Binding<String> {
+        Binding(get: { setup.solvation.model }, set: { k in
+            let s = setup.solvation.solvent ?? "Water"
+            switch k { case "PCM": setup.solvation = .pcm(s); case "SMD": setup.solvation = .smd(s); default: setup.solvation = .none }
+        })
+    }
+    private var solventBinding: Binding<String> {
+        Binding(get: { setup.solvation.solvent ?? "Water" }, set: { s in
+            switch setup.solvation { case .pcm: setup.solvation = .pcm(s); case .smd: setup.solvation = .smd(s); case .none: break }
+        })
+    }
+
+    private var implicitModelName: String {
+        switch setup.program { case .orca: "CPCM"; case .xtb: "ALPB"; default: "PCM" }
     }
 
     // MARK: Sections
 
     private var jobSection: some View {
         Section("Job Kind") {
-            Picker("Task", selection: $model.spec.jobType) {
-                ForEach(JobType.allCases) { Text($0.title).tag($0) }
+            Picker("Task", selection: $setup.jobType) {
+                ForEach(setup.supportedJobTypes) { Text($0.title).tag($0) }
             }
-            switch model.spec.jobType {
+            switch setup.jobType {
             case .scan:
-                ScanCoordinateEditor(coordinates: $model.spec.scanCoordinates, picks: editor.measurePicks, atomCount: editor.molecule.atoms.count)
+                ScanCoordinateEditor(coordinates: $setup.scanCoordinates, picks: editor.measurePicks, atomCount: editor.molecule.atoms.count)
             case .irc:
-                Picker("Direction", selection: $model.spec.ircDirection) { ForEach(IRCDirection.allCases) { Text($0.title).tag($0) } }
-                Stepper("Max points: \(model.spec.ircMaxPoints)", value: $model.spec.ircMaxPoints, in: 1...500)
-                Toggle("Compute force constants first", isOn: $model.spec.ircCalcFC)
+                Picker("Direction", selection: $setup.ircDirection) { ForEach(IRCDirection.allCases) { Text($0.title).tag($0) } }
+                Stepper("Max points: \(setup.ircMaxPoints)", value: $setup.ircMaxPoints, in: 1...500)
+                Toggle("Compute force constants first", isOn: $setup.ircCalcFC)
             case .transitionState:
-                Toggle("Compute force constants first", isOn: $model.spec.tsCalcFC)
-                Toggle("Skip Hessian eigenvalue test", isOn: $model.spec.tsNoEigenTest)
+                Toggle("Compute force constants first", isOn: $setup.tsCalcFC)
+                if setup.program == .gaussian { Toggle("Skip Hessian eigenvalue test", isOn: $setup.tsNoEigenTest) }
             case .excitedStates:
-                Stepper("States: \(model.spec.tdStates)", value: $model.spec.tdStates, in: 1...200)
-                Picker("Spin", selection: $model.spec.tdSpin) { ForEach(TDSpinKind.allCases) { Text($0.title).tag($0) } }
+                Stepper("States: \(setup.tdStates)", value: $setup.tdStates, in: 1...200)
+                Picker("Spin", selection: $setup.tdSpin) {
+                    ForEach(TDSpinKind.allCases.filter { setup.program != .orca || $0 == .unspecified || $0 == .triplets }) { Text($0.title).tag($0) }
+                }
             default: EmptyView()
             }
         }
@@ -72,67 +147,72 @@ struct CalcSetupSheet: View {
 
     private var theorySection: some View {
         Section("Level of Theory") {
-            ChoiceField(title: "Method", options: CalcSpec.methods, value: $model.spec.method)
-            ChoiceField(title: "Basis set", options: CalcSpec.bases, value: $model.spec.basis)
-        }
-    }
-
-    private var chargeSection: some View {
-        Section("Electronic State") {
-            Stepper("Charge: \(model.spec.charge)", value: $model.spec.charge, in: -10...10)
-            Stepper("Multiplicity: \(model.spec.multiplicity)", value: $model.spec.multiplicity, in: 1...12)
-            Button("Use molecule's values (\(editor.molecule.charge), \(editor.molecule.multiplicity))") {
-                model.spec.charge = editor.molecule.charge; model.spec.multiplicity = editor.molecule.multiplicity
-            }.buttonStyle(.link)
-            if !problems.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(problems, id: \.self) { Label($0, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout) }
-                }
+            if setup.program == .xtb {
+                Picker("Method", selection: xtbBinding) { ForEach(XTBMethod.allCases) { Text($0.title).tag($0) } }
+            } else {
+                ChoiceField(title: "Method", options: CalcSetup.methods(for: setup.program), value: methodBinding)
+                ChoiceField(title: "Basis set", options: CalcSetup.bases(for: setup.program), value: basisBinding)
             }
         }
     }
 
-    private var solvationKind: Binding<String> {
-        Binding(get: { model.spec.solvation.model }, set: { k in
-            let s = model.spec.solvation.solvent ?? "Water"
-            switch k { case "PCM": model.spec.solvation = .pcm(s); case "SMD": model.spec.solvation = .smd(s); default: model.spec.solvation = .none }
-        })
-    }
-    private var solventBinding: Binding<String> {
-        Binding(get: { model.spec.solvation.solvent ?? "Water" }, set: { s in
-            switch model.spec.solvation { case .pcm: model.spec.solvation = .pcm(s); case .smd: model.spec.solvation = .smd(s); case .none: break }
-        })
+    private var stateSection: some View {
+        Section("Electronic State") {
+            Stepper("Charge: \(setup.charge)", value: $setup.charge, in: -10...10)
+            Stepper("Multiplicity: \(setup.multiplicity)", value: $setup.multiplicity, in: 1...12)
+            Button("Use molecule's values (\(editor.molecule.charge), \(editor.molecule.multiplicity))") {
+                setup.charge = editor.molecule.charge; setup.multiplicity = editor.molecule.multiplicity
+            }.buttonStyle(.link)
+        }
     }
 
-    private var environmentSection: some View {
+    private var solventSection: some View {
         Section("Environment") {
             Picker("Solvent model", selection: solvationKind) {
-                Text("Gas phase").tag("None"); Text("PCM").tag("PCM"); Text("SMD").tag("SMD")
+                Text("Gas phase").tag("None")
+                Text(implicitModelName).tag("PCM")
+                if setup.program != .xtb { Text("SMD").tag("SMD") }
             }
-            if model.spec.solvation != .none {
-                ChoiceField(title: "Solvent", options: CalcSpec.solvents, value: solventBinding)
+            if !setup.solvation.isNone {
+                ChoiceField(title: "Solvent", options: CalcSetup.solvents, value: solventBinding)
             }
         }
     }
 
     private var resourcesSection: some View {
         Section("Resources") {
-            Stepper("Processors: \(model.spec.nprocShared)", value: $model.spec.nprocShared, in: 1...256)
-            TextField("Memory", text: $model.spec.memory, prompt: Text("4GB"))
-            TextField("Checkpoint file", text: $model.checkpointName, prompt: Text("none"))
-                .onChange(of: model.checkpointName) { _, v in
-                    let t = v.trimmingCharacters(in: .whitespaces)
-                    model.spec.checkpoint = t.isEmpty ? nil : t
-                }
+            Stepper("Cores: \(setup.nprocs)", value: $setup.nprocs, in: 1...256)
+            Stepper("Memory: \(memoryLabel)", value: $setup.memoryMB, in: 512...1_048_576, step: 512)
+            if setup.program == .gaussian {
+                TextField("Checkpoint file", text: Binding(get: { setup.checkpoint ?? "" }, set: {
+                    let t = $0.trimmingCharacters(in: .whitespaces); setup.checkpoint = t.isEmpty ? nil : t
+                }), prompt: Text("none"))
+            }
         }
+    }
+
+    private var memoryLabel: String {
+        setup.memoryMB % 1024 == 0 ? "\(setup.memoryMB / 1024) GB" : "\(setup.memoryMB) MB"
     }
 
     private var extrasSection: some View {
         Section("Extras") {
-            Picker("Output detail", selection: $model.spec.printLevel) { ForEach(PrintLevel.allCases) { Text($0.title).tag($0) } }
-            TextField("Extra keywords", text: $model.spec.extraKeywords, prompt: Text("e.g. Int=UltraFine"))
+            if setup.program == .gaussian {
+                Picker("Output detail", selection: $setup.printLevel) { ForEach(PrintLevel.allCases) { Text($0.title).tag($0) } }
+            }
+            TextField(setup.program == .qchem ? "Extra $rem lines" : "Extra keywords", text: $setup.extraKeywords,
+                      prompt: Text(extraPrompt))
                 .font(.system(.body, design: .monospaced))
-            TextField("Title", text: $model.spec.title, prompt: Text(editor.molecule.title.isEmpty ? "MolScope calculation" : editor.molecule.title))
+            TextField("Title", text: $setup.title, prompt: Text(editor.molecule.title.isEmpty ? "MolScope calculation" : editor.molecule.title))
+        }
+    }
+
+    private var extraPrompt: String {
+        switch setup.program {
+        case .gaussian: "e.g. Int=UltraFine"
+        case .orca: "e.g. TightSCF D3BJ"
+        case .qchem: "e.g. SCF_CONVERGENCE 8"
+        case .xtb: "e.g. --acc 0.1"
         }
     }
 
@@ -140,13 +220,7 @@ struct CalcSetupSheet: View {
 
     private var previewPane: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Input Preview").font(.headline)
-                Spacer()
-                Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(preview, forType: .string) } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-            }
+            Text("Input Preview").font(.headline)
             ScrollView([.vertical, .horizontal]) {
                 Text(preview)
                     .font(.system(size: 12, design: .monospaced))
@@ -155,54 +229,67 @@ struct CalcSetupSheet: View {
                     .padding(8)
             }
             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            if !problems.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(problems, id: \.self) { Label($0, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout) }
+                }
+            }
         }
         .padding()
     }
 
+    private var runHelp: String {
+        if programMissing { return "\(setup.program.title) not found \u{2014} set its path in Settings" }
+        if !problems.isEmpty { return "Fix the problems listed below the preview first" }
+        return "Run \(setup.program.title) on this molecule"
+    }
+
     private var footer: some View {
         HStack {
-            if !model.message.isEmpty { Text(model.message).font(.callout).foregroundStyle(.secondary).lineLimit(2) }
+            if !message.isEmpty { Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(2) }
             Spacer()
             Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-            Button("Save Input\u{2026}") { _ = save() }
-            Button("Save & Run") {
-                if let url = save() {
-                    JobQueue.shared.enqueue(inputURL: url)
-                    openWindow(id: "job-queue")
-                    dismiss()
-                }
+            Button("Copy Input") {
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(inputText, forType: .string)
+                message = "Input copied"
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(!problems.isEmpty)
+            Button("Save Input\u{2026}") { _ = save() }
+            Button("Run") { run() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(programMissing || !problems.isEmpty)
+                .help(runHelp)
         }
         .padding()
+    }
+
+    private func run() {
+        do {
+            try queue.submit(setup: setup, molecule: editor.molecule, name: Self.baseName(editor), documentURL: editor.fileURL)
+            editor.statusMessage = "Queued \(setup.program.title) job"
+            openWindow(id: "job-queue")
+            dismiss()
+        } catch {
+            message = error.localizedDescription
+        }
     }
 
     /// Runs a save panel and writes the input file. Returns the saved URL.
     private func save() -> URL? {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = ["gjf", "com"].compactMap { UTType(filenameExtension: $0) }
+        let ext = setup.program.inputExtension
+        panel.allowedContentTypes = [UTType(filenameExtension: ext)].compactMap { $0 }
         panel.canCreateDirectories = true
-        panel.title = "Save Gaussian Input"
-        let base = editor.fileURL?.deletingPathExtension().lastPathComponent ?? "molecule"
-        panel.nameFieldStringValue = base + ".gjf"
+        panel.title = "Save \(setup.program.title) Input"
+        panel.nameFieldStringValue = Self.baseName(editor) + "." + ext
         if let dir = editor.fileURL?.deletingLastPathComponent() { panel.directoryURL = dir }
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         do {
-            try preview.write(to: url, atomically: true, encoding: .utf8)
-            model.message = "Saved \(url.lastPathComponent)"
+            try inputText.write(to: url, atomically: true, encoding: .utf8)
+            message = "Saved \(url.lastPathComponent)"
             return url
         } catch {
-            model.message = "Could not save: \(error.localizedDescription)"
+            message = "Could not save: \(error.localizedDescription)"
             return nil
         }
     }
-}
-
-@MainActor
-final class CalcModel: ObservableObject {
-    @Published var spec: CalcSpec
-    @Published var checkpointName: String
-    @Published var message: String = ""
-    init(spec: CalcSpec, checkpointName: String) { self.spec = spec; self.checkpointName = checkpointName }
 }

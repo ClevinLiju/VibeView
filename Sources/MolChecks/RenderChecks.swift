@@ -11,7 +11,7 @@ import AppKit
 // RenderChecks+Media.swift (worker C). SceneKit/AppKit objects are created on the main thread;
 // main-actor APIs are reached with MainActor.assumeIsolated (checks run on the main thread).
 extension Checks {
-    static let render: [Check] = renderCore + renderScene + renderInteraction + renderMedia
+    static let render: [Check] = renderCore + renderScene + renderInteraction + renderMedia + renderVisual
 
     static let renderCore: [Check] = [
         Check("render.core.chargeColorMap") {

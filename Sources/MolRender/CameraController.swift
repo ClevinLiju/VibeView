@@ -1,4 +1,5 @@
 import SceneKit
+import QuartzCore
 import simd
 import MolCore
 
@@ -95,6 +96,10 @@ public struct CameraState: Codable, Equatable, Sendable {
     /// Drag deltas in view points (AppKit: dy > 0 is a drag downwards).
     public func orbit(dx: Double, dy: Double) {
         guard dx.isFinite, dy.isFinite, dx != 0 || dy != 0 else { return }
+        cancelMotion()
+        orbitImpl(dx: dx, dy: dy)
+    }
+    private func orbitImpl(dx: Double, dy: Double) {
         let qy = simd_quatd(angle: -dx * orbitSensitivity, axis: Vec3(0, 1, 0))
         let qx = simd_quatd(angle: -dy * orbitSensitivity, axis: Vec3(1, 0, 0))
         orientation = simd_normalize(orientation * qy * qx)
@@ -103,6 +108,10 @@ public struct CameraState: Codable, Equatable, Sendable {
 
     public func pan(dx: Double, dy: Double, viewSize: CGSize) {
         guard dx.isFinite, dy.isFinite, viewSize.height > 0 else { return }
+        cancelMotion()
+        panImpl(dx: dx, dy: dy, viewSize: viewSize)
+    }
+    private func panImpl(dx: Double, dy: Double, viewSize: CGSize) {
         let halfH = projection == .orthographic ? orthoScale : distance * tanHalfFOV
         let upp = 2 * halfH / Double(viewSize.height)
         target += -rightVector * (dx * upp) + upVector * (dy * upp)
@@ -112,6 +121,7 @@ public struct CameraState: Codable, Equatable, Sendable {
     /// factor > 1 zooms in.
     public func zoom(by factor: Double) {
         guard factor.isFinite, factor > 1e-6 else { return }
+        cancelMotion()
         if projection == .orthographic {
             orthoScale = min(Self.maxDistance, max(Self.minScale, orthoScale / factor))
         } else {
@@ -122,13 +132,16 @@ public struct CameraState: Codable, Equatable, Sendable {
 
     public func roll(radians: Double) {
         guard radians.isFinite, radians != 0 else { return }
+        cancelMotion()
         orientation = simd_normalize(orientation * simd_quatd(angle: -radians, axis: Vec3(0, 0, 1)))
         apply()
     }
 
     public func fit(center: Vec3, radius: Double, animated: Bool = false) {
+        cancelMotion()
         let r = max(radius, 0.1)
         let aspect = max(0.05, aspectProvider?() ?? 1)
+        let from = state
         target = center
         sceneRadius = r
         distance = min(Self.maxDistance, CameraMath.fitDistance(radius: r, verticalFOVDegrees: fovDegrees, aspect: aspect, margin: fitMargin))
@@ -137,15 +150,127 @@ public struct CameraState: Codable, Equatable, Sendable {
         } else {
             orthoScale = max(Self.minScale, distance * tanHalfFOV)
         }
-        apply(animated: animated)
+        if animated && animationDuration > 0 {
+            let to = state
+            state = from
+            animate(to: to, duration: animationDuration)
+        } else { apply() }
     }
 
     public func setStandardView(_ v: StandardView, animated: Bool = false) {
-        orientation = CameraMath.orientation(for: v)
-        apply(animated: animated)
+        var to = state
+        let q = CameraMath.orientation(for: v)
+        to.orientation = SIMD4(q.vector.x, q.vector.y, q.vector.z, q.vector.w)
+        setState(to, animated: animated)
+    }
+
+    public func setState(_ s: CameraState, animated: Bool = false) {
+        if animated && animationDuration > 0 { animate(to: s, duration: animationDuration) }
+        else { cancelMotion(); state = s }
+    }
+
+    // MARK: Animation & inertia
+
+    public var inertiaEnabled = true
+    public private(set) var isAnimating = false
+    public var isInertiaActive: Bool { orbitVel != .zero || panVel != .zero }
+    private var animFrom: CameraState?
+    private var animTo: CameraState?
+    private var animElapsed = 0.0, animLength = 0.35
+    private var orbitVel = SIMD2<Double>.zero   // points / second
+    private var panVel = SIMD2<Double>.zero
+    private var panViewSize = CGSize(width: 800, height: 600)
+    static let inertiaTau = 0.3, inertiaStop = 8.0
+    private var timer: Timer?
+    private var lastTick: CFTimeInterval = 0
+
+    /// Smoothly move to `s` (slerp orientation, lerp target, geometric distance / scale).
+    public func animate(to s: CameraState, duration: TimeInterval = 0.35) {
+        cancelMotion()
+        guard duration > 0 else { state = s; return }
+        animFrom = state; animTo = s
+        animElapsed = 0; animLength = duration
+        isAnimating = true
+        startTimer()
+    }
+
+    public func startInertia(orbitVelocity v: SIMD2<Double>) {
+        guard inertiaEnabled, v.x.isFinite, v.y.isFinite, simd_length(v) > Self.inertiaStop else { return }
+        cancelMotion(); orbitVel = v; startTimer()
+    }
+    public func startPanInertia(velocity v: SIMD2<Double>, viewSize: CGSize) {
+        guard inertiaEnabled, v.x.isFinite, v.y.isFinite, simd_length(v) > Self.inertiaStop, viewSize.height > 0 else { return }
+        cancelMotion(); panVel = v; panViewSize = viewSize; startTimer()
+    }
+    public func stopInertia() { orbitVel = .zero; panVel = .zero; stopTimerIfIdle() }
+    /// Cancels any in-flight animation and inertia (state stays where it is).
+    public func cancelMotion() {
+        isAnimating = false; animFrom = nil; animTo = nil
+        orbitVel = .zero; panVel = .zero
+        stopTimerIfIdle()
+    }
+
+    /// Advance animation and inertia by `dt` seconds (driven by the timer; callable directly for deterministic tests).
+    public func advanceAnimation(by dt: TimeInterval) {
+        guard dt > 0, dt.isFinite else { return }
+        if isAnimating, let a = animFrom, let b = animTo {
+            animElapsed += dt
+            let u = min(1, animElapsed / animLength)
+            if u >= 1 { isAnimating = false; animFrom = nil; animTo = nil; state = b }
+            else {
+                let e = u * u * (3 - 2 * u)
+                state = Self.interpolate(a, b, e)
+            }
+        }
+        if orbitVel != .zero {
+            orbitImpl(dx: orbitVel.x * dt, dy: orbitVel.y * dt)
+            orbitVel *= exp(-dt / Self.inertiaTau)
+            if simd_length(orbitVel) < Self.inertiaStop { orbitVel = .zero }
+        }
+        if panVel != .zero {
+            panImpl(dx: panVel.x * dt, dy: panVel.y * dt, viewSize: panViewSize)
+            panVel *= exp(-dt / Self.inertiaTau)
+            if simd_length(panVel) < Self.inertiaStop { panVel = .zero }
+        }
+        stopTimerIfIdle()
+    }
+
+    static func interpolate(_ a: CameraState, _ b: CameraState, _ e: Double) -> CameraState {
+        var s = b
+        let qa = simd_quatd(ix: a.orientation.x, iy: a.orientation.y, iz: a.orientation.z, r: a.orientation.w)
+        var qb = simd_quatd(ix: b.orientation.x, iy: b.orientation.y, iz: b.orientation.z, r: b.orientation.w)
+        if simd_dot(qa.vector, qb.vector) < 0 { qb = simd_quatd(vector: -qb.vector) }
+        let q = simd_normalize(simd_slerp(qa, qb, e))
+        s.orientation = SIMD4(q.vector.x, q.vector.y, q.vector.z, q.vector.w)
+        s.target = a.target + (b.target - a.target) * e
+        s.distance = a.distance * pow(b.distance / a.distance, e)
+        s.orthographicScale = a.orthographicScale * pow(b.orthographicScale / a.orthographicScale, e)
+        s.sceneRadius = a.sceneRadius + (b.sceneRadius - a.sceneRadius) * e
+        s.projection = a.projection == b.projection ? b.projection : (e < 1 ? a.projection : b.projection)
+        return s
+    }
+
+    private func startTimer() {
+        guard timer == nil else { return }
+        lastTick = CACurrentMediaTime()
+        let t = Timer(timeInterval: 1.0 / 90, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let now = CACurrentMediaTime()
+                let dt = min(0.1, now - self.lastTick); self.lastTick = now
+                self.advanceAnimation(by: dt)
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+    private func stopTimerIfIdle() {
+        guard !isAnimating, orbitVel == .zero, panVel == .zero else { return }
+        timer?.invalidate(); timer = nil
     }
 
     public func reset() {
+        cancelMotion()
         orientation = CameraMath.orientation(for: .front)
         target = .zero; distance = 20; sceneRadius = 5
         orthoScale = distance * tanHalfFOV
@@ -183,19 +308,13 @@ public struct CameraState: Codable, Equatable, Sendable {
 
     // MARK: Apply
 
-    private func apply(animated: Bool = false) {
+    private func apply() {
         guard let cam = node.camera else { return }
         let pos = eye
         let ori = orientation
         let ortho = projection == .orthographic
         let near = max(0.02, distance - sceneRadius * 3), far = distance + sceneRadius * 4 + 10
-        if animated && animationDuration > 0 {
-            SCNTransaction.begin()
-            SCNTransaction.animationDuration = animationDuration
-            SCNTransaction.animationTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        } else {
-            SCNTransaction.begin(); SCNTransaction.animationDuration = 0
-        }
+        SCNTransaction.begin(); SCNTransaction.animationDuration = 0
         node.simdPosition = SIMD3<Float>(Float(pos.x), Float(pos.y), Float(pos.z))
         node.simdOrientation = simd_quatf(ix: Float(ori.imag.x), iy: Float(ori.imag.y), iz: Float(ori.imag.z), r: Float(ori.real))
         cam.usesOrthographicProjection = ortho

@@ -178,7 +178,11 @@ extension Checks {
             try giThrows(h + "O\nH 1 1.0\nH 1 1.0 1 90.0\n", "duplicate refs")
             try giThrows(h + "O\nH 1 *\n", "bad value")
             try giThrows(h + "O\nH 1 r\n\nr abc\n\n", "bad variable value")
-            try giThrows(h + "C\nH 1 1.0 2\n", "odd field count")
+            // "H 1 1.0 2" has 3 numeric fields and is a valid Cartesian line (H at 1,1,2), so it is not an
+            // error; odd field counts are tested on Z-matrix rows that cannot be Cartesian.
+            try expect(try GaussianInputReader.parse(h + "C\nH 1 1.0 2\n\n")[0].molecule.atoms[1].position == Vec3(1, 1, 2))
+            try giThrows(h + "C\nH 1 1.0\nH 1 1.0 2 90.0 7\n", "odd field count (extra field on atom 3)")
+            try giThrows(h + "C\nH 1 1.0 2 90.0 3\n", "odd field count on atom 2")
         },
         Check("io.gjf.oniom") {
             let j = try giLoad("input_oniom.com")[0]

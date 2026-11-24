@@ -58,6 +58,7 @@ import MolCore
 
     func hover(at point: CGPoint?) {
         let t: PickTarget = point.map { hitTest($0) } ?? .none
+        renderer.lastHoverLocation = point
         if t != renderer.hovered { renderer.hovered = t }
     }
 

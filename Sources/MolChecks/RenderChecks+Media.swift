@@ -176,7 +176,8 @@ extension Checks {
             try expect(!g.sources(for: .color).isEmpty, "color source missing")
             try MainActor.assumeIsolated {
                 var s = Isosurface(id: "c", meshes: [m]); s.opacity = 1
-                let c = IsosurfaceNodeBuilder.build(s).childNodes[0].geometry!.firstMaterial!.diffuse.contents as! NSColor
+                let c0 = IsosurfaceNodeBuilder.build(s).childNodes[0].geometry!.firstMaterial!.diffuse.contents as! NSColor
+                let c = c0.usingColorSpace(.sRGB)!
                 try expectClose(Double(c.redComponent), 1, tol: 0.01); try expectClose(Double(c.blueComponent), 1, tol: 0.01)
             }
         },

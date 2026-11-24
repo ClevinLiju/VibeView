@@ -3,8 +3,7 @@ import MolCore
 
 /// Caches one SCNMaterial per (color, preset) so thousands of nodes share materials.
 ///
-/// Presets: matte = blinn with faint specular; glossy = blinn with white specular and a tight highlight;
-/// metallic = physically based (metalness 0.5, roughness 0.3); flat = constant (unlit) shading.
+/// Presets: all physically based except flat (constant/unlit); see `pbrParameters` for the values.
 /// Colors with alpha < 1 get `transparency = alpha`, dual-layer transparency and depth writes on,
 /// so overlapping translucent shells (space-filling) sort acceptably.
 public final class MaterialLibrary {
@@ -33,25 +32,33 @@ public final class MaterialLibrary {
         return m
     }
 
+    /// PBR parameters per preset (roughness, metalness, clear coat, clear-coat roughness).
+    public static func pbrParameters(_ p: MaterialPreset) -> (roughness: Double, metalness: Double, clearCoat: Double, clearCoatRoughness: Double) {
+        switch p {
+        case .matte: return (0.82, 0, 0, 0)
+        case .glossy: return (0.34, 0, 0.55, 0.07)
+        case .satin: return (0.5, 0, 0.2, 0.28)
+        case .ceramic: return (0.42, 0, 1.0, 0.03)
+        case .metallic: return (0.3, 0.5, 0.3, 0.1)
+        case .flat: return (1, 0, 0, 0)
+        }
+    }
+
     /// Build an uncached material (also used by checks).
     public static func makeMaterial(color: RGBA, preset: MaterialPreset) -> SCNMaterial {
         let m = SCNMaterial()
         m.diffuse.contents = RGBA(color.r, color.g, color.b, 1).nsColor
-        switch preset {
-        case .matte:
-            m.lightingModel = .blinn
-            m.specular.contents = NSColor(white: 0.08, alpha: 1)
-            m.shininess = 0.1
-        case .glossy:
-            m.lightingModel = .blinn
-            m.specular.contents = NSColor.white
-            m.shininess = 0.6
-        case .metallic:
-            m.lightingModel = .physicallyBased
-            m.metalness.contents = 0.5
-            m.roughness.contents = 0.3
-        case .flat:
+        if preset == .flat {
             m.lightingModel = .constant
+        } else {
+            let p = pbrParameters(preset)
+            m.lightingModel = .physicallyBased
+            m.roughness.contents = NSNumber(value: p.roughness)
+            m.metalness.contents = NSNumber(value: p.metalness)
+            if p.clearCoat > 0 {
+                m.clearCoat.contents = NSNumber(value: p.clearCoat)
+                m.clearCoatRoughness.contents = NSNumber(value: p.clearCoatRoughness)
+            }
         }
         if color.a < 1 {
             m.transparency = CGFloat(max(0, color.a))

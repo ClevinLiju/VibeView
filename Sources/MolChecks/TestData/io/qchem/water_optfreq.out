@@ -1,0 +1,131 @@
+ Hand-written fixture following the public Q-Chem output layout (Q-Chem itself was not available).
+ Q-Chem 6.1, Q-Chem, Inc., Pleasanton, CA 94588
+
+ Running Job 1 of 2 water_optfreq.in
+ --------------------------------------------------------------
+ User input:
+ --------------------------------------------------------------
+ $molecule
+ 0 1
+ O    0.000000    0.000000    0.117300
+ H    0.000000    0.757200   -0.469200
+ H    0.000000   -0.757200   -0.469200
+ $end
+
+ $rem
+ JOBTYPE      opt
+ METHOD       b3lyp
+ BASIS        def2-svp
+ $end
+ --------------------------------------------------------------
+
+                    Standard Nuclear Orientation (Angstroms)
+    I     Atom           X                Y                Z
+ ----------------------------------------------------------------
+    1      O       0.000000     0.000000     0.117300
+    2      H       0.000000     0.757200    -0.469200
+    3      H       0.000000    -0.757200    -0.469200
+ ----------------------------------------------------------------
+ There are       5 alpha and       5 beta electrons
+ Total energy in the final basis set =      -76.3000000000
+
+ Optimization Cycle:   1
+
+                    Standard Nuclear Orientation (Angstroms)
+    I     Atom           X                Y                Z
+ ----------------------------------------------------------------
+    1      O       0.000000     0.000000     0.121000
+    2      H       0.000000     0.764000    -0.472000
+    3      H       0.000000    -0.764000    -0.472000
+ ----------------------------------------------------------------
+ Total energy in the final basis set =      -76.3100000000
+
+ Optimization Cycle:   2
+
+                    Standard Nuclear Orientation (Angstroms)
+    I     Atom           X                Y                Z
+ ----------------------------------------------------------------
+    1      O       0.000000     0.000000     0.122000
+    2      H       0.000000     0.766000    -0.473000
+    3      H       0.000000    -0.766000    -0.473000
+ ----------------------------------------------------------------
+ Total energy in the final basis set =      -76.3150000000
+
+         **  OPTIMIZATION CONVERGED  **
+
+ Final energy is      -76.3150000000
+
+ Running Job 2 of 2 water_optfreq.in
+ --------------------------------------------------------------
+ User input:
+ --------------------------------------------------------------
+ $molecule
+ read
+ $end
+
+ $rem
+ JOBTYPE      freq
+ METHOD       b3lyp
+ BASIS        def2-svp
+ $end
+ --------------------------------------------------------------
+
+                    Standard Nuclear Orientation (Angstroms)
+    I     Atom           X                Y                Z
+ ----------------------------------------------------------------
+    1      O       0.000000     0.000000     0.122000
+    2      H       0.000000     0.766000    -0.473000
+    3      H       0.000000    -0.766000    -0.473000
+ ----------------------------------------------------------------
+ Total energy in the final basis set =      -76.3150000000
+
+          Orbital Energies (a.u.)
+          -----------------------
+
+ Alpha MOs
+ -- Occupied --
+-19.1000  -0.9800  -0.5300  -0.4200  -0.3600
+ -- Virtual --
+  0.0500   0.1400   0.5200
+ -----------------------------------------------------------------
+
+          Ground-State Mulliken Net Atomic Charges
+
+     Atom                 Charge (a.u.)
+  ----------------------------------------
+      1 O                    -0.452000
+      2 H                     0.226000
+      3 H                     0.226000
+  ----------------------------------------
+  Sum of atomic charges =     0.000000
+
+ Dipole Moment (Debye)
+      X       0.0000      Y       0.0000      Z       2.0500
+    Tot       2.0500
+
+ **********************************************************************
+ **                       VIBRATIONAL ANALYSIS                       **
+ **********************************************************************
+
+ VIBRATIONAL FREQUENCIES (CM**-1) AND NORMAL MODES
+
+ Mode:                 1                     2                     3
+ Frequency:         1620.45               3745.10               3860.77
+ Force Cnst:         1.7000                7.9000                8.5000
+ Red. Mass:          1.0900                1.0400                1.0500
+ IR Active:             YES                   YES                   YES
+ IR Intens:          71.200                10.500                60.300
+ Raman Active:          YES                   YES                   YES
+               X      Y      Z        X      Y      Z        X      Y      Z
+ O         0.000  0.000  0.070    0.000  0.000 -0.050    0.000 -0.070  0.000
+ H         0.000  0.430 -0.560    0.000 -0.580  0.400    0.000  0.560 -0.430
+ H         0.000 -0.430 -0.560    0.000  0.580  0.400    0.000  0.560  0.430
+
+ STANDARD THERMODYNAMIC QUANTITIES AT   298.15 K  AND     1.00 ATM
+
+ Zero point vibrational energy:      13.500 kcal/mol
+ Total Enthalpy:                     16.500 kcal/mol
+ Total Entropy:                      45.000 cal/mol.K
+
+ Total job time:  1.23s(wall), 1.20s(cpu)
+ Thank you very much for using Q-Chem.  Have a nice day.

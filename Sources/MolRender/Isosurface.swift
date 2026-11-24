@@ -127,6 +127,19 @@ public enum IsosurfaceNodeBuilder {
     /// Draw after atoms/bonds.
     static let renderingOrder = 100
 
+    /// Fragment modifier: alpha rises from `opacity` (facing) toward ~1 at the silhouette.
+    static func fresnelModifier(opacity: Double) -> String {
+        let base = String(format: "%.4f", max(0.05, opacity))
+        return """
+        #pragma transparent
+        #pragma body
+        float3 V = normalize(-_surface.position);
+        float f = pow(1.0 - abs(dot(normalize(_surface.normal), V)), 3.0);
+        float k = mix(1.0, 1.0 / \(base), f * 0.85);
+        _output.color = min(_output.color * k, float4(1.0));
+        """
+    }
+
     public static func build(_ s: Isosurface) -> SCNNode {
         let node = SCNNode(); node.name = "surface:\(s.id)"
         let opacity = max(0, min(1, s.opacity))
@@ -135,9 +148,21 @@ public enum IsosurfaceNodeBuilder {
             let color = mesh.sign == .positive ? s.positiveColor : s.negativeColor
             let hasVC = mesh.vertexColors?.count == mesh.vertices.count
             let m = SCNMaterial()
-            m.lightingModel = s.mode == .solid ? .blinn : .constant
             m.diffuse.contents = hasVC ? NSColor.white : color.nsColor
-            if s.mode == .solid { m.specular.contents = NSColor(white: 0.5, alpha: 1); m.shininess = 0.4 }
+            if s.mode == .solid {
+                // Glossy PBR "glass-candy" look; a fresnel term raises opacity at grazing angles so
+                // translucent lobes keep a crisp silhouette while showing the atoms inside.
+                m.lightingModel = .physicallyBased
+                m.roughness.contents = NSNumber(value: 0.3)
+                m.metalness.contents = NSNumber(value: 0.0)
+                m.clearCoat.contents = NSNumber(value: 0.6)
+                m.clearCoatRoughness.contents = NSNumber(value: 0.08)
+                if opacity < 1 {
+                    m.shaderModifiers = [.fragment: IsosurfaceNodeBuilder.fresnelModifier(opacity: opacity)]
+                }
+            } else {
+                m.lightingModel = .constant
+            }
             m.isDoubleSided = true
             if opacity < 1 {
                 m.transparency = CGFloat(opacity)

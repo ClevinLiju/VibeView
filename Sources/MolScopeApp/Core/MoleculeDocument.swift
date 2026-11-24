@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 import MolCore
+import MolIO
 
 // SHARED APP CORE (owned by Lead 4). Reading/writing is delegated to IOBridge.
 
@@ -45,6 +46,7 @@ public struct MoleculeDocument: FileDocument {
     public var result: CalculationResult?
     /// Original text of the file (for e.g. showing the source of a log).
     public var sourceFormat: MolFormat?
+    public var wavefunction: Wavefunction?
 
     public init(molecule: Molecule = Molecule(title: "Untitled"), result: CalculationResult? = nil) {
         self.molecule = molecule
@@ -59,9 +61,10 @@ public struct MoleculeDocument: FileDocument {
         let fmt = MolFormat.forType(configuration.contentType)
             ?? configuration.file.filename.flatMap { MolFormat.forExtension(($0 as NSString).pathExtension) }
         guard let fmt else { throw CocoaError(.fileReadUnsupportedScheme) }
-        let loaded = try IOBridge.read(data: data, ext: fmt.ext)
+        let loaded = try IOBridge.read(data: data, ext: fmt.ext, fileName: configuration.file.filename)
         molecule = loaded.molecule
         result = loaded.result
+        wavefunction = loaded.wavefunction
         sourceFormat = fmt
     }
 

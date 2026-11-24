@@ -1,0 +1,35 @@
+$comment
+water B3LYP-D3(BJ)/def2-SVP optimization then frequencies
+(hand-written from the public Q-Chem input format, not produced by Q-Chem)
+$end
+
+$molecule
+0 1
+O    0.000000    0.000000    0.117300
+H    0.000000    0.757200   -0.469200
+H    0.000000   -0.757200   -0.469200
+$end
+
+$rem
+JOBTYPE      opt
+METHOD       b3lyp
+BASIS        def2-svp
+DFT_D        D3_BJ
+SYMMETRY     false
+SYM_IGNORE   true
+$end
+
+@@@
+
+$molecule
+read
+$end
+
+$rem
+JOBTYPE      freq
+METHOD       b3lyp
+BASIS        def2-svp
+DFT_D        D3_BJ
+SYMMETRY     false
+SYM_IGNORE   true
+$end

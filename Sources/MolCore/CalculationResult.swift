@@ -8,6 +8,9 @@ public struct NormalMode: Sendable, Codable, Equatable {
     public var ramanActivity: Double?
     public var symmetry: String?
     public var displacements: [Vec3]      // one per atom, Cartesian
+    /// Round 2 (additive, optional): reduced mass (amu) and force constant (mDyne/Å) when printed.
+    public var reducedMass: Double? = nil
+    public var forceConstant: Double? = nil
 
     public init(frequency: Double, irIntensity: Double, ramanActivity: Double? = nil, symmetry: String? = nil, displacements: [Vec3]) {
         self.frequency = frequency
@@ -38,6 +41,9 @@ public struct ExcitedState: Sendable, Codable, Equatable {
     public var energyEV: Double
     public var wavelengthNM: Double
     public var oscillatorStrength: Double
+    /// Round 2 (additive, optional): multiplicity (1 singlet, 3 triplet) and symmetry label when printed.
+    public var multiplicity: Int? = nil
+    public var symmetry: String? = nil
 
     public init(energyEV: Double, wavelengthNM: Double, oscillatorStrength: Double) {
         self.energyEV = energyEV
@@ -72,6 +78,9 @@ public struct CalculationResult: Sendable, Codable, Equatable {
     public var routeSection: String = ""
     public var normalTermination: Bool = false
     public var volumes: [String: VolumeGrid] = [:]
+    /// Round 2 (additive, optional so old JSON decodes): charges by scheme, thermochemistry,
+    /// gradients, program name. See CalculationResultExtras.swift.
+    public var extras: CalculationExtras? = nil
 
     public init() {}
 

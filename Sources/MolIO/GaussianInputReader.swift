@@ -332,6 +332,11 @@ public enum GaussianInputReader {
                     vals.append(String(v))
                 }
                 let tail = restS[base...]
+                // Only complete rows (atom 4+) may carry a trailing format flag; on atoms 2-3 any extra
+                // field other than an ONIOM layer means an odd/garbled field count.
+                if need < 3, let t = tail.first, !(t.count == 1 && isLayer(Substring(t))) {
+                    throw err(lineNo, "atom \(rows.count + 1): unexpected extra field '\(t)' (odd field count)")
+                }
                 tailInfo(tail)
                 anyZ = true
                 rows.append(Row(label: label, line: lineNo, z: z, isCartesian: false, refs: refs, vals: vals, spec: spec, trailing: Array(tail)))

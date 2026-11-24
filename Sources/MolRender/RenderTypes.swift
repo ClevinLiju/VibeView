@@ -13,7 +13,7 @@ public struct RGBA: Sendable, Hashable, Codable {
     public func withAlpha(_ a: Double) -> RGBA { RGBA(r, g, b, a) }
     /// Componentwise linear interpolation, t in 0...1.
     public func mix(_ o: RGBA, _ t: Double) -> RGBA {
-        RGBA(r + (o.r - r) * t, g + (o.g - g) * t, b + (o.b - b) * t, a + (o.a - a) * t)
+        RGBA(r * (1 - t) + o.r * t, g * (1 - t) + o.g * t, b * (1 - t) + o.b * t, a * (1 - t) + o.a * t)
     }
 }
 
@@ -37,8 +37,24 @@ public enum LabelMode: String, Sendable, Codable, CaseIterable {
 
 public enum ProjectionMode: String, Sendable, Codable, CaseIterable { case perspective, orthographic }
 
+/// Surface look. All presets except `.flat` are physically based (energy-conserving, work with
+/// the image-based environment light and SSAO).
+/// matte = rough diffuse; glossy = polished plastic (default); satin = soft sheen;
+/// ceramic = glazed, bright clearcoat-like highlight; metallic = brushed metal; flat = unlit.
 public enum MaterialPreset: String, Sendable, Codable, CaseIterable {
-    case matte, glossy, metallic, flat
+    case matte, glossy, metallic, flat, satin, ceramic
+}
+
+/// One-shot style bundles applied with `RenderOptions.apply(_:)` / `RenderOptions(look:)`.
+public enum RenderLook: String, Sendable, Codable, CaseIterable {
+    /// Light theme, glossy PBR, SSAO and soft shadows (the default).
+    case studio
+    /// Publication figure: pure white background, satin materials, strong AO, thin dark outlines, no fog.
+    case whitePaper
+    /// Dark stage: near-black background, glossy materials, rim light, AO.
+    case darkStage
+    /// Flat illustration: unlit colors with bold outlines (good for schematics).
+    case illustration
 }
 
 public enum RenderTheme: String, Sendable, Codable, CaseIterable {
@@ -138,15 +154,55 @@ public struct RenderOptions: Sendable, Hashable, Codable {
     public var transparentBackground: Bool = false
     public var material: MaterialPreset = .glossy
     public var depthCueing: Bool = false           // fog toward the background color
-    public var ambientOcclusion: Bool = false      // SceneKit SSAO
+    public var ambientOcclusion: Bool = true       // SceneKit screen-space AO (darkens crevices)
+    /// SSAO strength (0...3) and sampling radius in Å.
+    public var ambientOcclusionIntensity: Double = 1.6
+    public var ambientOcclusionRadius: Double = 1.4
+    /// Soft shadows cast by the key light (atoms shadow each other).
+    public var shadows: Bool = true
+    /// Screen-space silhouette/crease outlines (depth discontinuities).
+    public var outline: Bool = false
+    /// Outline width in points (scaled with export resolution) and color (nil = auto from the theme).
+    public var outlineWidth: Double = 1.2
+    public var outlineColor: RGBA? = nil
+    /// Depth of field around the camera target (off by default). `fStop` controls blur strength.
+    public var depthOfField: Bool = false
+    public var depthOfFieldFStop: Double = 2.8
     public var projection: ProjectionMode = .perspective
 
     public var selectionColor: RGBA = RGBA(1.0, 0.85, 0.1, 0.55)
     public var hoverColor: RGBA = RGBA(0.3, 0.8, 1.0, 0.45)
 
     public init() {}
+    public init(look: RenderLook) { self.init(); apply(look) }
 
     public var resolvedBackground: RGBA { backgroundColor ?? theme.background }
+    /// Outline color actually used.
+    public var resolvedOutlineColor: RGBA {
+        if let c = outlineColor { return c }
+        let bg = resolvedBackground
+        return (bg.r + bg.g + bg.b) / 3 < 0.5 ? RGBA(0.02, 0.02, 0.03) : RGBA(0.08, 0.08, 0.10)
+    }
+
+    /// Apply a style bundle (only look-related fields change; style, labels, measurements etc. are kept).
+    public mutating func apply(_ look: RenderLook) {
+        backgroundColor = nil; transparentBackground = false; depthCueing = false; depthOfField = false
+        outlineColor = nil
+        switch look {
+        case .studio:
+            theme = .light; material = .glossy; ambientOcclusion = true; ambientOcclusionIntensity = 1.6
+            shadows = true; outline = false
+        case .whitePaper:
+            theme = .white; material = .satin; ambientOcclusion = true; ambientOcclusionIntensity = 2.0
+            shadows = true; outline = true; outlineWidth = 1.2
+        case .darkStage:
+            theme = .black; material = .glossy; ambientOcclusion = true; ambientOcclusionIntensity = 1.4
+            shadows = true; outline = false
+        case .illustration:
+            theme = .white; material = .flat; ambientOcclusion = false; shadows = false
+            outline = true; outlineWidth = 2.0
+        }
+    }
 }
 
 /// What a pick (click or hover) hit.
@@ -154,4 +210,28 @@ public enum PickTarget: Sendable, Hashable {
     case atom(Int)          // index into Molecule.atoms
     case bond(Int)          // index into Molecule.bonds
     case none
+}
+
+// Lenient decoding: every key is optional so options saved by older builds (or with fields added
+// later) still load; missing keys keep their defaults. Encoding stays synthesized.
+extension RenderOptions {
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func d<T: Decodable>(_ k: CodingKeys, _ v: inout T) { if let x = try? c.decodeIfPresent(T.self, forKey: k) { v = x } }
+        d(.style, &style); d(.colorScheme, &colorScheme); d(.atomScale, &atomScale); d(.bondRadius, &bondRadius)
+        d(.tubeRadius, &tubeRadius); d(.wireWidth, &wireWidth); d(.splitBondColors, &splitBondColors); d(.bondColor, &bondColor)
+        d(.showBondOrders, &showBondOrders); d(.dashedBonds, &dashedBonds); d(.showHydrogens, &showHydrogens)
+        d(.geometryQuality, &geometryQuality); d(.labelMode, &labelMode); d(.labelSize, &labelSize); d(.measurements, &measurements)
+        if c.contains(.unitCell) { unitCell = try? c.decodeIfPresent(UnitCell.self, forKey: .unitCell) }
+        d(.showUnitCell, &showUnitCell); d(.theme, &theme)
+        if c.contains(.backgroundColor) { backgroundColor = try? c.decodeIfPresent(RGBA.self, forKey: .backgroundColor) }
+        d(.transparentBackground, &transparentBackground); d(.material, &material); d(.depthCueing, &depthCueing)
+        d(.ambientOcclusion, &ambientOcclusion); d(.ambientOcclusionIntensity, &ambientOcclusionIntensity)
+        d(.ambientOcclusionRadius, &ambientOcclusionRadius); d(.shadows, &shadows); d(.outline, &outline)
+        d(.outlineWidth, &outlineWidth)
+        if c.contains(.outlineColor) { outlineColor = try? c.decodeIfPresent(RGBA.self, forKey: .outlineColor) }
+        d(.depthOfField, &depthOfField); d(.depthOfFieldFStop, &depthOfFieldFStop); d(.projection, &projection)
+        d(.selectionColor, &selectionColor); d(.hoverColor, &hoverColor)
+    }
 }

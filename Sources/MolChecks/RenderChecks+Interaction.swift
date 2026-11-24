@@ -216,12 +216,17 @@ extension Checks {
                 let d0 = c.distance, t0 = c.target
                 var changes = 0
                 c.onChange = { changes += 1 }
-                for i in 0..<200 { c.orbit(dx: Double(i % 7) * 3 - 6, dy: Double(i % 5) * 4 - 8) }
+                var moves = 0
+                for i in 0..<200 {
+                    let dx = Double(i % 7) * 3 - 6, dy = Double(i % 5) * 4 - 8
+                    if dx != 0 || dy != 0 { moves += 1 }   // a (0, 0) orbit is a no-op and must not notify
+                    c.orbit(dx: dx, dy: dy)
+                }
                 try expectClose(c.distance, d0, tol: 1e-12)
                 try expect(vclose(c.target, t0, 1e-12), "target")
                 let eye = SIMD3<Double>(Double(r.cameraNode.simdPosition.x), Double(r.cameraNode.simdPosition.y), Double(r.cameraNode.simdPosition.z))
                 try expectClose(simd_distance(eye, c.target), d0, tol: 1e-3)
-                try expect(changes == 200, "onChange \(changes)")
+                try expect(changes == moves && moves == 194, "onChange \(changes) vs \(moves)")
                 // no gimbal lock: orbit over the pole keeps working; orientation stays unit
                 for _ in 0..<400 { c.orbit(dx: 0, dy: 5) }
                 try expectClose(simd_length(c.orientation.vector), 1, tol: 1e-9)
@@ -435,11 +440,12 @@ extension Checks {
                 let p = r.view.projectPoint(SCNVector3(m))
                 r.performClick(at: CGPoint(x: p.x, y: p.y))
                 try expect(r.selection == [0, 1], "bond selects ends: \(r.selection)")
-                try expect(picks.count == 9 && picks[0].target == .atom(0) && picks[0].clickCount == 1, "onPick \(picks.count)")
+                // 8 synthetic clicks above (the double-click is one event with clickCount 2)
+                try expect(picks.count == 8 && picks[0].target == .atom(0) && picks[0].clickCount == 1, "onPick \(picks.count)")
                 r.autoSelect = false
                 r.performClick(at: screen(r, 5))
                 try expect(r.selection == [0, 1], "autoSelect off leaves selection")
-                try expect(picks.count == 10, "onPick still fires")
+                try expect(picks.count == 9, "onPick still fires")
             }
         },
         Check("render.interaction.hover.setsHovered") {
@@ -555,6 +561,117 @@ extension Checks {
                 try expect(r.geometryNodeCount(layer: MoleculeRenderer.layerNames.labels) == 6, "6 labels")
                 r.options.measurements = [.distance(0, 1)]
                 try expect(r.geometryNodeCount(layer: MoleculeRenderer.layerNames.measurements) > 1, "measurement drawn")
+            }
+        },
+        // MARK: animation / inertia / hover info
+        Check("render.interaction.camera.animationInterpolates") {
+            try mainActor {
+                let r = waterRenderer()
+                r.fitToView(animated: false)
+                let c: CameraController = r.camera
+                let d0 = c.distance, t0 = c.target
+                c.setStandardView(.front, animated: false)
+                let l0 = c.lookDirection
+                c.setStandardView(.top, animated: true)
+                try expect(c.isAnimating, "animating")
+                try expect(vclose(c.lookDirection, l0), "starts at current")
+                c.advanceAnimation(by: c.animationDuration / 2)
+                let lm = c.lookDirection
+                try expect(c.isAnimating, "still animating at midpoint")
+                try expect(lm.y < -0.1 && lm.y > -0.99 && lm.z < -0.1, "midpoint between: \(lm)")
+                try expectClose(c.distance, d0, tol: 1e-9)
+                c.advanceAnimation(by: 1)
+                try expect(!c.isAnimating, "finished")
+                try expect(vclose(c.lookDirection, Vec3(0, -1, 0), 1e-9), "end look \(c.lookDirection)")
+                try expectClose(c.distance, d0, tol: 1e-9)
+                try expect(vclose(c.target, t0, 1e-9), "target kept")
+                // fit animates distance geometrically
+                c.zoom(by: 2)
+                let dz = c.distance
+                c.fit(center: t0, radius: 3, animated: true)
+                c.advanceAnimation(by: c.animationDuration / 2)
+                let dm = c.distance
+                c.advanceAnimation(by: 1)
+                let de = c.distance
+                try expect(dm > min(dz, de) - 1e-9 && dm < max(dz, de) + 1e-9, "distance midpoint \(dz) \(dm) \(de)")
+                // user orbit cancels
+                c.setStandardView(.right, animated: true)
+                c.advanceAnimation(by: 0.05)
+                c.orbit(dx: 5, dy: 0)
+                try expect(!c.isAnimating, "orbit cancels")
+                let q = c.orientation
+                c.advanceAnimation(by: 1)
+                try expect(c.orientation == q, "no further motion")
+                // non-animated call cancels too
+                c.animate(to: c.state, duration: 0.5)
+                c.setStandardView(.front, animated: false)
+                try expect(!c.isAnimating, "sync call cancels")
+            }
+        },
+        Check("render.interaction.camera.inertia") {
+            try mainActor {
+                let c: CameraController = waterRenderer().camera
+                c.setStandardView(.front, animated: false)
+                c.startInertia(orbitVelocity: SIMD2(400, 0))
+                try expect(c.isInertiaActive, "active")
+                var prevX = c.lookDirection.x
+                var steps = 0
+                while c.isInertiaActive && steps < 2000 {
+                    c.advanceAnimation(by: 1.0 / 60); steps += 1
+                    let x = c.lookDirection.x
+                    try expect(x >= prevX - 1e-12, "monotone drag-right direction")
+                    prevX = x
+                }
+                try expect(!c.isInertiaActive && steps > 10 && steps < 600, "decays to zero in \(steps) steps")
+                try expect(prevX > 0.3, "moved in drag direction \(prevX)")
+                let q = c.orientation
+                c.advanceAnimation(by: 0.5)
+                try expect(c.orientation == q, "stopped")
+                c.startInertia(orbitVelocity: SIMD2(0, 300)); c.stopInertia()
+                try expect(!c.isInertiaActive, "stopInertia")
+                c.startInertia(orbitVelocity: SIMD2(300, 0)); c.orbit(dx: 1, dy: 0)
+                try expect(!c.isInertiaActive, "user move cancels")
+                c.inertiaEnabled = false
+                c.startInertia(orbitVelocity: SIMD2(300, 0))
+                try expect(!c.isInertiaActive, "disabled")
+                c.inertiaEnabled = true
+                let t0 = c.target
+                c.startPanInertia(velocity: SIMD2(300, 0), viewSize: CGSize(width: 800, height: 600))
+                c.advanceAnimation(by: 0.1)
+                try expect(simd_length(c.target - t0) > 1e-4, "pan inertia moves")
+            }
+        },
+        Check("render.interaction.camera.magnifyMonotonic") {
+            try mainActor {
+                let c: CameraController = waterRenderer().camera
+                var prev = c.distance
+                for m in [0.05, 0.1, 0.2] { c.zoom(by: exp(m)); try expect(c.distance < prev, "zoom in"); prev = c.distance }
+                for m in [-0.05, -0.1] { c.zoom(by: exp(m)); try expect(c.distance > prev, "zoom out"); prev = c.distance }
+                let d = c.distance; c.zoom(by: exp(0.3)); c.zoom(by: exp(-0.3))
+                try expectClose(c.distance, d, tol: 1e-9)
+            }
+        },
+        Check("render.interaction.hover.infoCallback") {
+            try mainActor {
+                let r = MoleculeRenderer(molecule: RenderFixtures.benzene)
+                r.fitToView(animated: false)
+                var infos: [HoverInfo] = []
+                r.onHoverInfo = { infos.append($0) }
+                r.performHover(at: screen(r, 0))
+                guard let i = infos.last else { throw CheckFailure(description: "no hover info") }
+                try expect(i.atom?.symbol == "C", "symbol \(String(describing: i.atom?.symbol))")
+                try expect(!i.text.isEmpty, "text")
+                r.performHover(at: screen(r, 7))
+                try expect(infos.last?.atom?.symbol == "H", "H symbol")
+            }
+        },
+        Check("render.interaction.highlight.hasShaderModifier") {
+            try mainActor {
+                let n = HighlightLayerBuilder.build(molecule: RenderFixtures.benzene, options: RenderOptions(), selection: [0], hovered: .atom(1))
+                for c in n.childNodes {
+                    let mods = c.geometry?.firstMaterial?.shaderModifiers
+                    try expect(mods?[.fragment]?.contains("dot") == true, "shader modifier on \(c.name ?? "?")")
+                }
             }
         },
         // MARK: highlight

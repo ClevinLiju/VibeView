@@ -26,7 +26,8 @@ public enum PickMath {
     /// Nearest non-negative hit with a finite cylinder from a to b with flat caps. Origin inside returns 0.
     public static func rayCylinder(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, radius: Double) -> Double? {
         let l = simd_length(dir)
-        guard l > 1e-14, radius >= 0 else { return nil }
+        // A zero-radius cylinder is a line segment: only a measure-zero set of rays could hit it, so treat as a miss.
+        guard l > 1e-14, radius > 0, radius.isFinite else { return nil }
         let d = dir / l
         let axis = b - a
         let len = simd_length(axis)

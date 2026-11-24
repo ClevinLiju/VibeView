@@ -1,24 +1,23 @@
 # MolScope: team contracts
 
-MolScope is an open-source, native macOS (Apple Silicon) molecular builder and viewer for
-Gaussian-style quantum chemistry workflows. It is built with Swift, SwiftUI and SceneKit through
-SwiftPM, with Command Line Tools only (no Xcode).
+MolScope is an open-source, native macOS (Apple Silicon) molecular builder and viewer for quantum
+chemistry, built with Swift, SwiftUI and SceneKit through SwiftPM. **Goal (round 2): the best molecular
+visualizer on the Mac, not a clone.** It takes GaussView-class functionality as the floor, adds
+multi-program support, built-in fast optimization and online import, and gives a polished native experience.
 
 ## Clean-room rule (mandatory)
 Do NOT inspect, decompile, disassemble, run, or extract resources from any GaussView installation,
-binary, or documentation that isn't public. Work only from public, documented file formats (the
-Gaussian input-format docs on gaussian.com, cube/fchk format descriptions, XYZ/PDB/MOL specs), from
+binary, or documentation that isn't public. Work only from public, documented file formats, from
 general chemistry knowledge, and from established open algorithms. Use original names, icons and
 UI wording, and don't use "Gauss" or "GaussView" in identifiers or UI text.
 
-## Module ownership (edit only your own directory)
-| Lead | Module(s) | Directory |
+## Module ownership, round 2 (4 leads × 2 workers; edit only your own directories)
+| Lead | Module(s) | Directories |
 |---|---|---|
-| 1 Core | MolCore: element table, molecule ops, bond perception, geometry math, selection, undo | `Sources/MolCore` |
-| 2 I/O | MolIO: .gjf/.com read+write, .log/.out parse, .fchk, .cube, XYZ, PDB, MOL/SDF, CML | `Sources/MolIO` |
-| 3 Render | MolRender: SceneKit scenes, styles, picking, labels, isosurface meshes, vibration animation | `Sources/MolRender` |
-| 4 Builder + App | MolBuild (fragments, editing tools, add-H, cleanup force field) and MolScopeApp (SwiftUI shell, calc-setup dialog, job runner) | `Sources/MolBuild`, `Sources/MolScopeApp` |
-| 5 Analysis | MolAnalysis: spectra broadening (IR/Raman/UV-Vis), MO/density evaluation on grids from fchk basis sets, marching cubes, energy plots, thermochem | `Sources/MolAnalysis` |
+| A Data | MolCore + MolIO: chemistry model, all file formats (Gaussian, ORCA, Q-Chem, xtb, XYZ, PDB, MOL/SDF, CML, cube, fchk/molden) | `Sources/MolCore`, `Sources/MolIO` |
+| B Visualization | MolRender: SceneKit scene, styles, AO/lighting, picking, labels, surfaces, animation, export | `Sources/MolRender` |
+| C App experience | MolBuild + MolScopeApp: builder tools, UI, calc setup for all programs, job runner, command palette, Quick Look, packaging | `Sources/MolBuild`, `Sources/MolScopeApp`, `scripts/`, `Extensions/` |
+| D Analysis + Compute | MolAnalysis + MolCompute: orbitals/density/ESP surfaces, spectra, thermochem; xtb runner, PubChem import | `Sources/MolAnalysis`, `Sources/MolCompute` |
 
 Each team puts checks in `Sources/MolChecks/<Team>Checks.swift` and test files under
 `Sources/MolChecks/TestData/<team>/`. To register checks, add exactly one line to `allChecks` in
@@ -99,11 +98,16 @@ Import `MolRender`. Everything below is `@MainActor` unless it is a value type o
 - `RenderOptions` (Codable value): `style` (`.ballAndStick/.tube/.wireframe/.spaceFilling`), `colorScheme` (`.element`, `.charge(range:)` red-white-blue, `.uniform(RGBA)`), `atomScale`, `bondRadius`, `tubeRadius`, `wireWidth`, `splitBondColors`, `bondColor`, `showBondOrders`, `dashedBonds: Set<AtomPair>`, `showHydrogens`, `geometryQuality`, `labelMode` (`.none/.element/.index/.elementIndex/.charge/.custom`), `labelSize`, `measurements: [Measurement]` (`.distance/.angle/.dihedral`, `value(in:)`), `unitCell: UnitCell?`, `showUnitCell`, `theme` (`.light/.dark/.black/.white`), `backgroundColor`, `transparentBackground`, `material` (`.matte/.glossy/.metallic/.flat`), `depthCueing`, `ambientOcclusion`, `projection`, `selectionColor`, `hoverColor`.
 - Helpers: `RGBA`, `ColorMap.charge(_:range:)`, `ElementPalette` (delegates to MolCore `Elements`), `RenderMetrics.atomRadius/bondRadius/atomColors`, `UnitCell(a:b:c:alpha:beta:gamma:)`.
 
-## Build hygiene (55 agents share this tree)
+## Build hygiene (12 agents share this tree)
 - Always build with a private scratch path so SwiftPM locks don't collide:
   `swift build --scratch-path .build-<your-agent-name>`. You can also add `--target <YourModule>`.
 - Run checks: `swift run --scratch-path .build-<name> molscope-check <filter>`.
-- No XCTest or Swift Testing, because they're unavailable on this machine.
+- **Xcode 27.2 is installed.** Prefix every swift command with
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` in case the user hasn't switched
+  xcode-select. SwiftUI `@State`, `#Preview` and the other macros now work.
+- Keep using the `molscope-check` harness (not XCTest), so there's one suite.
+- Run the check binary directly (`.build-<name>/debug/molscope-check [filter]`). There's no
+  `timeout` command on this Mac.
 - SwiftUI macro plugins are missing with Command Line Tools: do NOT use `@State`, `#Preview` or `@Entry` (error "plugin for module 'SwiftUIMacros' not found"). `@StateObject`, `@ObservedObject`, `@Binding`, `@Environment`, `@AppStorage`, `@FocusState`, `@FocusedValue` and `@Observable` work. Hold view state in a small `ObservableObject` via `@StateObject`. (Lead 4)
 - **Do not run git commit, stash, reset or checkout.** The coordinator commits.
 - Don't add third-party package dependencies. Use Apple frameworks only: Foundation, simd,
@@ -129,3 +133,52 @@ Import `MolRender`. Everything below is `@MainActor` unless it is a value type o
   - `Selection.swift` / `DocumentModel.swift`: `AtomSelection`, `MoleculeDocumentModel` (value type with undo/redo).
   - `SMILES.swift`: `Molecule.smiles()`, `Molecule(smiles:)`.
   Final signatures are documented in the doc comments of each file. A later entry will note any deviations.
+
+## Round 2 — Lead D (Analysis + Compute) public API, `Sources/MolAnalysis`, `Sources/MolCompute`
+All APIs are value types / `enum` namespaces, `Sendable`, safe to call off the main actor (do heavy work in `Task.detached`).
+Units: Å for grids/meshes (MolCore convention), Hartree for energies unless a unit parameter says otherwise.
+
+**Surfaces (MolAnalysis)**
+- `MarchingCubes.extract(grid: VolumeGrid, isovalue: Double) -> IsoSurfaceMesh` — welded vertices, gradient normals, CCW outward; handles non-orthogonal axes. `isovalue < 0` extracts the negative lobe (sign = .negative).
+- `MarchingCubes.orbitalLobes(grid:, isovalue:) -> [IsoSurfaceMesh]` — `[+|iso|, -|iso|]` (empty meshes kept so indices are stable).
+- `MarchingCubes.surfaceArea(_:)`, `.enclosedVolume(_:)`, `.isClosedManifold(_:)` (diagnostics).
+- `GridSpec(origin:axes:counts:)` (Å); `GridSpec.automatic(around positions: [Vec3] /*Å*/, padding: 4.0, spacing: 0.25, maxPoints: 2_000_000)`; `.points(...)`.
+- `OrbitalEvaluator(basis: AnalysisBasis)` / `OrbitalEvaluator(wavefunction: Wavefunction)`:
+  `moGrid(coefficients: [Double], grid: GridSpec) -> VolumeGrid`, `densityGrid(densityMatrix: [Double] /*n×n full*/, grid:)`,
+  `values(coefficients:, atBohr: [Vec3]) -> [Double]`, `basisValues(atBohr:)`. Uses Accelerate (vDSP/BLAS) + `DispatchQueue.concurrentPerform`; checks `isCancelled` closure per slab.
+- `WavefunctionSurfaces` (convenience over `Wavefunction`): `orbitalGrid(_ wf:, mo: Int, spin: .alpha/.beta, grid: GridSpec? = nil)`, `densityGrid(_ wf:, grid:)`, `spinDensityGrid(_ wf:, grid:)`, `densityMatrix(_ wf:, spin:)`.
+- `ElectrostaticPotential.evaluate(_ wf: Wavefunction, atAngstrom: [SIMD3<Float>]) -> [Double]` (Hartree/e; exact nuclear + electronic via nuclear-attraction integrals);
+  `ElectrostaticPotential.mapOntoDensity(_ wf:, isovalue: 0.0004, grid:) -> IsoSurfaceMesh` (vertexScalars = ESP, vertexColors red(−)…white…blue(+));
+  `ESPColorMap.colorize(_ mesh: inout IsoSurfaceMesh, range: ClosedRange<Double>?)`.
+- From cube files: `CubeSurfaces.lobes(_ cube: CubeFile, gridIndex: Int = 0, isovalue:)`, `CubeSurfaces.mapped(surface: VolumeGrid, isovalue:, property: VolumeGrid) -> IsoSurfaceMesh` (trilinear sampling, any grid shape), `VolumeGrid.sample(atAngstrom:)`.
+- `MoldenWavefunctionReader.parse(_ text: String) throws -> Wavefunction` — local fallback until Lead A's Molden reader lands (will switch to MolIO's).
+
+**Spectra / thermo / profiles (MolAnalysis)** — all return `Spectrum`
+- `SpectrumBuilder.ir(modes: [NormalMode], scale: 1.0, fwhm: 10, shape: .lorentzian, range: 0...4000, pointCount: 2000)`, `.raman(modes:, ..., excitationNM: nil)`,
+  `.uvVis(states: [ExcitedState], fwhmEV: 0.3, shape: .gaussian, axis: .wavelengthNM/.energyEV/.wavenumber)` (y = ε, L mol⁻¹ cm⁻¹),
+  `.ecd(states:, rotatoryStrengths: [Double] /*1e-40 cgs*/, ...)` (y = Δε), `.nmr(shieldings: [NMRShielding], element: Int, reference: NMRReference, fwhm: 0.02)`.
+  `Broadening.lorentzian(x:center:fwhm:)`, `.gaussian(...)`, `NMRReference.tms(...)`, `NMRShielding(atomIndex:element:isotropic:)`.
+- `Thermochemistry.compute(ThermoInput, temperature: 298.15, pressure: 1 /*atm*/, frequencyScale: 1, quasiRRHO: QuasiRRHO? = nil) -> ThermoResult`
+  (ZPE, E/H/G corrections, S components, Cv; Hartree and cal/mol/K). `ThermoInput(molecule:frequencies:electronicEnergy:symmetryNumber:multiplicity:)`;
+  `ThermoInput(log: GaussianLog)`.
+- `EnergyProfile` (`points: [EnergyProfile.Point]` with `coordinate`, `energy` Hartree, `geometryIndex`), `.fromScan/.fromIRC/.fromOptimization(GaussianLog)`, `relativeEnergies(unit: EnergyUnit, reference: .first/.min/.index(i))`.
+
+**MolCompute**
+- `ComputeError`: `.notInstalled(program: String, searched: [String])`, `.offline`, `.timeout`, `.notFound(String)`, `.httpStatus(Int)`, `.processFailed(code: Int32, stderr: String)`, `.parse(String)`, `.cancelled`. `LocalizedError` with clear messages.
+- `ProgramRunner.run(executable: URL, arguments:, workingDirectory:, environment:, stdin:) async throws -> ProcessOutput` — cancellable (task cancel terminates the child). Shared runner usable by Lead C for ORCA/Gaussian.
+- `ProgramLocator.find(_ name: String, extraDirectories:) -> URL?` (PATH, ~/miniconda3/envs/*/bin, ~/miniconda3/bin, /opt/homebrew/bin, /usr/local/bin).
+- `XTBRunner(executable: URL? = nil)`; `XTBRunner.locate() -> URL?`; `run(_ molecule: Molecule, task: .singlePoint/.optimize/.hessian, method: .gfn2, solvent: String? = nil, threads:) async throws -> XTBResult`
+  (`energy` Hartree, `molecule` optimized, `frequencies`, `gradientNorm`, `homoLumoGap` eV, `log`). Throws `.notInstalled` when xtb is absent.
+- `PubChemClient(timeout: 15)`: `fetch(name:)`, `fetch(cid:)`, `fetch(smiles:) async throws -> PubChemCompound` (`cid`, `molecule`, `title`, `is3D` — false when a 2D record was embedded locally with MolBuild's UFF cleanup).
+
+Change log (Lead D): Package.swift — `MolCompute` now also depends on `MolBuild` (for 2D→3D embedding of PubChem records).
+**Request to Lead A (Molden reader):** please convert Molden contraction coefficients to the BasisSet convention (coefficients of NORMALIZED primitives; ORCA's orca_2mkl files carry coefficients that already include N(α,l)), and reorder Cartesian g (Molden order xxxx yyyy zzzz xxxy xxxz yyyx yyyz zzzx zzzy xxyy xxzz yyzz xxyz yyxz zzxy) into `cartesianOrder(4)`. ORCA molden pure f/g functions with |m| ≥ 3 have flipped signs vs. the standard real solid harmonics.
+- Lead B (Render), round 2 — MolRender API, additive only (no existing member removed or renamed):
+  - `RenderOptions`: new `ambientOcclusionIntensity` (1.6), `ambientOcclusionRadius` (1.4 Å), `shadows` (true, soft key-light shadows), `outline` (false), `outlineWidth` (1.2 pt), `outlineColor: RGBA?` (nil = auto), `resolvedOutlineColor`, `depthOfField` (false), `depthOfFieldFStop` (2.8). **Default change:** `ambientOcclusion` is now `true`. Decoding is lenient (missing keys keep defaults), so persisted options from older builds still load.
+  - `RenderLook` (`.studio .whitePaper .darkStage .illustration`), `RenderOptions(look:)`, `mutating apply(_ look:)` (changes only look fields: theme/background/material/AO/shadows/outline/DoF/fog).
+  - `MaterialPreset` gains `.satin` and `.ceramic` (switches over it must handle them). All presets except `.flat` are now physically based; `MaterialLibrary.pbrParameters(_:)`.
+  - `ImageExportOptions`: `supersampling` (2; render at N× then downsample, on top of 4× MSAA), `look: RenderLook?` (export-only style override), `static pixels(width:height:dpi:)`, `static uhd4K` (3840×2160, transparent), `static publication` (4200×3000 @600 dpi, white paper). Export framing now keeps everything visible in the view when the export aspect is narrower than the view.
+  - Hover: `MoleculeRenderer.onHoverInfo: ((HoverInfo) -> Void)?` with `HoverInfo` (`target`, `atom: AtomDetail?` (index, symbol, elementName, position, charge, label, neighbors, summary), `bond: BondDetail?` (atoms, order, length, summary), `location`, `text` tooltip string); `HoverInfo.make(_:molecule:location:)`.
+  - `CameraController`: `animate(to:duration:)`, `setState(_:animated:)`, `isAnimating`, `inertiaEnabled`, `isInertiaActive`, `startInertia(orbitVelocity:)`, `startPanInertia(velocity:viewSize:)`, `stopInertia()`, `cancelMotion()`, `advanceAnimation(by:)`. `fit`/`setStandardView` with `animated: true` now interpolate (slerp + log-distance, ease-in-out); `animated: false` stays synchronous. View: drag release keeps inertia, pinch = exp zoom, smart-magnify fits, F/1/3/7 animate.
+  - `TrajectoryPlayer`: `interpolates` (true; smooth 60 Hz playback between frames of equal topology), `playhead`, `show(position:)`, `advance(by:)`. `show(frame:)`/`advance()` unchanged.
+  - Big structures: above `AtomLayerBuilder.mergeThreshold` displayed atoms, atoms/bonds are drawn as merged per-color meshes (few nodes); picking is analytic and unaffected. `geometryNodeCount(layer:)` therefore reports mesh chunks, not atoms, for big molecules.

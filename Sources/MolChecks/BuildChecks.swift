@@ -327,5 +327,40 @@ extension Checks {
             Editing.perceiveBonds(&e)
             try expect(e.bonds.count == 7)
         },
+        Check("build.workflow.sketchEthanolThenClean") {
+            // place C, grow C, grow O on the second carbon -> ethanol C2H6O; cleanup lowers the energy
+            var m = Builder.placeElement(6, in: Molecule(), at: .zero, addHydrogens: true)
+            try expect(m.formula == "CH4", "place: \(m.formula)")
+            m = Builder.bondElement(6, to: m, atom: 0, addHydrogens: true)!
+            try expect(m.formula == "C2H6", "grow C: \(m.formula)")
+            let c2 = m.atoms.indices.last { m.atoms[$0].atomicNumber == 6 }!
+            m = Builder.bondElement(8, to: m, atom: c2, addHydrogens: true)!
+            try expect(m.formula == "C2H6O", "grow O: \(m.formula)")
+            // distort, then relax
+            var bad = m
+            for i in bad.atoms.indices { bad.atoms[i].position += Vec3(Double(i % 3) * 0.15, Double(i % 2) * -0.12, 0.1) }
+            let r = Cleanup.minimize(bad)
+            try expect(r.energy < r.initialEnergy - 1e-3, "energy \(r.initialEnergy) -> \(r.energy)")
+            try expect(bcMinPair(r.molecule) > 0.85, "min pair \(bcMinPair(r.molecule))")
+            let co = r.molecule.bonds.first { Set([r.molecule.atoms[$0.a].atomicNumber, r.molecule.atoms[$0.b].atomicNumber]) == Set([6, 8]) }!
+            let d = GeometryEdit.distance(r.molecule, co.a, co.b)
+            try expect(d > 1.33 && d < 1.50, "C-O \(d)")
+        },
+        Check("build.workflow.tolueneFromPhenylMethyl") {
+            let benz = bcBenzeneMolecule()
+            let h = benz.atoms.firstIndex { $0.atomicNumber == 1 }!
+            let tol = Builder.attach(FragmentLibrary.fragment(id: "methyl")!, to: benz, replacingHydrogen: h)!
+            try expect(tol.formula == "C7H8", tol.formula)
+            var m = tol
+            Editing.addHydrogens(&m)
+            try expect(m.formula == "C7H8", "addH on saturated toluene changed it: \(m.formula)")
+        },
+        Check("build.workflow.elementSwapAdjustsH") {
+            var m = bcMethane()
+            Editing.setElement(&m, atom: 0, to: 7)   // CH4 -> NH3
+            try expect(m.formula == "H3N", m.formula)
+            Editing.setElement(&m, atom: 0, to: 8)   // -> H2O
+            try expect(m.formula == "H2O", m.formula)
+        },
     ]
 }

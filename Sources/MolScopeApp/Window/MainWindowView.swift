@@ -2,104 +2,127 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import MolCore
+import MolRender
 
 struct MainWindowView: View {
     @Binding var document: MoleculeDocument
     let fileURL: URL?
     @StateObject private var editor: EditorModel
-    @StateObject private var showCalcBox = StateBox(false)
-    @StateObject private var showElementsBox = StateBox(false)
-    @StateObject private var showPaletteBox = StateBox(true)
-    @StateObject private var showInspectorBox = StateBox(true)
-    @StateObject private var showResultsBox = StateBox(true)
-    private var showCalc: Bool { get { showCalcBox.value } nonmutating set { showCalcBox.value = newValue } }
-    private var showElements: Bool { get { showElementsBox.value } nonmutating set { showElementsBox.value = newValue } }
-    private var showPalette: Bool { get { showPaletteBox.value } nonmutating set { showPaletteBox.value = newValue } }
-    private var showInspector: Bool { get { showInspectorBox.value } nonmutating set { showInspectorBox.value = newValue } }
-    private var showResults: Bool { get { showResultsBox.value } nonmutating set { showResultsBox.value = newValue } }
+    @State private var showElements = false
+    @State private var columns: NavigationSplitViewVisibility = .all
+    @State private var dropTargeted = false
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.controlActiveState) private var activeState
+    @Environment(\.colorScheme) private var colorScheme
 
     init(document: Binding<MoleculeDocument>, fileURL: URL?) {
         _document = document
         self.fileURL = fileURL
-        _editor = StateObject(wrappedValue: EditorModel(molecule: document.wrappedValue.molecule, result: document.wrappedValue.result))
+        let d = document.wrappedValue
+        _editor = StateObject(wrappedValue: EditorModel(molecule: d.molecule, result: d.result, wavefunction: d.wavefunction))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HSplitView {
-                if showPalette {
-                    FragmentPalette(editor: editor).frame(minWidth: 170, idealWidth: 200, maxWidth: 280)
-                }
+        NavigationSplitView(columnVisibility: $columns) {
+            LibrarySidebar(editor: editor)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 300)
+        } detail: {
+            VStack(spacing: 0) {
                 VSplitView {
                     MoleculeViewport(editor: editor)
-                        .frame(minWidth: 300, minHeight: 240)
-                        .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
-                    if editor.result != nil && showResults {
-                        ResultsPanel(editor: editor).frame(minHeight: 200, idealHeight: 280)
+                        .frame(minWidth: 360, minHeight: 260)
+                        .overlay { if dropTargeted { DropHighlight() } }
+                        .onDrop(of: [.fileURL], isTargeted: $dropTargeted, perform: handleDrop)
+                    if editor.result != nil && editor.showResults {
+                        ResultsPanel(editor: editor).frame(minHeight: 220, idealHeight: 300)
                     }
                 }
-                if showInspector {
-                    InspectorView(editor: editor).frame(minWidth: 210, idealWidth: 240, maxWidth: 320)
-                }
+                StatusBar(editor: editor)
             }
-            Divider()
-            StatusBar(editor: editor)
+        }
+        .inspector(isPresented: $editor.showInspector) {
+            InspectorView(editor: editor).inspectorColumnWidth(min: 230, ideal: 260, max: 360)
         }
         .toolbar { toolbarContent }
         .focusedSceneValue(\.editor, editor)
-        .sheet(isPresented: $showCalcBox.value) { CalcSetupSheet(editor: editor) }
-        .navigationTitle(editor.molecule.title.isEmpty ? (fileURL?.lastPathComponent ?? "Untitled") : editor.molecule.title)
+        .sheet(isPresented: $editor.showCalcSetup) { CalcSetupSheet(editor: editor) }
+        .sheet(isPresented: $editor.showPubChem) { PubChemSheet(editor: editor) }
+        .overlay(alignment: .top) {
+            if editor.showCommandPalette {
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.12).ignoresSafeArea().onTapGesture { editor.showCommandPalette = false }
+                    CommandPaletteView(commands: AppCommandCatalog.commands(editor: editor, openWindow: openWindow),
+                                       isPresented: $editor.showCommandPalette)
+                        .padding(.top, 70)
+                }
+            }
+        }
+        .navigationTitle(fileURL?.deletingPathExtension().lastPathComponent ?? (editor.molecule.title.isEmpty ? "Untitled" : editor.molecule.title))
+        .navigationSubtitle(subtitle)
         .onAppear {
             editor.fileURL = fileURL
             editor.onCommit = { m in document.molecule = m }
+            syncTheme()
         }
-        .onChange(of: fileURL) { editor.fileURL = $0 }
-        .onReceive(NotificationCenter.default.publisher(for: .molscopeShowCalcSetup)) { _ in if isActive { showCalc = true } }
-        .onReceive(NotificationCenter.default.publisher(for: .molscopeShowJobQueue)) { _ in if isActive { openWindow(id: "job-queue") } }
-        .onReceive(NotificationCenter.default.publisher(for: .molscopeShowResults)) { _ in if isActive { showResults = true } }
-        .onReceive(NotificationCenter.default.publisher(for: .molscopeCleanGeometry)) { _ in if isActive { editor.cleanGeometry() } }
+        .onChange(of: fileURL) { _, u in editor.fileURL = u }
+        .onChange(of: colorScheme) { _, _ in syncTheme() }
+        .onChange(of: columns) { _, c in editor.showLibrary = c != .detailOnly }
+        .onChange(of: editor.showLibrary) { _, s in columns = s ? .all : .detailOnly }
     }
 
-    private var isActive: Bool { activeState == .key || activeState == .active }
+    private var subtitle: String {
+        let m = editor.molecule
+        guard !m.atoms.isEmpty else { return "" }
+        return "\(m.formula) · \(m.atoms.count) atoms"
+    }
+
+    private func syncTheme() {
+        let want: RenderThemeChoice = colorScheme == .dark ? .dark : .light
+        want.apply(to: editor)
+    }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button { showPalette.toggle() } label: { Label("Fragments", systemImage: "sidebar.left") }
-                .help("Show or hide the fragment palette")
-        }
         ToolbarItem(placement: .principal) {
             Picker("Tool", selection: $editor.tool) {
-                ForEach(EditorTool.allCases) { t in Label(t.title, systemImage: t.symbol).tag(t) }
+                ForEach(EditorTool.allCases) { t in
+                    Label(t.title, systemImage: t.symbol).tag(t).help("\(t.title) (⌘\(t.shortcutDigit))")
+                }
             }
             .pickerStyle(.segmented)
+            .labelStyle(.iconOnly)
             .help("Orbit, Pick, Sketch or Gauge")
         }
-        ToolbarItemGroup {
+        ToolbarItemGroup(placement: .primaryAction) {
             Button { showElements.toggle() } label: {
-                Text(currentElementLabel).font(.system(.body, design: .rounded).weight(.bold)).frame(minWidth: 26)
+                Text(currentElementLabel)
+                    .font(.system(.body, design: .rounded).weight(.bold))
+                    .frame(minWidth: 30)
             }
-            .help("Choose the element to sketch with")
-            .popover(isPresented: $showElementsBox.value) { PeriodicTablePopover(editor: editor, isPresented: $showElementsBox.value) }
-            Button { editor.addHydrogens() } label: { Label("Add Hydrogens", systemImage: "plus.circle") }
-                .help("Add hydrogens to fill valences")
-            Button { editor.cleanGeometry() } label: { Label("Clean Geometry", systemImage: "wand.and.stars") }
-                .help("Relax the structure with a force field")
-            Button { showCalc = true } label: { Label("Set Up Calculation", systemImage: "gearshape.2") }
-                .help("Set up a Gaussian calculation")
-            Button { openWindow(id: "job-queue") } label: { Label("Job Queue", systemImage: "list.bullet.rectangle") }
-                .help("Open the job queue")
-            Button { showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
-                .help("Show or hide the inspector")
+            .help("Element or fragment to sketch with")
+            .popover(isPresented: $showElements, arrowEdge: .bottom) { PeriodicTablePopover(editor: editor, isPresented: $showElements) }
+
+            Button { editor.addHydrogens() } label: { Label("Add Hydrogens", systemImage: "h.circle") }
+                .help("Fill open valences with hydrogens (⌘⇧H)")
+            Button { editor.cleanGeometry() } label: { Label("Clean Up", systemImage: "wand.and.stars") }
+                .help("Relax the geometry with the built-in force field (⌘⇧K)")
+            Button { editor.optimizeWithXTB() } label: { Label("Optimize with xtb", systemImage: "bolt.badge.automatic") }
+                .help(XTBAvailability.helpText)
+                .disabled(editor.molecule.atoms.isEmpty || editor.busyMessage != nil)
+            Button { editor.showCalcSetup = true } label: { Label("Calculation", systemImage: "function") }
+                .help("Set up a Gaussian, ORCA, Q-Chem or xtb calculation (⌥⌘C)")
+            Button { openWindow(id: "job-queue") } label: { Label("Jobs", systemImage: "tray.full") }
+                .help("Show the job queue (⌥⌘J)")
+            Button { editor.showCommandPalette.toggle() } label: { Label("Commands", systemImage: "command") }
+                .help("Search every command, element and fragment (⌘K)")
+            Button { editor.showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
+                .help("Show or hide the inspector (⌥⌘I)")
         }
     }
 
     private var currentElementLabel: String {
         switch editor.payload {
         case .element(let z): return ElementInfo.symbol(z)
-        case .fragment: return "Frag"
+        case .fragment(let id): return FragmentNames.short(id)
         }
     }
 
@@ -109,11 +132,51 @@ struct MainWindowView: View {
             accepted = true
             _ = p.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
-                Task { @MainActor in
-                    NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, _ in }
-                }
+                Task { @MainActor in DocumentOpener.open(url) }
             }
         }
         return accepted
+    }
+}
+
+private struct DropHighlight: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
+            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .padding(8)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Opens files as documents, reporting failures in an alert instead of failing silently.
+@MainActor
+enum DocumentOpener {
+    static func open(_ url: URL) {
+        NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
+            if let error {
+                let alert = NSAlert(error: error)
+                alert.messageText = "“\(url.lastPathComponent)” could not be opened."
+                alert.runModal()
+            }
+        }
+    }
+}
+
+enum RenderThemeChoice {
+    case light, dark
+    @MainActor func apply(to editor: EditorModel) {
+        var o = editor.renderOptions
+        let t: RenderTheme = self == .dark ? .dark : .light
+        guard o.theme != t, o.theme == .light || o.theme == .dark else { return }
+        o.theme = t
+        editor.renderOptions = o
+    }
+}
+
+enum FragmentNames {
+    static func short(_ id: String) -> String {
+        let n = BuildOps.fragmentName(id)
+        return n.count <= 8 ? n : String(n.prefix(7)) + "…"
     }
 }

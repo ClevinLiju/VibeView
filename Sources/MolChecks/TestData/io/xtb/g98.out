@@ -1,0 +1,19 @@
+ Entering Gaussian System, Link 0=g98
+ Initial command:
+ /xtb/g98
+ Harmonic frequencies (cm**-1), IR intensities (KM/Mole), Raman scattering
+ activities (A**4/AMU), depolarization ratios for plane and unpolarized
+ incident light, reduced masses (AMU), force constants (mDyne/A),
+ and normal coordinates:
+                     1                      2                      3
+                     A                      A                      A
+ Frequencies --  1630.5000               3650.2000               3745.7000
+ Red. masses --     1.0822                  1.0446                  1.0825
+ Frc consts  --     1.6951                  8.2005                  8.9477
+ IR Inten    --    60.1234                  5.4321                 71.0000
+ Atom AN      X      Y      Z        X      Y      Z        X      Y      Z
+     1   8     0.00   0.00   0.07     0.00   0.00  -0.05     0.00  -0.07   0.00
+     2   1     0.00  -0.43  -0.56     0.00   0.58   0.40     0.00   0.55   0.43
+     3   1     0.00   0.43  -0.56     0.00  -0.58   0.40     0.00  -0.55   0.43
+ 
+ Normal termination of xtb g98 emulation.

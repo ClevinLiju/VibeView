@@ -26,6 +26,10 @@ public enum BondLayerBuilder {
             layer.addChildNode(node)
             return layer
         }
+        if MergedGeometry.isMergedBonds(molecule: molecule, options: options) {
+            MergedGeometry.buildBonds(layer, segs: segs, options: options, materials: materials)
+            return layer
+        }
         let radial = SceneQuality.cylinderSegments(quality: options.geometryQuality, segmentCount: segs.count)
         var cache: [Key: SCNCylinder] = [:]
         var nodes: [SCNNode] = []
@@ -92,6 +96,9 @@ public enum BondLayerBuilder {
             g.firstMaterial = mat
             children[0].geometry = g
             return true
+        }
+        if MergedGeometry.isMergedBonds(molecule: molecule, options: options) {
+            return MergedGeometry.updateBonds(layer, segs: segs, options: options)
         }
         guard children.count == segs.count else { return false }
         for (node, s) in zip(children, segs) {
