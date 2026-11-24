@@ -37,6 +37,14 @@ jobs:
       - name: Self-checks
         run: swift run vibeview-check
 
+      - name: Crash reports
+        if: failure()
+        run: |
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/vibeview-check*.ips 2>/dev/null | head -n 2); do
+            echo "=== $f"; head -c 20000 "$f"; echo
+          done
+          ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | tail -n 20 || true
+
       - name: Build DMG
         if: startsWith(github.ref, 'refs/tags/v')
         run: scripts/make-dmg.sh

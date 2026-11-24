@@ -40,6 +40,8 @@ let allChecks: [Check] = ([
 @main
 struct CheckRunner {
     static func main() {
+        // Line-buffer stdout so a crash in CI (stdout is a pipe there) does not swallow the last lines.
+        setvbuf(stdout, nil, _IOLBF, 0)
         let filter = CommandLine.arguments.dropFirst().first
         var failed = 0, ran = 0
         for c in allChecks where filter == nil || c.name.contains(filter!) {
