@@ -34,7 +34,17 @@ public struct PickEvent: Sendable {
 
     /// Selected atom indices. Highlighted; set by built-in click/box handling when `autoSelect`.
     public var selection: Set<Int> = [] { didSet { if selection != oldValue { rebuildHighlight(); onSelectionChange?(selection) } } }
-    public internal(set) var hovered: PickTarget = .none { didSet { if hovered != oldValue { rebuildHighlight(); onHover?(hovered) } } }
+    public internal(set) var hovered: PickTarget = .none {
+        didSet {
+            guard hovered != oldValue else { return }
+            rebuildHighlight(); onHover?(hovered)
+            if let cb = onHoverInfo { cb(HoverInfo.make(hovered, molecule: molecule, location: lastHoverLocation)) }
+        }
+    }
+    /// Tooltip-ready hover callback (atom element/charge/neighbors, bond length/order, pointer location).
+    /// Fires whenever `hovered` changes, including to `.none` (empty `text`).
+    public var onHoverInfo: ((HoverInfo) -> Void)?
+    var lastHoverLocation: CGPoint?
 
     /// Built-in selection semantics: click = select atom, shift = add, cmd = toggle,
     /// double-click = whole fragment, click on empty = clear. Box (shift-drag) adds atoms inside.
@@ -74,6 +84,7 @@ public struct PickEvent: Sendable {
         camera.onChange = { [weak self] in
             guard let self else { return }
             self.lighting.updateFogRange(distance: self.camera.distance, radius: self.cachedBounds.radius)
+            self.lighting.updateFocus(distance: self.camera.distance)
         }
         picking = PickingController(renderer: self)
         vibration = VibrationAnimator(renderer: self)
@@ -212,8 +223,23 @@ public struct PickEvent: Sendable {
 
     func applyEnvironment() {
         lighting.apply(options: options)
+        lighting.updateFocus(distance: camera.distance)
+        refreshOutline()
         view.backgroundColor = options.transparentBackground ? .clear : options.resolvedBackground.nsColor
         if camera.projection != options.projection { camera.projection = options.projection }
+    }
+
+    /// Outline post-process for the live view (recomputed on resize and option changes).
+    func refreshOutline() {
+        view.technique = outlineTechnique(heightPixels: Double(view.bounds.height) * Double(view.window?.backingScaleFactor ?? 2),
+                                          pointScale: Double(view.window?.backingScaleFactor ?? 2))
+    }
+    /// Technique for a target of `heightPixels` device pixels, outline width scaled by `pointScale` px/pt.
+    func outlineTechnique(heightPixels: Double, pointScale: Double) -> SCNTechnique? {
+        guard options.outline, heightPixels > 1 else { return nil }
+        let fov = Double(cameraNode.camera?.fieldOfView ?? 60) * .pi / 180
+        return OutlineTechnique.technique(color: options.resolvedOutlineColor, widthPixels: options.outlineWidth * pointScale,
+                                          pixelAngle: 2 * tan(fov / 2) / heightPixels)
     }
 
     func replace(_ layer: inout SCNNode, with new: SCNNode) {

@@ -52,3 +52,10 @@ enum BuildOps {
     static func clean(_ m: Molecule) -> Molecule? { Cleanup.minimize(m, frozen: [], maxSteps: 500).molecule }
     static func hybridization(_ m: Molecule, atom: Int) -> String { Editing.hybridization(m, atom: atom).rawValue }
 }
+
+extension BuildOps {
+    static func fragmentName(_ id: String) -> String { FragmentLibrary.fragment(id: id)?.name ?? id }
+}
+extension BuildOps {
+    static func removeHydrogens(_ m: inout Molecule, atoms: Set<Int>?) { Editing.removeHydrogens(&m, atoms: atoms.map { Array($0).sorted() }) }
+}

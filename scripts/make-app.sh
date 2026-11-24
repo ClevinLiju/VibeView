@@ -2,6 +2,7 @@
 # Build VibeView in release mode and assemble an ad-hoc signed VibeView.app.
 # Usage: scripts/make-app.sh [output-dir]   (default: ./dist)
 set -euo pipefail
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/dist}"
 SCRATCH="${VIBEVIEW_SCRATCH:-$ROOT/.build-app}"
@@ -44,7 +45,9 @@ uti() { # uti desc conforms exts...
 # name | uti | role | conforms | extensions  (must match Sources/VibeViewApp/Core/MoleculeDocument.swift)
 FORMATS=(
   "Gaussian Input|org.vibeview.gaussian-input|Editor|public.plain-text|gjf com"
-  "Gaussian Output|org.vibeview.gaussian-output|Viewer|public.plain-text|log out"
+  "Calculation Output|org.vibeview.gaussian-output|Viewer|public.plain-text|log out"
+  "ORCA Input|org.vibeview.orca-input|Viewer|public.plain-text|inp"
+  "Molden File|org.vibeview.molden|Viewer|public.plain-text|molden"
   "Formatted Checkpoint|org.vibeview.fchk|Viewer|public.plain-text|fchk fch"
   "Cube File|org.vibeview.cube|Viewer|public.plain-text|cube cub"
   "XYZ Coordinates|org.vibeview.xyz|Editor|public.plain-text|xyz"
@@ -92,7 +95,30 @@ $UTIS  </array>
 PLIST
 plutil -lint "$APP/Contents/Info.plist"
 
+echo "==> Building Quick Look preview extension"
+QLSRC="$TMP/qlsrc"; mkdir -p "$QLSRC"
+for f in "$ROOT"/Sources/MolCore/*.swift "$ROOT"/Sources/MolIO/*.swift; do
+  d="$(basename "$(dirname "$f")")"
+  sed -E '/^(@_exported )?import (MolCore|MolIO)$/d' "$f" > "$QLSRC/${d}_$(basename "$f")"
+done
+cp "$ROOT"/Extensions/QuickLook/*.swift "$QLSRC/"
+APPEX="$APP/Contents/PlugIns/VibeViewQuickLook.appex"
+mkdir -p "$APPEX/Contents/MacOS"
+xcrun swiftc -O -parse-as-library -application-extension -module-name VibeViewQuickLook \
+  -target arm64-apple-macos14.0 -swift-version 5 -framework QuickLookUI \
+  -Xlinker -e -Xlinker _NSExtensionMain "$QLSRC"/*.swift -o "$APPEX/Contents/MacOS/VibeViewQuickLook"
+QLUTIS=""
+for f in "${FORMATS[@]}"; do IFS='|' read -r _ id _ _ _ <<<"$f"; QLUTIS+="        <string>$id</string>"$'\n'; done
+python3 - "$ROOT/Extensions/QuickLook/Info.plist" "$APPEX/Contents/Info.plist" "$VERSION" "$QLUTIS" <<'PY'
+import sys
+src, dst, ver, utis = sys.argv[1:5]
+s = open(src).read().replace("__VERSION__", ver).replace("__UTIS__", utis.rstrip("\n"))
+open(dst, "w").write(s)
+PY
+plutil -lint "$APPEX/Contents/Info.plist"
+
 echo "==> Ad-hoc signing"
-codesign --force --deep --sign - --timestamp=none "$APP"
+codesign --force --sign - --timestamp=none --entitlements "$ROOT/Extensions/QuickLook/QuickLook.entitlements" "$APPEX"
+codesign --force --sign - --timestamp=none "$APP"
 codesign --verify --verbose=2 "$APP"
 echo "==> Done: $APP"

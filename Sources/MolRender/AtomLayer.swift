@@ -10,6 +10,9 @@ import MolCore
 /// Children are ordered by ascending atom index, which `updatePositions` relies on.
 public enum AtomLayerBuilder {
     static let isolatedMarkerRadius = 0.1
+    /// Above this many displayed atoms (and the same atom-count criterion for bonds) the layers use merged
+    /// chunked geometry ("atoms:merged:<n>" / "bonds:merged:<n>") instead of one node per atom/bond.
+    nonisolated(unsafe) public static var mergeThreshold = 1200
 
     /// Atom indices that get a node, ascending.
     static func displayedAtoms(molecule: Molecule, options: RenderOptions) -> [Int] {
@@ -37,6 +40,10 @@ public enum AtomLayerBuilder {
     public static func build(molecule: Molecule, options: RenderOptions, colors: [RGBA], materials: MaterialLibrary) -> SCNNode {
         let layer = SCNNode(); layer.name = NodeName.atoms
         let idx = displayedAtoms(molecule: molecule, options: options)
+        if idx.count > mergeThreshold {
+            MergedGeometry.buildAtoms(layer, idx: idx, molecule: molecule, options: options, colors: colors, materials: materials)
+            return layer
+        }
         let seg = SceneQuality.sphereSegments(quality: options.geometryQuality, atomCount: idx.count)
         var cache: [Key: SCNSphere] = [:]
         var nodes: [SCNNode] = []
@@ -66,6 +73,7 @@ public enum AtomLayerBuilder {
     public static func updatePositions(_ layer: SCNNode, molecule: Molecule, options: RenderOptions) -> Bool {
         guard layer.name == NodeName.atoms else { return false }
         let idx = displayedAtoms(molecule: molecule, options: options)
+        if idx.count > mergeThreshold { return MergedGeometry.updateAtoms(layer, idx: idx, molecule: molecule, options: options) }
         let children = layer.childNodes
         guard children.count == idx.count else { return false }
         for (node, i) in zip(children, idx) {

@@ -1,0 +1,74 @@
+ Hand-written fixture following the public Q-Chem output layout (Q-Chem itself was not available).
+ Q-Chem 5.4.2, Q-Chem, Inc., Pleasanton, CA 94588
+
+ Running Job 1 of 1 h2co_tddft.in
+ $molecule
+ 0 1
+ C    0.000000    0.000000   -0.527000
+ O    0.000000    0.000000    0.678000
+ H    0.000000    0.940000   -1.110000
+ H    0.000000   -0.940000   -1.110000
+ $end
+
+ $rem
+ JOBTYPE      sp
+ METHOD       pbe0
+ BASIS        def2-svp
+ CIS_N_ROOTS  2
+ CIS_TRIPLETS true
+ RPA          true
+ $end
+
+                    Standard Nuclear Orientation (Angstroms)
+    I     Atom           X                Y                Z
+ ----------------------------------------------------------------
+    1      C       0.000000     0.000000    -0.527000
+    2      O       0.000000     0.000000     0.678000
+    3      H       0.000000     0.940000    -1.110000
+    4      H       0.000000    -0.940000    -1.110000
+ ----------------------------------------------------------------
+ Total energy in the final basis set =     -114.3500000000
+
+ --------------------------------------------------
+ TDDFT/TDA Excitation Energies
+ --------------------------------------------------
+
+ Excited state   1: excitation energy (eV) =    3.9000
+    Total energy for state   1:   -114.2066000 au
+    Multiplicity: Singlet
+    Trans. Mom.:  0.0000 X   0.0000 Y   0.0000 Z
+    Strength   :     0.0000
+    D(  8) --> V(  1) amplitude =  0.9990
+
+ Excited state   2: excitation energy (eV) =    8.5000
+    Total energy for state   2:   -114.0376000 au
+    Multiplicity: Singlet
+    Trans. Mom.:  0.0000 X   0.3000 Y   0.0000 Z
+    Strength   :     0.0200
+    D(  7) --> V(  2) amplitude =  0.9000
+ --------------------------------------------------
+
+ --------------------------------------------------
+ TDDFT Excitation Energies
+ --------------------------------------------------
+
+ Excited state   1: excitation energy (eV) =    3.8500
+    Total energy for state   1:   -114.2085000 au
+    Multiplicity: Singlet
+    Trans. Mom.:  0.0000 X   0.0000 Y   0.0000 Z
+    Strength   :     0.0000
+
+ Excited state   2: excitation energy (eV) =    8.4200
+    Total energy for state   2:   -114.0406000 au
+    Multiplicity: Singlet
+    Trans. Mom.:  0.0000 X   0.3100 Y   0.0000 Z
+    Strength   :     0.0215
+
+ Excited state   1: excitation energy (eV) =    3.2000
+    Total energy for state   1:   -114.2324000 au
+    Multiplicity: Triplet
+    Trans. Mom.:  0.0000 X   0.0000 Y   0.0000 Z
+    Strength   :     0.0000
+ --------------------------------------------------
+
+ Thank you very much for using Q-Chem.  Have a nice day.

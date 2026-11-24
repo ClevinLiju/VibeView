@@ -1,0 +1,139 @@
+ Entering Gaussian System, Link 0=g16
+ Input=water.gjf
+ Output=water.log
+ ******************************************
+ Gaussian 16:  ES64L-G16RevC.01  3-Jul-2019
+                23-Nov-2026 
+ ******************************************
+ %chk=water.chk
+ ----------------------
+ #p hf/sto-3g opt freq
+ ----------------------
+ 1/18=20,19=15,26=3,38=1/1,3;
+ -----
+ water (hand-written fixture in the public log layout; values are illustrative)
+ -----
+ Symbolic Z-matrix:
+ Charge =  0 Multiplicity = 1
+ O                     0.        0.        0.12 
+ H                     0.        0.8      -0.48 
+ H                     0.       -0.8      -0.48 
+ 
+ GradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGrad
+ Berny optimization.
+ Initialization pass.
+                          Input orientation:                          
+ ---------------------------------------------------------------------
+ Center     Atomic      Atomic             Coordinates (Angstroms)
+ Number     Number       Type             X           Y           Z
+ ---------------------------------------------------------------------
+      1          8           0        0.000000    0.000000    0.120000
+      2          1           0        0.000000    0.800000   -0.480000
+      3          1           0        0.000000   -0.800000   -0.480000
+ ---------------------------------------------------------------------
+                         Standard orientation:                         
+ ---------------------------------------------------------------------
+ Center     Atomic      Atomic             Coordinates (Angstroms)
+ Number     Number       Type             X           Y           Z
+ ---------------------------------------------------------------------
+      1          8           0        0.000000    0.000000    0.120000
+      2          1           0        0.000000    0.800000   -0.480000
+      3          1           0        0.000000   -0.800000   -0.480000
+ ---------------------------------------------------------------------
+ SCF Done:  E(RHF) =  -74.9590412345     A.U. after    9 cycles
+         Item               Value     Threshold  Converged?
+ Maximum Force            0.031246     0.000450     NO 
+ RMS     Force            0.020532     0.000300     NO 
+ Maximum Displacement     0.071234     0.001800     NO 
+ RMS     Displacement     0.052261     0.001200     NO 
+ Predicted change in Energy=-1.512313D-03
+ GradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGrad
+                          Input orientation:                          
+ ---------------------------------------------------------------------
+ Center     Atomic      Atomic             Coordinates (Angstroms)
+ Number     Number       Type             X           Y           Z
+ ---------------------------------------------------------------------
+      1          8           0        0.000000    0.000000    0.127000
+      2          1           0        0.000000    0.763000   -0.508000
+      3          1           0        0.000000   -0.763000   -0.508000
+ ---------------------------------------------------------------------
+                         Standard orientation:                         
+ ---------------------------------------------------------------------
+ Center     Atomic      Atomic             Coordinates (Angstroms)
+ Number     Number       Type             X           Y           Z
+ ---------------------------------------------------------------------
+      1          8           0        0.000000    0.000000    0.127000
+      2          1           0        0.000000    0.763000   -0.508000
+      3          1           0        0.000000   -0.763000   -0.508000
+ ---------------------------------------------------------------------
+ SCF Done:  E(RHF) =  -74.9659011234     A.U. after    8 cycles
+         Item               Value     Threshold  Converged?
+ Maximum Force            0.000012     0.000450     YES
+ RMS     Force            0.000008     0.000300     YES
+ Maximum Displacement     0.000030     0.001800     YES
+ RMS     Displacement     0.000021     0.001200     YES
+ Predicted change in Energy=-2.104411D-10
+ Optimization completed.
+    -- Stationary point found.
+ GradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGrad
+ **********************************************************************
+
+            Population analysis using the SCF Density.
+
+ **********************************************************************
+
+ Alpha  occ. eigenvalues --  -20.25157  -1.25754  -0.59385  -0.45973  -0.39261
+ Alpha virt. eigenvalues --    0.58179   0.69267
+ Mulliken charges:
+               1
+     1  O   -0.366733
+     2  H    0.183367
+     3  H    0.183366
+ Sum of Mulliken charges =   0.00000
+ Dipole moment (field-independent basis, Debye):
+    X=              0.0000    Y=              0.0000    Z=             -1.7094  Tot=              1.7094
+ Normal termination of Gaussian 16 at Mon Nov 23 10:00:00 2026.
+ Link1:  Proceeding to internal job step number  2.
+ ----------------------------------------------------------------------
+ #P Geom=AllCheck Guess=TCheck SCRF=Check HF/STO-3G Freq
+ ----------------------------------------------------------------------
+ Charge =  0 Multiplicity = 1
+                         Standard orientation:                         
+ ---------------------------------------------------------------------
+ Center     Atomic      Atomic             Coordinates (Angstroms)
+ Number     Number       Type             X           Y           Z
+ ---------------------------------------------------------------------
+      1          8           0        0.000000    0.000000    0.127000
+      2          1           0        0.000000    0.763000   -0.508000
+      3          1           0        0.000000   -0.763000   -0.508000
+ ---------------------------------------------------------------------
+ SCF Done:  E(RHF) =  -74.9659011234     A.U. after    1 cycles
+ Low frequencies ---   -0.0012   -0.0008    0.0005   12.3456   15.1234   20.5678
+ Low frequencies --- 2170.0050 4140.1234 4391.5678
+ Harmonic frequencies (cm**-1), IR intensities (KM/Mole), Raman scattering
+ activities (A**4/AMU), depolarization ratios for plane and unpolarized
+ incident light, reduced masses (AMU), force constants (mDyne/A),
+ and normal coordinates:
+                      1                      2                      3
+                     A1                     A1                     B2
+ Frequencies --   2170.0050              4140.1234              4391.5678
+ Red. masses --      1.0823                 1.0441                 1.0703
+ Frc consts  --      3.0029                10.5450                12.1632
+ IR Inten    --     24.2121                 1.1015                 0.6121
+  Atom  AN      X      Y      Z        X      Y      Z        X      Y      Z
+     1   8     0.00   0.00   0.07     0.00   0.00  -0.05     0.00   0.07   0.00
+     2   1     0.00  -0.42  -0.56     0.00   0.59   0.39     0.00  -0.56   0.43
+     3   1     0.00   0.42  -0.56     0.00  -0.59   0.39     0.00  -0.56  -0.43
+ 
+ - Thermochemistry -
+ -------------------
+ Temperature   298.150 Kelvin.  Pressure   1.00000 Atm.
+ Zero-point correction=                           0.023834 (Hartree/Particle)
+ Thermal correction to Energy=                    0.026670
+ Thermal correction to Enthalpy=                  0.027614
+ Thermal correction to Gibbs Free Energy=         0.006230
+ Sum of electronic and zero-point Energies=            -74.942067
+ Sum of electronic and thermal Energies=               -74.939231
+ Sum of electronic and thermal Enthalpies=             -74.938287
+ Sum of electronic and thermal Free Energies=          -74.959671
+ Normal termination of Gaussian 16 at Mon Nov 23 10:00:05 2026.

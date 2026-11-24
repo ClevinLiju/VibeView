@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 import MolCore
+import MolIO
+import MolRender
 
 // SHARED APP CORE (owned by Lead 4). Workers: do not change existing signatures; you may add
 // extensions to EditorModel in your own files.
@@ -36,8 +38,28 @@ public final class EditorModel: ObservableObject {
     @Published public var activeModeIndex: Int? = nil        // normal mode being animated
     @Published public var vibrationAmplitude: Double = 0.5
     @Published public var activeOrbitalIndex: Int? = nil     // 1-based orbital index for display
+    @Published public var orbitalIsovalue: Double = 0.03      // |isovalue| (a.u.) for orbital surfaces
+    @Published public var orbitalStatus: String = ""          // e.g. "Computing…", "Needs a .fchk file"
+    @Published public var showDisplacementArrows: Bool = false // arrows for the active normal mode
+    @Published public var isPlayingFrames: Bool = false        // frame player running (results panel)
     @Published public var statusMessage: String = ""
     @Published public var fileURL: URL? = nil
+    /// How the structure is drawn (style, labels, theme…). Synced to the renderer by `ViewportSync`.
+    @Published public var renderOptions: RenderOptions = EditorModel.defaultRenderOptions()
+    /// Basis + MO coefficients when the document came from a .fchk (enables orbital surfaces).
+    @Published public var wavefunction: Wavefunction? = nil
+    /// Long-running background work (xtb, PubChem…) shown in the status bar.
+    @Published public var busyMessage: String? = nil
+    /// Window chrome toggled from menus / the command palette.
+    @Published public var showCommandPalette = false
+    @Published public var showCalcSetup = false
+    @Published public var showPubChem = false
+    @Published public var showInspector = true
+    @Published public var showLibrary = true
+    @Published public var showResults = true
+
+    /// The 3-D view for this window (one renderer per document window).
+    private(set) lazy var viewport: ViewportSync = ViewportSync(editor: self)
 
     /// Called after every committed edit so the document can sync (set by the window view).
     public var onCommit: ((Molecule) -> Void)?
@@ -49,9 +71,21 @@ public final class EditorModel: ObservableObject {
     public var undoActionName: String? { undoStack.last?.0 }
     public var redoActionName: String? { redoStack.last?.0 }
 
-    public init(molecule: Molecule = Molecule(), result: CalculationResult? = nil) {
+    public init(molecule: Molecule = Molecule(), result: CalculationResult? = nil, wavefunction: Wavefunction? = nil) {
         self.molecule = molecule
         self.result = result
+        self.wavefunction = wavefunction
+    }
+
+    static func defaultRenderOptions() -> RenderOptions {
+        var o = RenderOptions()
+        let d = UserDefaults.standard
+        if let s = d.string(forKey: ViewKeys.style), let st = RenderStyle(rawValue: s) { o.style = st }
+        if let m = d.string(forKey: ViewKeys.material), let mt = MaterialPreset(rawValue: m) { o.material = mt }
+        o.ambientOcclusion = d.object(forKey: ViewKeys.ambientOcclusion) as? Bool ?? false
+        o.depthCueing = d.object(forKey: ViewKeys.depthCue) as? Bool ?? false
+        o.theme = NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
+        return o
     }
 
     /// The molecule to draw: a browsed frame of the result if one is chosen, else the editable molecule.
@@ -112,4 +146,16 @@ public extension Notification.Name {
     static let vibeviewShowJobQueue = Notification.Name("vibeview.showJobQueue")
     static let vibeviewShowResults = Notification.Name("vibeview.showResults")
     static let vibeviewCleanGeometry = Notification.Name("vibeview.cleanGeometry")
+}
+
+/// UserDefaults keys for viewport defaults (Lead C; AppSettings belongs to the calc/jobs worker).
+enum ViewKeys {
+    static let style = "vibeview.view.style"
+    static let material = "vibeview.view.material"
+    static let ambientOcclusion = "vibeview.view.ambientOcclusion"
+    static let depthCue = "vibeview.view.depthCue"
+}
+
+extension EditorTool {
+    var shortcutDigit: Int { (EditorTool.allCases.firstIndex(of: self) ?? 0) + 1 }
 }

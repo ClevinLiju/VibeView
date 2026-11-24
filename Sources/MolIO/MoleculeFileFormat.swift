@@ -4,6 +4,8 @@ import MolCore
 /// Registry of supported molecule file formats with extension- and content-based detection.
 public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
     case gaussianInput, gaussianOutput, formattedCheckpoint, cube, xyz, pdb, mol, sdf, cml
+    // round 2 (Lead A): other programs. Their outputs usually end in .out/.log, so they are found by content.
+    case orcaInput, orcaOutput, orcaHessian, qchemInput, qchemOutput, xtbOutput, molden
 
     public var fileExtensions: [String] {
         switch self {
@@ -16,6 +18,13 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         case .mol: return ["mol"]
         case .sdf: return ["sdf", "sd"]
         case .cml: return ["cml"]
+        case .orcaInput: return ["inp"]
+        case .orcaOutput: return ["orcaout"]
+        case .orcaHessian: return ["hess"]
+        case .qchemInput: return ["qcin", "in"]
+        case .qchemOutput: return ["qcout"]
+        case .xtbOutput: return ["xtbout"]
+        case .molden: return ["molden", "mold"]
         }
     }
 
@@ -30,14 +39,29 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         case .mol: return "MDL Molfile"
         case .sdf: return "MDL SD File"
         case .cml: return "Chemical Markup Language (CML)"
+        case .orcaInput: return "ORCA Input"
+        case .orcaOutput: return "ORCA Output"
+        case .orcaHessian: return "ORCA Hessian"
+        case .qchemInput: return "Q-Chem Input"
+        case .qchemOutput: return "Q-Chem Output"
+        case .xtbOutput: return "xtb Output"
+        case .molden: return "Molden"
         }
     }
 
     public var canRead: Bool { true }
-    public var canWrite: Bool { self != .gaussianOutput }
+    public var canWrite: Bool {
+        switch self {
+        case .gaussianOutput, .orcaOutput, .orcaHessian, .qchemOutput, .xtbOutput, .formattedCheckpoint: return false
+        default: return true
+        }
+    }
+
+    /// Output of a quantum-chemistry program (results, possibly several geometries).
+    public var isCalculationOutput: Bool { [.gaussianOutput, .orcaOutput, .qchemOutput, .xtbOutput, .formattedCheckpoint, .orcaHessian, .molden].contains(self) }
 
     /// Extensions whose content is not decisive on its own; the content is sniffed first.
-    private static let ambiguousExtensions: Set<String> = ["out", "txt", "dat", ""]
+    private static let ambiguousExtensions: Set<String> = ["out", "log", "txt", "dat", "input", "inp", "in", ""]
 
     public static func format(forExtension ext: String) -> MoleculeFileFormat? {
         let e = ext.lowercased()
@@ -75,6 +99,11 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         let head = String(contents.prefix(4096))
         let lines = splitLines(head)
         if head.contains("Entering Gaussian System") || head.contains("Gaussian, Inc.") { return .gaussianOutput }
+        if head.contains("* O   R   C   A *") || head.contains("O   R   C   A") { return .orcaOutput }
+        if head.contains("Welcome to Q-Chem") || head.contains("Q-Chem, Inc.") { return .qchemOutput }
+        if head.contains("x T B") || head.contains("xtb version") && head.contains("normal termination of xtb") { return .xtbOutput }
+        if head.range(of: "[Molden Format]", options: .caseInsensitive) != nil { return .molden }
+        if head.contains("$orca_hessian_file") { return .orcaHessian }
         // fchk: title, "type method basis", then "Number of atoms   I   n"
         for k in 2..<max(2, min(5, lines.count)) where lines[k].hasPrefix("Number of atoms") {
             let t = tokens(lines[k])
@@ -85,6 +114,11 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         if first.hasPrefix("<?xml") || first.hasPrefix("<cml") || first.hasPrefix("<molecule") {
             if head.contains("<molecule") || head.contains("cml") { return .cml }
         }
+        // ORCA input: "!" keyword lines, or a "%block ... end" followed by "* xyz"; Q-Chem: $molecule / $rem
+        let lower = head.lowercased()
+        if lower.contains("$molecule") && lower.contains("$rem") { return .qchemInput }
+        if first.hasPrefix("!") { return .orcaInput }
+        if first.hasPrefix("%"), lower.contains("* xyz") || lower.contains("*xyz") || lower.contains("* int") || lower.contains("* gzmt") { return .orcaInput }
         if first.hasPrefix("%") || first.hasPrefix("#") || first.hasPrefix("--Link1--") { return .gaussianInput }
         if lines.count >= 4 {
             if lines[3].contains("V2000") || lines[3].contains("V3000") {

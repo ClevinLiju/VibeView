@@ -1,6 +1,7 @@
 import Foundation
 import simd
 import SceneKit
+import Metal
 import MolCore
 import MolAnalysis
 import MolRender
@@ -262,6 +263,9 @@ extension Checks {
             try expect(SceneQuality.sphereSegments(quality: q, atomCount: 3000) < 24, "big reduces")
             try expect(SceneQuality.sphereSegments(quality: q, atomCount: 10000) <= SceneQuality.sphereSegments(quality: q, atomCount: 3000), "monotone")
             let m = RenderFixtures.lattice(14)  // 2744
+            let savedT = AtomLayerBuilder.mergeThreshold
+            AtomLayerBuilder.mergeThreshold = Int.max
+            defer { AtomLayerBuilder.mergeThreshold = savedT }
             let g = geoNodes(buildAtoms(m, opts()))[0].geometry as! SCNSphere
             try expect(g.segmentCount < 24, "auto reduced \(g.segmentCount)")
             let w = geoNodes(buildAtoms(RenderFixtures.water, opts()))[0].geometry as! SCNSphere
@@ -295,7 +299,9 @@ extension Checks {
             try expect(BondLayerBuilder.updatePositions(wb, molecule: m, options: wo), "wire update")
             try expect(wb.childNodes.count == 1 && wb.childNodes[0].geometry != nil, "wire node kept")
             let src = wb.childNodes[0].geometry!.sources(for: .vertex)[0]
-            try expect(src.vectorCount == 24, "wire vertices")
+            // one line (2 vertices) per render segment: split colors and bond-order lines add segments
+            let wsegs = BondGeometry.renderSegments(molecule: m, options: wo, colors: RenderMetrics.atomColors(for: m, options: wo))
+            try expect(wsegs.count > 12 && src.vectorCount == 2 * wsegs.count, "wire vertices \(src.vectorCount) vs \(2 * wsegs.count)")
         },
         Check("render.scene.dash.update") {
             var m = RenderFixtures.water
@@ -323,14 +329,124 @@ extension Checks {
             let t0 = Date()
             let a = buildAtoms(m, o, lib), b = buildBonds(m, o, lib)
             let dt = Date().timeIntervalSince(t0)
-            print(String(format: "      lattice(22): %d atom nodes, %d bond nodes, build %.3f s", a.childNodes.count, b.childNodes.count, dt))
-            try expect(a.childNodes.count == 10648, "atoms")
+            var av = 0, bv = 0
+            for n in geoNodes(a) { av += n.geometry!.sources(for: .vertex)[0].vectorCount }
+            for n in geoNodes(b) { bv += n.geometry!.sources(for: .vertex)[0].vectorCount }
+            print(String(format: "      lattice(22): %d atom nodes (%d verts), %d bond nodes (%d verts), build %.3f s", a.childNodes.count, av, b.childNodes.count, bv, dt))
+            try expect(a.name == MoleculeRenderer.layerNames.atoms && b.name == MoleculeRenderer.layerNames.bonds, "layer names")
+            try expect(a.childNodes.count >= 1 && a.childNodes.count <= 8, "atom chunks \(a.childNodes.count)")
+            try expect(b.childNodes.count >= 1 && b.childNodes.count <= 32, "bond chunks \(b.childNodes.count)")
+            try expect(a.childNodes.allSatisfy { $0.name?.hasPrefix("atoms:merged:") == true }, "atom chunk names")
+            try expect(b.childNodes.allSatisfy { $0.name?.hasPrefix("bonds:merged:") == true }, "bond chunk names")
+            try expect(av >= 10648 * 20 && av <= 10648 * 400, "atom vertex count \(av)")
+            try expect(bv >= 10648 * 6 && bv <= 10648 * 6 * 40, "bond vertex count \(bv)")
             try expect(dt < 5, "build time \(dt)")
             let t1 = Date()
             let okA = AtomLayerBuilder.updatePositions(a, molecule: m, options: o)
             let okB = BondLayerBuilder.updatePositions(b, molecule: m, options: o)
-            print(String(format: "      updatePositions: %@ %@ %.3f s", "\(okA)", "\(okB)", Date().timeIntervalSince(t1)))
-            try expect(okA, "atoms update")
+            let du = Date().timeIntervalSince(t1)
+            print(String(format: "      updatePositions: %@ %@ %.3f s", "\(okA)", "\(okB)", du))
+            try expect(okA && okB, "update in place")
+            try expect(du < 5, "update time \(du)")
+            var bigger = m; bigger.atoms.append(m.atoms[0]); bigger.atoms[bigger.atoms.count - 1].id = m.atoms.count
+            try expect(!AtomLayerBuilder.updatePositions(a, molecule: bigger, options: o), "atom count change fails")
+        },
+        Check("render.scene.merged.positions") {
+            var m = RenderFixtures.lattice(12)  // 1728 > threshold
+            try expect(m.atoms.count > AtomLayerBuilder.mergeThreshold, "fixture above threshold")
+            let o = opts()
+            let a = buildAtoms(m, o)
+            func bbox(_ nodes: [SCNNode]) -> (SIMD3<Float>, SIMD3<Float>) {
+                var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
+                for n in nodes {
+                    let s = n.geometry!.sources(for: .vertex)[0]
+                    let d = s.data as NSData
+                    for i in 0..<s.vectorCount {
+                        let p = d.bytes.load(fromByteOffset: s.dataOffset + i * s.dataStride, as: SIMD3<Float>.self)
+                        lo = simd_min(lo, p); hi = simd_max(hi, p)
+                    }
+                }
+                return (lo, hi)
+            }
+            func expectedBox() -> (SIMD3<Float>, SIMD3<Float>) {
+                var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
+                for at in m.atoms {
+                    let r = Float(RenderMetrics.atomRadius(atomicNumber: at.atomicNumber, options: o)), p = SIMD3<Float>(at.position)
+                    lo = simd_min(lo, p - r); hi = simd_max(hi, p + r)
+                }
+                return (lo, hi)
+            }
+            var (lo, hi) = bbox(a.childNodes), (elo, ehi) = expectedBox()
+            try expect(simd_length(lo - elo) < 0.05 && simd_length(hi - ehi) < 0.05, "bbox \(lo) \(hi) vs \(elo) \(ehi)")
+            // normals are unit length and outward (first sphere vertex)
+            let ns = a.childNodes[0].geometry!.sources(for: .normal)[0]
+            try expect(ns.vectorCount == a.childNodes[0].geometry!.sources(for: .vertex)[0].vectorCount, "normal count")
+            // move and update in place
+            for i in m.atoms.indices { m.atoms[i].position += Vec3(10, -5, 2) }
+            try expect(AtomLayerBuilder.updatePositions(a, molecule: m, options: o), "update")
+            (lo, hi) = bbox(a.childNodes); (elo, ehi) = expectedBox()
+            try expect(simd_length(lo - elo) < 0.05 && simd_length(hi - ehi) < 0.05, "bbox after update")
+            // bond vertices stay within the atom bbox (+ radius)
+            let b = buildBonds(m, o)
+            let (blo, bhi) = bbox(b.childNodes)
+            try expect(blo.x >= elo.x - 0.5 && bhi.x <= ehi.x + 0.5 && blo.y >= elo.y - 0.5 && bhi.y <= ehi.y + 0.5, "bond bbox")
+            try expect(BondLayerBuilder.updatePositions(b, molecule: m, options: o), "bond update")
+        },
+        Check("render.scene.perf.frameTime") {
+            guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
+                print("      no Metal device; skipped"); return
+            }
+            let W = 1280, H = 800
+            func tex(_ fmt: MTLPixelFormat) -> MTLTexture {
+                let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: W, height: H, mipmapped: false)
+                d.usage = [.renderTarget, .shaderRead]; d.storageMode = .private
+                return device.makeTexture(descriptor: d)!
+            }
+            let color = tex(.bgra8Unorm), depth = tex(.depth32Float_stencil8)
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = color
+            pass.colorAttachments[0].loadAction = .clear; pass.colorAttachments[0].storeAction = .store
+            pass.depthAttachment.texture = depth; pass.depthAttachment.loadAction = .clear; pass.depthAttachment.storeAction = .dontCare
+            pass.stencilAttachment.texture = depth; pass.stencilAttachment.loadAction = .clear; pass.stencilAttachment.storeAction = .dontCare
+            let saved = AtomLayerBuilder.mergeThreshold
+            defer { AtomLayerBuilder.mergeThreshold = saved }
+            var mergedMs: [Double] = []
+            func measure(_ n: Int, frames: Int) throws -> (Double, Int, Int) {
+                try MainActor.assumeIsolated {
+                    let m = RenderFixtures.lattice(n)
+                    let t0 = Date()
+                    let r = MoleculeRenderer(molecule: m)
+                    r.setMolecule(m, fitCamera: true)
+                    let build = Date().timeIntervalSince(t0)
+                    let sr = SCNRenderer(device: device, options: nil)
+                    sr.scene = r.scene; sr.pointOfView = r.cameraNode
+                    let vp = CGRect(x: 0, y: 0, width: W, height: H)
+                    var t = 0.0
+                    func frame() {
+                        let cb = queue.makeCommandBuffer()!
+                        sr.render(atTime: t, viewport: vp, commandBuffer: cb, passDescriptor: pass)
+                        cb.commit(); cb.waitUntilCompleted(); t += 1.0 / 60
+                    }
+                    frame(); frame()  // warm up (shader compilation)
+                    let t1 = Date()
+                    for _ in 0..<frames { r.camera.orbit(dx: 6, dy: 2); frame() }
+                    let ms = Date().timeIntervalSince(t1) * 1000 / Double(frames)
+                    let A = r.geometryNodeCount(layer: MoleculeRenderer.layerNames.atoms), B = r.geometryNodeCount(layer: MoleculeRenderer.layerNames.bonds)
+                    print(String(format: "      %d atoms: %.1f ms/frame (%d atom geo nodes, %d bond geo nodes, renderer build %.2f s)", m.atoms.count, ms, A, B, build))
+                    return (ms, A, B)
+                }
+            }
+            for n in [17, 22] {  // 4913 and 10648 atoms
+                AtomLayerBuilder.mergeThreshold = saved
+                print("      merged:")
+                let (ms, A, B) = try measure(n, frames: 20)
+                mergedMs.append(ms)
+                try expect(A <= 8 && B <= 40, "merged node counts \(A) \(B)")
+                try expect(ms < 50, "merged frame time \(ms) ms")
+                AtomLayerBuilder.mergeThreshold = Int.max
+                print("      per-node:")
+                _ = try measure(n, frames: 5)
+            }
         },
         Check("render.scene.renderer.integration") {
             try MainActor.assumeIsolated {

@@ -32,6 +32,8 @@ let allChecks: [Check] = ([
     Checks.io,
     Checks.analysis,
     Checks.render,
+    Checks.compute,
+    Checks.buildCore + Checks.buildCalc,
 ] as [[Check]]).flatMap { $0 }  // each team registers an array (fix by Lead 5, see CONTRACTS change log)
 
 @main

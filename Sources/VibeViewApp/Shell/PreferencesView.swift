@@ -1,16 +1,29 @@
 import SwiftUI
 import AppKit
+import MolBuild
 
 struct PreferencesView: View {
     var body: some View {
         TabView {
             GeneralPrefs().tabItem { Label("General", systemImage: "gearshape") }
             CalcPrefs().tabItem { Label("Calculation", systemImage: "function") }
-            GaussianPrefs().tabItem { Label("Gaussian", systemImage: "terminal") }
+            ProgramsPrefs().tabItem { Label("Programs", systemImage: "terminal") }
         }
-        .frame(width: 480, height: 300)
+        .frame(width: 600, height: 380)
         .padding()
     }
+}
+
+private func prefsColor(hex: String) -> NSColor {
+    var h = hex.trimmingCharacters(in: .whitespaces)
+    if h.hasPrefix("#") { h.removeFirst() }
+    guard h.count == 6, let v = UInt32(h, radix: 16) else { return NSColor(red: 0.12, green: 0.12, blue: 0.14, alpha: 1) }
+    return NSColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255, blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+}
+
+private func prefsHex(_ c: NSColor) -> String {
+    let s = c.usingColorSpace(.sRGB) ?? c
+    return String(format: "#%02X%02X%02X", Int((s.redComponent * 255).rounded()), Int((s.greenComponent * 255).rounded()), Int((s.blueComponent * 255).rounded()))
 }
 
 private struct GeneralPrefs: View {
@@ -27,8 +40,8 @@ private struct GeneralPrefs: View {
                 Text("Wireframe").tag("wireframe")
             }
             ColorPicker("Background", selection: Binding(
-                get: { Color(nsColor: NSColor(hex: bgHex)) },
-                set: { bgHex = NSColor($0).hexString }), supportsOpacity: false)
+                get: { Color(nsColor: prefsColor(hex: bgHex)) },
+                set: { bgHex = prefsHex(NSColor($0)) }), supportsOpacity: false)
             Toggle("Show atom labels", isOn: $labels)
             Button("Reset Background") { bgHex = "#1E1F24" }
         }
@@ -52,65 +65,74 @@ private struct CalcPrefs: View {
     }
 }
 
-enum GaussianPathProbe {
-    static func detect() -> String? {
-        let fm = FileManager.default
-        let env = ProcessInfo.processInfo.environment
-        var dirs: [String] = (env["PATH"] ?? "").split(separator: ":").map(String.init)
-        for (rootVar, sub) in [("g16root", "g16"), ("g09root", "g09")] {
-            if let r = env[rootVar] { dirs.append((r as NSString).appendingPathComponent(sub)) }
-        }
-        if let e = env["GAUSS_EXEDIR"] { dirs.append(contentsOf: e.split(separator: ":").map(String.init)) }
-        dirs += ["/usr/local/g16", "/opt/g16", "/usr/local/g09", "/opt/g09"]
-        for d in dirs {
-            for name in ["g16", "g09"] {
-                let p = (d as NSString).appendingPathComponent(name)
-                var isDir: ObjCBool = false
-                if fm.fileExists(atPath: p, isDirectory: &isDir), !isDir.boolValue, fm.isExecutableFile(atPath: p) { return p }
-            }
-        }
-        return nil
+private struct ProgramRow: View {
+    let program: QCProgram
+    @AppStorage private var path: String
+    @State private var found: URL?
+
+    init(program: QCProgram) {
+        self.program = program
+        _path = AppStorage(wrappedValue: "", ProgramLocator.settingKey(program))
     }
-}
-
-private struct GaussianPrefs: View {
-    @AppStorage(AppSettings.gaussianPathKey) private var path = ""
-    @AppStorage(AppSettings.scratchDirKey) private var scratch = ""
-    @StateObject private var msgBox = StateBox("")
-
-    private var found: Bool { !path.isEmpty && FileManager.default.isExecutableFile(atPath: path) }
 
     var body: some View {
-        Form {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
-                TextField("Gaussian executable", text: $path)
-                Button("Choose…") { choose(directory: false) }
+                Text(program.title).frame(width: 64, alignment: .leading).font(.headline)
+                TextField("Executable path (blank = auto-detect)", text: $path)
+                    .textFieldStyle(.roundedBorder)
+                Button("Choose\u{2026}") { choose() }
                 Button("Detect") { detect() }
             }
-            HStack {
-                Image(systemName: found ? "checkmark.circle.fill" : "xmark.circle")
-                    .foregroundStyle(found ? Color.green : Color.secondary)
-                Text(path.isEmpty ? "Not set. Detect searches PATH, g16root, g09root, GAUSS_EXEDIR and standard locations." : (found ? "Executable found" : "Not found at this path"))
-                    .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Circle().fill(found != nil ? Color.green : Color.secondary.opacity(0.5)).frame(width: 8, height: 8)
+                Text(found?.path ?? "Not found").font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
             }
-            if !msgBox.value.isEmpty { Text(msgBox.value).font(.caption) }
-            HStack {
-                TextField("Scratch directory (optional)", text: $scratch)
-                Button("Choose…") { choose(directory: true) }
-            }
+            .padding(.leading, 70)
         }
-        .padding()
+        .onAppear { refresh() }
+        .onChange(of: path) { _, _ in refresh() }
+    }
+
+    private func refresh() {
+        found = ProgramLocator.locate(program, settingsPath: path)
+        Task { @MainActor in JobQueue.shared.refreshAvailability() }
     }
 
     private func detect() {
-        if let p = GaussianPathProbe.detect() { path = p; msgBox.value = "Found \(p)" } else { msgBox.value = "No Gaussian installation found." }
+        if let u = ProgramLocator.locate(program, settingsPath: "") { path = u.path } else { path = ""; found = nil }
     }
 
-    private func choose(directory: Bool) {
+    private func choose() {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = !directory
-        panel.canChooseDirectories = directory
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let u = panel.url { if directory { scratch = u.path } else { path = u.path } }
+        panel.title = "Choose the \(program.title) executable"
+        if panel.runModal() == .OK, let u = panel.url { path = u.path }
+    }
+}
+
+private struct ProgramsPrefs: View {
+    @AppStorage(AppSettings.scratchDirKey) private var scratch = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(QCProgram.allCases) { ProgramRow(program: $0) }
+            Divider()
+            HStack {
+                Text("Gaussian scratch").frame(width: 100, alignment: .leading)
+                TextField("Scratch directory (optional)", text: $scratch).textFieldStyle(.roundedBorder)
+                Button("Choose\u{2026}") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
+                    if panel.runModal() == .OK, let u = panel.url { scratch = u.path }
+                }
+            }
+            Text("Detect looks in your settings, environment variables, PATH and the usual install folders.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding()
     }
 }

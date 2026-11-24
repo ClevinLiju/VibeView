@@ -486,7 +486,8 @@ extension Checks {
             let s = try fmtFixture("pdb_models.pdb")
             let lines = s.split(separator: "\n", omittingEmptySubsequences: false)
             // cutting anywhere inside a MODEL (before its ENDMDL) must throw
-            for k in [2, 3, 4, 5, 7, 8, 9, 11, 12] {
+            // (prefix(6) and prefix(11) end on an ENDMDL, i.e. clean cuts between models, which are valid)
+            for k in [2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 14] {
                 let t = lines.prefix(k).joined(separator: "\n") + "\n"
                 try fmtThrowsIOError("kept \(k) lines") { _ = try PDBFormat.parse(t) }
             }
@@ -767,7 +768,7 @@ extension Checks {
 
     static let ioFormatsRegistry: [Check] = [
         Check("io.registry.metadata") {
-            try expect(MoleculeFileFormat.allCases.count == 9)
+            try expect(MoleculeFileFormat.allCases.count == 16)  // 9 round-1 + 7 round-2 program formats
             for f in MoleculeFileFormat.allCases {
                 try expect(f.canRead && !f.fileExtensions.isEmpty && !f.displayName.isEmpty)
                 try expect(f.fileExtensions.allSatisfy { $0 == $0.lowercased() && !$0.hasPrefix(".") })

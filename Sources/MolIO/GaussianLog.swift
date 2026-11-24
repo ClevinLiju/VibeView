@@ -314,6 +314,12 @@ struct GaussianLogParser {
                     i += 1 }
                 else if t.hasPrefix("Excited State") { i = try handleExcitedState(i, t) }
                 else { i += 1 }
+            case "L":
+                // "Link1:  Proceeding to internal job step number  2." starts a new job without a new
+                // "Entering Gaussian System" banner (opt freq, --Link1-- inputs).
+                if t.hasPrefix("Low frequencies ---") { try handleLowFrequencies(i, t) }
+                else if t.hasPrefix("Link1:") && t.contains("Proceeding to internal job step") { recognized = true; enteringCount += 1; startJob() }
+                i += 1
             case "G":
                 if log.programVersion == nil, t.hasPrefix("Gaussian "), isVersionLine(t) { log.programVersion = String(t); recognized = true }
                 i += 1
@@ -367,8 +373,6 @@ struct GaussianLogParser {
                 if t.hasPrefix("Frequencies --") { i = try handleVibrationBlock(i, t) } else { i += 1 }
             case "H":
                 if t.hasPrefix("Hirshfeld charges") { i = try handleHirshfeld(i) } else { i += 1 }
-            case "L":
-                if t.hasPrefix("Low frequencies ---") { try handleLowFrequencies(i, t); i += 1 } else { i += 1 }
             case "O":
                 if t.hasPrefix("Optimization completed") { handleOptimizationCompleted() }
                 else if t.hasPrefix("Optimization stopped") { log.optimizationCompleted = false; log.stationaryPointFound = false }
@@ -507,6 +511,34 @@ struct GaussianLogParser {
         r.dipole = log.dipole
         r.routeSection = log.routeSections.first ?? ""
         r.normalTermination = normal
+        for (k, v) in zip(r.normalModes.indices, log.vibrations) {
+            r.normalModes[k].reducedMass = v.reducedMass; r.normalModes[k].forceConstant = v.forceConstant
+        }
+        for (k, s) in log.excitedStates.enumerated() where k < r.excitedStates.count {
+            r.excitedStates[k].multiplicity = s.multiplicity; r.excitedStates[k].symmetry = s.symmetry
+        }
+        var x = CalculationExtras()
+        x.program = "gaussian"
+        x.programVersion = log.programVersion
+        x.finalEnergy = log.scfEnergies.last?.energy
+        let schemes: [(String, [Double])] = [("Mulliken", log.mullikenCharges), ("APT", log.aptCharges), ("NBO", log.naturalCharges),
+                                             ("Hirshfeld", log.hirshfeldCharges), ("CM5", log.cm5Charges)]
+        for (name, q) in schemes where !q.isEmpty { x.charges[name] = q }
+        if !log.mullikenSpinDensities.isEmpty { x.spinDensities["Mulliken"] = log.mullikenSpinDensities }
+        if !log.hirshfeldSpinDensities.isEmpty { x.spinDensities["Hirshfeld"] = log.hirshfeldSpinDensities }
+        if let t = log.thermochemistry {
+            let e0 = t.sumElectronicZeroPoint.flatMap { s in t.zeroPointCorrection.map { s - $0 } }
+            x.thermochemistry = ThermochemistrySummary(
+                temperature: t.temperature, pressure: t.pressure, electronicEnergy: e0,
+                zeroPointEnergy: t.zeroPointCorrection, thermalEnergyCorrection: t.thermalCorrectionEnergy,
+                enthalpyCorrection: t.thermalCorrectionEnthalpy, gibbsCorrection: t.thermalCorrectionGibbs,
+                totalEnthalpy: t.sumElectronicThermalEnthalpy, totalGibbs: t.sumElectronicThermalGibbs,
+                entropy: t.thermalCorrectionEnthalpy.flatMap { h in t.thermalCorrectionGibbs.map { h - $0 } })
+        }
+        if let g = o.gap { x.homoLumoGapEV = g * 27.211386245988 }
+        if !log.optimizationSteps.isEmpty { x.optimizationConverged = log.optimizationCompleted || log.stationaryPointFound }
+        if let m = log.errorMessage, log.errorTermination { x.messages.append(m) }
+        r.extras = x
         log.result = r
         return log
     }

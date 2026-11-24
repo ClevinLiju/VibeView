@@ -4,7 +4,7 @@ import MolCore
 
 // I/O team checks (Lead 2). Sub-arrays live in IOChecks+<Area>.swift, one per worker.
 extension Checks {
-    static let io: [Check] = ioCommon + ioGaussianInput + ioGaussianOutput + ioFormats
+    static let io: [Check] = ioCommon + ioGaussianInput + ioGaussianOutput + ioFormats + ioOrca + ioXTB + ioMolden + ioQChem + ioCalcSpec
 
     static let ioCommon: [Check] = [
         Check("io.common.elements") {

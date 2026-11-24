@@ -42,7 +42,19 @@ public enum MDLMolFormat {
         var i = 0
         while i < lines.count {
             if !records.isEmpty, lines[i...].allSatisfy({ $0.allSatisfy { $0 == " " || $0 == "\t" } }) { break }
-            let (rec, next) = try parseRecord(lines, start: i)
+            let rec: SDFRecord, next: Int
+            do {
+                (rec, next) = try parseRecord(lines, start: i)
+            } catch let e as MolIOError {
+                // Many SD writers emit blank separator lines after "$$$$". Strictly, the next record's
+                // header starts right after the terminator (so a blank title line is legal). Only when
+                // the strict reading fails do we retry from the first non-blank line.
+                guard !records.isEmpty, case .parse = e else { throw e }
+                var j = i
+                while j < lines.count, lines[j].allSatisfy({ $0 == " " || $0 == "\t" }) { j += 1 }
+                guard j > i, j < lines.count else { throw e }
+                (rec, next) = try parseRecord(lines, start: j)
+            }
             records.append(rec)
             i = next
         }

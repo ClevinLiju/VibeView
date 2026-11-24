@@ -4,8 +4,7 @@ import MolCore
 /// Overlay for the Gauge tool: shows distance / angle / dihedral of the picked atoms and lets you type a new value.
 struct MeasurePanel: View {
     @ObservedObject var editor: EditorModel
-    @StateObject private var box = StateBox("")
-    private var text: String { get { box.value } nonmutating set { box.value = newValue } }
+    @State private var text = ""
 
     private var picks: [Int] { editor.measurePicks.filter { editor.molecule.atoms.indices.contains($0) } }
 
@@ -35,7 +34,7 @@ struct MeasurePanel: View {
                     Text(String(format: "%.4f %@", i.value, i.unit)).monospacedDigit()
                 }
                 HStack {
-                    TextField("New value", text: $box.value).textFieldStyle(.roundedBorder).frame(width: 90)
+                    TextField("New value", text: $text).textFieldStyle(.roundedBorder).frame(width: 90)
                         .onSubmit(applyValue)
                     Text(i.unit)
                     Button("Set", action: applyValue).disabled(Double(text) == nil)
@@ -49,7 +48,7 @@ struct MeasurePanel: View {
         .frame(width: 250)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .padding(10)
-        .onChange(of: editor.measurePicks) { _ in text = "" }
+        .onChange(of: editor.measurePicks) { text = "" }
     }
 
     private func applyValue() {

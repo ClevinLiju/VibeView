@@ -54,6 +54,15 @@ public enum HighlightLayerBuilder {
         return layer
     }
 
+    /// Fresnel rim: transparent in the middle, bright at the silhouette, so the halo reads as an outline/glow.
+    static let rimShader = """
+    float3 n = normalize(_surface.normal);
+    float3 v = normalize(_surface.view);
+    float rim = pow(clamp(1.0 - abs(dot(n, v)), 0.0, 1.0), 2.2);
+    float k = clamp(0.12 + 1.5 * rim, 0.0, 1.0);
+    _output.color *= k;
+    """
+
     static func material(_ c: RGBA) -> SCNMaterial {
         let m = SCNMaterial()
         m.lightingModel = .constant
@@ -63,6 +72,7 @@ public enum HighlightLayerBuilder {
         m.readsFromDepthBuffer = true
         m.writesToDepthBuffer = false
         m.blendMode = .alpha
+        m.shaderModifiers = [.fragment: rimShader]
         return m
     }
 }

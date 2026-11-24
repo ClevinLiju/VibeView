@@ -89,6 +89,10 @@ public struct CubeFile: Sendable, Codable, Equatable {
             axisInAngstrom.append(n < 0)
             axes.append(Vec3(vx, vy, vz))
         }
+        // A negative count on the first axis means the whole header (origin, axes, atoms) is in Å,
+        // which is how the writer emits it and how common cube producers use the sign.
+        let headerInAngstrom = axisInAngstrom[0]
+        let posScale = headerInAngstrom ? 1.0 : bohrToAngstrom
         // atoms
         var atoms = [Atom](), charges = [Double]()
         atoms.reserveCapacity(nAtoms)
@@ -100,7 +104,7 @@ public struct CubeFile: Sendable, Codable, Equatable {
                   let y = parseFortranDouble(t[3]), let zz = parseFortranDouble(t[4]) else {
                 throw fail(7 + i, "bad atom line")
             }
-            atoms.append(Atom(id: i, atomicNumber: z, position: Vec3(x, y, zz) * bohrToAngstrom))
+            atoms.append(Atom(id: i, atomicNumber: z, position: Vec3(x, y, zz) * posScale))
             charges.append(q)
         }
         var orbitalIndices: [Int] = []
@@ -173,7 +177,7 @@ public struct CubeFile: Sendable, Codable, Equatable {
         }
         if let f = failure { throw fail(nil, f) }
 
-        let origin = Vec3(ox, oy, oz) * bohrToAngstrom
+        let origin = Vec3(ox, oy, oz) * posScale
         var axesA = [Vec3]()
         for k in 0..<3 { axesA.append(axes[k] * (axisInAngstrom[k] ? 1 : bohrToAngstrom)) }
         var grids = [VolumeGrid]()

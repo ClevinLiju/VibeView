@@ -6,15 +6,15 @@ struct ChoiceField: View {
     let title: String
     let options: [String]
     @Binding var value: String
-    @StateObject private var customBox = VMBox(false)
+    @State private var forceCustom = false
 
     var body: some View {
-        let isCustom = customBox.value || !options.contains(value)
+        let isCustom = forceCustom || !options.contains(value)
         VStack(alignment: .leading, spacing: 4) {
             Picker(title, selection: Binding(
                 get: { isCustom ? "\u{0}custom" : value },
                 set: { new in
-                    if new == "\u{0}custom" { customBox.value = true } else { customBox.value = false; value = new }
+                    if new == "\u{0}custom" { forceCustom = true } else { forceCustom = false; value = new }
                 })) {
                 ForEach(options, id: \.self) { Text($0).tag($0) }
                 Divider()

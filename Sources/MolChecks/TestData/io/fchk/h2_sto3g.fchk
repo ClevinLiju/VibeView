@@ -1,0 +1,45 @@
+H2 STO-3G (generated in the public fchk layout)
+SP        RHF                                                         STO-3G
+Number of atoms                            I                2
+Charge                                     I                0
+Multiplicity                               I                1
+Number of electrons                        I                2
+Number of alpha electrons                  I                1
+Number of beta electrons                   I                1
+Number of basis functions                  I                2
+Number of independent functions            I                2
+Atomic numbers                             I   N=           2
+           1           1
+Nuclear charges                            R   N=           2
+  1.00000000E+00  1.00000000E+00
+Current cartesian coordinates              R   N=           6
+  0.00000000E+00  0.00000000E+00 -6.99198669E-01  0.00000000E+00  0.00000000E+00
+  6.99198669E-01
+Number of contracted shells                I                2
+Shell types                                I   N=           2
+           0           0
+Number of primitives per shell             I   N=           2
+           3           3
+Shell to atom map                          I   N=           2
+           1           2
+Primitive exponents                        R   N=           6
+  3.42525091E+00  6.23913730E-01  1.68855400E-01  3.42525091E+00  6.23913730E-01
+  1.68855400E-01
+Contraction coefficients                   R   N=           6
+  1.54328970E-01  5.35328140E-01  4.44634540E-01  1.54328970E-01  5.35328140E-01
+  4.44634540E-01
+Coordinates of each shell                  R   N=           6
+  0.00000000E+00  0.00000000E+00 -6.99198669E-01  0.00000000E+00  0.00000000E+00
+  6.99198669E-01
+SCF Energy                                 R     -1.117505879000000E+00
+Total Energy                               R     -1.117505879000000E+00
+Alpha Orbital Energies                     R   N=           2
+ -5.78203000E-01  6.70331000E-01
+Alpha MO coefficients                      R   N=           4
+  5.48934000E-01  5.48934000E-01  1.21146000E+00 -1.21146000E+00
+Total SCF Density                          R   N=           3
+  6.00000000E-01  6.00000000E-01  6.00000000E-01
+Mulliken Charges                           R   N=           2
+  0.00000000E+00  0.00000000E+00
+Dipole Moment                              R   N=           3
+  0.00000000E+00  0.00000000E+00  0.00000000E+00
