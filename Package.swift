@@ -19,13 +19,13 @@ let package = Package(
         .target(name: "MolCompute", dependencies: ["MolCore", "MolIO", "MolBuild"]),
         .executableTarget(
             name: "MolScopeApp",
-            dependencies: ["MolCore", "MolIO", "MolBuild", "MolAnalysis", "MolRender", "MolCompute"]
+            dependencies: ["MolCore", "MolIO", "MolBuild", "MolAnalysis", "MolRender", "MolCompute", "MolCommand"]
         ),
         // XCTest/Swift Testing are unavailable without full Xcode; checks run as an executable:
         //   swift run molscope-check [filter]
         .executableTarget(
             name: "MolChecks",
-            dependencies: ["MolCore", "MolIO", "MolBuild", "MolAnalysis", "MolRender", "MolCompute"],
+            dependencies: ["MolCore", "MolIO", "MolBuild", "MolAnalysis", "MolRender", "MolCompute", "MolCommand"],
             resources: [.copy("TestData")]
         ),
     ],

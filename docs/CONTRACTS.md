@@ -243,3 +243,14 @@ Every parser throws `MolIOError` (never traps) on malformed or truncated input; 
   may fill the same struct.
 - App: `CalculationInfoCard` (viewport, top-left, shown automatically, toggled with View ▸ Calculation Info) and
   setup rows at the top of the Summary tab, both built from `CalculationInfoRows`.
+
+## Round 3 ownership (4 leads × 2 workers). The app is now called **VibeView**.
+| Lead | Owns |
+|---|---|
+| A Data + Commands | `Sources/MolCore`, `Sources/MolIO`, `Sources/MolCommand` (new: command-line language: parser, registry, executor protocol) |
+| B Visualization | `Sources/MolRender` |
+| C App | `Sources/MolBuild`, `Sources/MolScopeApp`, `scripts/`, `Extensions/`, `README.md`, `docs/INSTALL.md` |
+| D Analysis + Compute | `Sources/MolAnalysis`, `Sources/MolCompute` |
+Module and directory names keep their Mol* prefix internally; only the user-facing product, bundle and executable are renamed.
+Feature ideas may come from general knowledge of GaussView, Avogadro 2, ChimeraX and VMD, but
+**never copy their code, icons, wording or layouts** (clean-room rule).
