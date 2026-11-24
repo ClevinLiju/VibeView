@@ -229,16 +229,12 @@ extension CommandRegistry {
             try inv.context.showVibration(n)
             return CommandOutput("showing mode \(n)")
         }
-        add("export", [], "export image <path> [width height]", "Export a picture of the view.") { inv in
-            guard inv.arguments.count >= 2, inv.arguments[0].lowercased() == "image" else { throw CommandError("usage: export image <path> [width height]") }
-            let size = Array(inv.arguments.dropFirst(2))
-            guard size.isEmpty || size.count == 2 else { throw CommandError("give both width and height, or neither") }
-            let dims = try size.map { s -> Int in
-                guard let n = Int(s), n > 0 else { throw CommandError("'\(s)' is not a pixel size") }
-                return n
-            }
+        add("export", [], ImageExportRequest.usage,
+            "Export a picture of the current view. The file extension picks the format; with no size the image is the view at 2× its on-screen size.") { inv in
+            guard inv.arguments.count >= 2, inv.arguments[0].lowercased() == "image" else { throw CommandError("usage: " + ImageExportRequest.usage) }
+            let req = try ImageExportRequest.parse(path: inv.arguments[1], options: Array(inv.arguments.dropFirst(2)))
             let url = inv.url(inv.arguments[1])
-            try inv.context.exportImage(to: url, width: dims.first, height: dims.last)
+            try inv.context.exportImage(req, to: url)
             return CommandOutput("exported \(url.path)")
         }
         add("undo", [], "undo", "Undo the last edit.") { inv in

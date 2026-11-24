@@ -5,13 +5,31 @@ import Metal
 import UniformTypeIdentifiers
 import MolCore
 
-public enum ImageFormat: String, Sendable, CaseIterable { case png, tiff }
+public enum ImageFormat: String, Sendable, CaseIterable {
+    case png, tiff, jpeg, heic
+
+    /// Format for a file extension (png, jpg/jpeg, tif/tiff, heic/heif); nil when unsupported.
+    public init?(fileExtension ext: String) {
+        switch ext.lowercased() {
+        case "png": self = .png
+        case "jpg", "jpeg": self = .jpeg
+        case "tif", "tiff": self = .tiff
+        case "heic", "heif": self = .heic
+        default: return nil
+        }
+    }
+
+    /// False for formats that cannot store transparency (JPEG).
+    public var supportsAlpha: Bool { self != .jpeg }
+}
 public struct ImageExportOptions: Sendable {
     public var widthPoints: Double = 800
     public var heightPoints: Double = 600
     public var dpi: Double = 144          // 72 dpi = 1 px per point
     public var transparentBackground = false
     public var format: ImageFormat = .png
+    /// Lossy-compression quality for JPEG/HEIC, 0...1.
+    public var compressionQuality: Double = 0.95
     /// Render at N x the output size and downsample (on top of 4x MSAA). 1...4; reduced automatically
     /// so the internal render stays <= 16384 px.
     public var supersampling: Int = 2
@@ -104,26 +122,47 @@ extension MoleculeRenderer {
 
     public func exportImage(to url: URL, options: ImageExportOptions) throws {
         let image = try renderImage(options)
-        try ImageEncoding.write(image, to: url, format: options.format, dpi: options.dpi)
+        try ImageEncoding.write(image, to: url, format: options.format, dpi: options.dpi, quality: options.compressionQuality)
     }
 }
 
 enum ImageEncoding {
-    static func write(_ image: CGImage, to url: URL, format: ImageFormat, dpi: Double) throws {
-        let type: UTType = format == .png ? .png : .tiff
+    static func write(_ image: CGImage, to url: URL, format: ImageFormat, dpi: Double, quality: Double = 0.95) throws {
+        let type: UTType = switch format {
+        case .png: .png
+        case .tiff: .tiff
+        case .jpeg: .jpeg
+        case .heic: .heic
+        }
         guard let dest = CGImageDestinationCreateWithURL(url as CFURL, type.identifier as CFString, 1, nil) else {
             throw RenderExportError.encodeFailed
         }
         var props: [CFString: Any] = [kCGImagePropertyDPIWidth: dpi, kCGImagePropertyDPIHeight: dpi]
-        if format == .png {
+        switch format {
+        case .png:
             let ppm = dpi / 0.0254
             props[kCGImagePropertyPNGDictionary] = [kCGImagePropertyPNGXPixelsPerMeter: Int(ppm.rounded()),
                                                     kCGImagePropertyPNGYPixelsPerMeter: Int(ppm.rounded())]
-        } else {
+        case .tiff:
             props[kCGImagePropertyTIFFDictionary] = [kCGImagePropertyTIFFXResolution: dpi, kCGImagePropertyTIFFYResolution: dpi,
                                                      kCGImagePropertyTIFFResolutionUnit: 2]
+        case .jpeg, .heic:
+            props[kCGImageDestinationLossyCompressionQuality] = min(max(quality, 0), 1)
         }
-        CGImageDestinationAddImage(dest, image, props as CFDictionary)
+        // JPEG has no alpha channel: flatten onto white rather than letting transparent pixels turn black.
+        let img = format.supportsAlpha ? image : (flattened(image) ?? image)
+        CGImageDestinationAddImage(dest, img, props as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { throw RenderExportError.encodeFailed }
+    }
+
+    private static func flattened(_ image: CGImage) -> CGImage? {
+        guard image.alphaInfo != .none, image.alphaInfo != .noneSkipLast, image.alphaInfo != .noneSkipFirst,
+              let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { return nil }
+        let r = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1)); ctx.fill(r)
+        ctx.draw(image, in: r)
+        return ctx.makeImage()
     }
 }

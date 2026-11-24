@@ -116,6 +116,35 @@ final class AppCommandContext: @preconcurrency CommandContext {
         catch { throw CommandError("image export failed: \(error.localizedDescription)") }
     }
 
+    func exportImage(_ request: ImageExportRequest, to url: URL) throws {
+        let e = try ed
+        let renderer = e.viewport.renderer
+        if request.fit { renderer.fitToView(animated: false) }
+        // Missing dimensions follow the on-screen view, so the export frames exactly what is visible.
+        let viewSize = renderer.view.bounds.size
+        let aspect = viewSize.width > 0 && viewSize.height > 0 ? Double(viewSize.width / viewSize.height) : 4.0 / 3.0
+        let w: Int, h: Int
+        switch (request.width, request.height) {
+        case let (wv?, hv?): (w, h) = (wv, hv)
+        case let (wv?, nil): (w, h) = (wv, max(1, Int((Double(wv) / aspect).rounded())))
+        case let (nil, hv?): (w, h) = (max(1, Int((Double(hv) * aspect).rounded())), hv)
+        case (nil, nil):
+            w = max(1, Int((Double(max(viewSize.width, 400)) * request.scale).rounded()))
+            h = max(1, Int((Double(w) / aspect).rounded()))
+        }
+        guard w <= 16384, h <= 16384 else { throw CommandError("image would be \(w)×\(h); the limit is 16384 px per side") }
+        var o = ImageExportOptions.pixels(width: w, height: h, dpi: request.dpi)
+        o.format = switch request.format { case .png: .png; case .jpeg: .jpeg; case .tiff: .tiff; case .heic: .heic }
+        o.transparentBackground = request.transparent && o.format.supportsAlpha
+        o.supersampling = request.supersample
+        o.compressionQuality = request.quality
+        if let l = request.look {
+            o.look = switch l { case "whitepaper": .whitePaper; case "darkstage": .darkStage; case "illustration": .illustration; default: .studio }
+        }
+        do { try renderer.exportImage(to: url, options: o) }
+        catch { throw CommandError("image export failed: \(error.localizedDescription)") }
+    }
+
     func undo() -> Bool { guard let e = editor, e.canUndo else { return false }; e.undo(); return true }
     func redo() -> Bool { guard let e = editor, e.canRedo else { return false }; e.redo(); return true }
 }

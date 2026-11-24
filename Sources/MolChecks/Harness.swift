@@ -30,7 +30,7 @@ let allChecks: [Check] = ([
     // TEAM REGISTRATION — add one line each, e.g.  Checks.core,
     Checks.core,
     Checks.io,
-    Checks.command,
+    Checks.command + Checks.commandExport,
     Checks.analysis,
     Checks.render,
     Checks.compute,

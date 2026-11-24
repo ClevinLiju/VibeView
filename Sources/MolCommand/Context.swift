@@ -33,6 +33,8 @@ public protocol CommandContext: AnyObject {
     /// 1-based mode number; nil or 0 stops the animation.
     func showVibration(_ mode: Int?) throws
     func exportImage(to url: URL, width: Int?, height: Int?) throws
+    /// Full-featured export used by `export image`; the default forwards to `exportImage(to:width:height:)`.
+    func exportImage(_ request: ImageExportRequest, to url: URL) throws
     func undo() -> Bool
     func redo() -> Bool
 }
@@ -57,6 +59,9 @@ public extension CommandContext {
     func showOrbital(_ which: OrbitalSelector) throws { throw CommandError("orbital display is not supported here") }
     func showVibration(_ mode: Int?) throws { throw CommandError("vibration display is not supported here") }
     func exportImage(to url: URL, width: Int?, height: Int?) throws { throw CommandError("image export is not supported here") }
+    func exportImage(_ request: ImageExportRequest, to url: URL) throws {
+        try exportImage(to: url, width: request.width, height: request.height)
+    }
     func undo() -> Bool { false }
     func redo() -> Bool { false }
 }
