@@ -94,6 +94,10 @@ public enum AnimationExporter {
     @MainActor public static func exportVibration(renderer: MoleculeRenderer, mode: NormalMode, url: URL, framesPerCycle: Int = 24,
                                                   cycles: Int = 1, amplitude: Double = 0.5, format: AnimationFormat = .gif,
                                                   options: ImageExportOptions = ImageExportOptions()) throws {
+        // A live (GPU) vibration would fight the exported poses: suspend it and resume afterwards.
+        let live = renderer.vibration.isPlaying ? renderer.vibration.mode : nil
+        renderer.vibration.stop()
+        defer { if let live { renderer.vibration.play(live) } }
         let base = renderer.molecule.atoms.map(\.position)
         guard mode.displacements.count == base.count else { throw RenderExportError.unsupported("mode/atom count mismatch") }
         let fpc = max(2, framesPerCycle)

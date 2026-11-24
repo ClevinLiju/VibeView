@@ -8,14 +8,26 @@ import MolRender
 // extensions to EditorModel in your own files.
 
 public enum EditorTool: String, CaseIterable, Identifiable, Sendable {
-    case rotate, select, build, measure
+    case rotate, select, move, build, bond, measure
     public var id: String { rawValue }
     public var title: String {
-        switch self { case .rotate: "Orbit"; case .select: "Pick"; case .build: "Sketch"; case .measure: "Gauge" }
+        switch self { case .rotate: "Orbit"; case .select: "Pick"; case .move: "Shift"; case .build: "Sketch"; case .bond: "Link"; case .measure: "Gauge" }
     }
     public var symbol: String {
-        switch self { case .rotate: "rotate.3d"; case .select: "cursorarrow.rays"; case .build: "pencil.and.outline"; case .measure: "ruler" }
+        switch self {
+        case .rotate: "rotate.3d"; case .select: "lasso"; case .move: "arrow.up.and.down.and.arrow.left.and.right"
+        case .build: "pencil.and.outline"
+        case .bond: "link"; case .measure: "ruler"
+        }
     }
+}
+
+/// What the Gauge tool measures: the number of atoms to click.
+public enum MeasureMode: String, CaseIterable, Identifiable, Sendable {
+    case distance, angle, dihedral
+    public var id: String { rawValue }
+    public var atomCount: Int { switch self { case .distance: 2; case .angle: 3; case .dihedral: 4 } }
+    public var title: String { switch self { case .distance: "Distance"; case .angle: "Angle"; case .dihedral: "Dihedral" } }
 }
 
 /// What the Sketch (build) tool places when you click.
@@ -34,12 +46,20 @@ public final class EditorModel: ObservableObject {
     @Published public var tool: EditorTool = .rotate
     @Published public var payload: BuildPayload = .element(6)
     @Published public var measurePicks: [Int] = []          // up to 4 atom indices
+    @Published public var measureMode: MeasureMode = .distance
+    /// Measurements kept on screen ("monitors"); they follow edits and are saved in sessions.
+    @Published public var monitors: [Monitor] = []
+    /// Link (bond) tool: first picked atom and the order new bonds get.
+    @Published public var bondPick: Int? = nil
+    @Published public var bondOrder: BondOrder = .single
     @Published public var frameIndex: Int? = nil             // index into result.steps when browsing
     @Published public var activeModeIndex: Int? = nil        // normal mode being animated
     @Published public var vibrationAmplitude: Double = 0.5
     @Published public var activeOrbitalIndex: Int? = nil     // 1-based orbital index for display
     @Published public var orbitalIsovalue: Double = 0.03      // |isovalue| (a.u.) for orbital surfaces
-    @Published public var orbitalStatus: String = ""          // e.g. "Computing…", "Needs a .fchk file"
+    @Published public var orbitalStatus: String = ""
+    /// Orbital surface look (persisted app-wide in UserDefaults by `OrbitalLook`).
+    @Published public var orbitalLook: OrbitalLook = .load()          // e.g. "Computing…", "Needs a .fchk file"
     @Published public var showDisplacementArrows: Bool = false // arrows for the active normal mode
     @Published public var isPlayingFrames: Bool = false        // frame player running (results panel)
     @Published public var statusMessage: String = ""
@@ -54,6 +74,11 @@ public final class EditorModel: ObservableObject {
     @Published public var showCommandPalette = false
     @Published public var showCalcSetup = false
     @Published public var showPubChem = false
+    @Published public var showXTBSettings = false
+    @Published public var showNameLookup = false
+    @Published public var showConsole = false
+    /// Same-named files found next to the document (Molden, fchk, hess…) and merged into the result.
+    @Published public var companions: [CompanionFile] = []
     @Published public var showInspector = true
     @Published public var showLibrary = true
     @Published public var showResults = true
@@ -106,8 +131,15 @@ public final class EditorModel: ObservableObject {
         molecule = m
         selection = selection.filter { $0 < m.atoms.count }
         measurePicks = measurePicks.filter { $0 < m.atoms.count }
+        pruneMonitors(m)
         frameIndex = nil
         onCommit?(m)
+    }
+
+    private func pruneMonitors(_ m: Molecule) {
+        if bondPick.map({ $0 >= m.atoms.count }) == true { bondPick = nil }
+        let kept = monitors.filter { $0.atoms.allSatisfy { $0 < m.atoms.count } }
+        if kept != monitors { monitors = kept }
     }
 
     /// Replace the whole molecule (e.g. adopt an optimization frame) as one undoable step.
@@ -119,6 +151,7 @@ public final class EditorModel: ObservableObject {
         molecule = prev
         selection = selection.filter { $0 < prev.atoms.count }
         measurePicks = []
+        pruneMonitors(prev)
         onCommit?(prev)
     }
 
@@ -128,6 +161,7 @@ public final class EditorModel: ObservableObject {
         molecule = next
         selection = selection.filter { $0 < next.atoms.count }
         measurePicks = []
+        pruneMonitors(next)
         onCommit?(next)
     }
 }
@@ -164,3 +198,6 @@ extension EditorTool {
 /// Weak list of open editors (used by the developer self-test / snapshot hooks).
 struct WeakEditor { weak var editor: EditorModel? }
 @MainActor enum EditorRegistry { static var all: [WeakEditor] = [] ; static var live: [EditorModel] { all.compactMap(\.editor) } }
+
+/// A measurement kept on screen (MolRender's type; Foundation also has a `Measurement`).
+public typealias Monitor = MolRender.Measurement

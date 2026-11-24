@@ -140,11 +140,26 @@ public enum IOBridge {
     static func prepared(_ m: Molecule, perceiveOrders: Bool = true) -> Molecule {
         var m = m
         m.renumberAtomIDs()
-        if m.bonds.isEmpty && m.atoms.count > 1 && m.atoms.count < 20000 {
+        guard m.atoms.count > 1 && m.atoms.count < 200_000 else { return m }
+        if m.bonds.isEmpty {
             m.perceiveBonds()
             if perceiveOrders && m.atoms.count < 2000 { m.perceiveBondOrders() }
+        } else if hasUnbondedHeavyAtoms(m) {
+            // Partial connectivity, e.g. a PDB whose CONECT records cover only HETATM groups:
+            // keep every stated bond (orders included) and add the perceived ones that are missing.
+            var stated = Set(m.bonds.map { Int64($0.a) << 32 | Int64($0.b) })
+            for b in m.perceivedBonds() where stated.insert(Int64(b.a) << 32 | Int64(b.b)).inserted {
+                m.bonds.append(b)
+            }
         }
         return m
+    }
+
+    /// True when some non-hydrogen atom has no bond although the molecule has bonds elsewhere.
+    static func hasUnbondedHeavyAtoms(_ m: Molecule) -> Bool {
+        var bonded = [Bool](repeating: false, count: m.atoms.count)
+        for b in m.bonds where b.a < bonded.count && b.b < bonded.count { bonded[b.a] = true; bonded[b.b] = true }
+        return m.atoms.indices.contains { !bonded[$0] && m.atoms[$0].atomicNumber > 1 }
     }
 
     // MARK: Writing

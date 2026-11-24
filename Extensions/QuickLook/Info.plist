@@ -5,7 +5,7 @@
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>VibeView Preview</string>
   <key>CFBundleExecutable</key><string>VibeViewQuickLook</string>
-  <key>CFBundleIdentifier</key><string>org.vibeview.VibeView.QuickLook</string>
+  <key>CFBundleIdentifier</key><string>io.github.clevinliju.VibeView.QuickLook</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>VibeViewQuickLook</string>
   <key>CFBundlePackageType</key><string>XPC!</string>

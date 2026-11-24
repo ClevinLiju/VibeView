@@ -50,7 +50,24 @@ public enum BondLayerBuilder {
             nodes.append(node)
         }
         for n in nodes { layer.addChildNode(n) }
+        addRingCircles(layer, molecule: molecule, options: options, materials: materials)
         return layer
+    }
+
+    static func ringCircleName(_ k: Int) -> String { "bond:ringcircle:\(k)" }
+
+    private static func addRingCircles(_ layer: SCNNode, molecule: Molecule, options: RenderOptions, materials: MaterialLibrary) {
+        let circles = BondGeometry.aromaticRingCircles(molecule: molecule, options: options)
+        let pipe = RenderMetrics.bondRadius(options: options) * 0.45
+        for (k, c) in circles.enumerated() {
+            let t = SCNTorus(ringRadius: CGFloat(c.radius), pipeRadius: CGFloat(pipe))
+            t.firstMaterial = materials.material(for: options.bondColor)
+            let n = SCNNode(geometry: t)
+            n.name = ringCircleName(k)
+            n.simdPosition = SIMD3<Float>(c.center)
+            n.simdOrientation = RenderMath.orientationFromY(to: c.normal)
+            layer.addChildNode(n)
+        }
     }
 
     /// Position/orientation/scale a unit cylinder node onto a segment.
@@ -100,10 +117,18 @@ public enum BondLayerBuilder {
         if MergedGeometry.isMergedBonds(molecule: molecule, options: options) {
             return MergedGeometry.updateBonds(layer, segs: segs, options: options)
         }
-        guard children.count == segs.count else { return false }
+        let circles = BondGeometry.aromaticRingCircles(molecule: molecule, options: options)
+        guard children.count == segs.count + circles.count else { return false }
         for (node, s) in zip(children, segs) {
             guard node.name == NodeName.bond(s.bondIndex) else { return false }
             place(node, s)
+        }
+        for (k, c) in circles.enumerated() {
+            let node = children[segs.count + k]
+            guard node.name == ringCircleName(k), let t = node.geometry as? SCNTorus,
+                  abs(Double(t.ringRadius) - c.radius) < 1e-4 else { return false }
+            node.simdPosition = SIMD3<Float>(c.center)
+            node.simdOrientation = RenderMath.orientationFromY(to: c.normal)
         }
         return true
     }

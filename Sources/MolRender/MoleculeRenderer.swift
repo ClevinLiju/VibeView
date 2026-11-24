@@ -39,12 +39,39 @@ public struct PickEvent: Sendable {
             guard hovered != oldValue else { return }
             rebuildHighlight(); onHover?(hovered)
             if let cb = onHoverInfo { cb(HoverInfo.make(hovered, molecule: molecule, location: lastHoverLocation)) }
+            pushHoverTooltip()
         }
     }
     /// Tooltip-ready hover callback (atom element/charge/neighbors, bond length/order, pointer location).
     /// Fires whenever `hovered` changes, including to `.none` (empty `text`).
     public var onHoverInfo: ((HoverInfo) -> Void)?
     var lastHoverLocation: CGPoint?
+    /// Observable tooltip state for `HoverTooltipOverlay` / `HoverTooltipView` (round 3).
+    public private(set) lazy var hoverTooltipModel = HoverTooltipModel()
+    /// Bumped when the camera or coordinates change; hover picks are cached per revision.
+    var hoverRevision = 0
+    var slabDefaults: (near: Double, far: Double)?
+    var hbondLayer = SCNNode()
+    var annotationsShown = false
+    var surfaceBounds: [String: (lo: Vec3, hi: Vec3)] = [:]
+
+    /// Left-drag tool (see `DragTool`). Default `.rotate` keeps the round-2 behaviour.
+    public var dragTool: DragTool = .rotate
+    /// Double-clicking an atom also animates the camera target onto it (default true).
+    public var centerOnDoubleClick = true
+    /// Atoms inside a lasso, with the modifiers at mouse-up (fires before built-in selection handling).
+    public var onLassoSelect: ((Set<Int>, NSEvent.ModifierFlags) -> Void)?
+    /// A move-selection drag finished: all atom positions before and after. The renderer already shows
+    /// `after`; commit it to the document (with undo) and call `setMolecule`/`updatePositions` as usual.
+    public var onSelectionMoved: ((_ before: [Vec3], _ after: [Vec3]) -> Void)?
+    /// Fired with `measurementValues()` whenever measurement overlays are rebuilt (live monitors).
+    public var onMeasurementValues: (([Double]) -> Void)?
+
+    /// Push the current hover target into `hoverTooltipModel`.
+    func pushHoverTooltip() {
+        let info = HoverInfo.make(hovered, molecule: molecule, location: lastHoverLocation)
+        hoverTooltipModel.update(HoverTooltip.make(info, molecule: molecule, measurements: options.measurements), at: lastHoverLocation)
+    }
 
     /// Built-in selection semantics: click = select atom, shift = add, cmd = toggle,
     /// double-click = whole fragment, click on empty = clear. Box (shift-drag) adds atoms inside.
@@ -85,6 +112,9 @@ public struct PickEvent: Sendable {
             guard let self else { return }
             self.lighting.updateFogRange(distance: self.camera.distance, radius: self.cachedBounds.radius)
             self.lighting.updateFocus(distance: self.camera.distance)
+            self.hoverRevision &+= 1
+            self.applySlab()
+            if self.options.showAxes || self.options.showScaleBar || self.annotationsShown { self.refreshAnnotations(); self.annotationsShown = self.options.showAxes || self.options.showScaleBar }
         }
         picking = PickingController(renderer: self)
         vibration = VibrationAnimator(renderer: self)
@@ -115,11 +145,27 @@ public struct PickEvent: Sendable {
     public func updatePositions(_ positions: [Vec3]) {
         guard positions.count == molecule.atoms.count else { return }
         for i in positions.indices { molecule.atoms[i].position = positions[i] }
+        hoverRevision &+= 1
+        vibration?.positionsChangedExternally()
         let okA = AtomLayerBuilder.updatePositions(atomLayer, molecule: molecule, options: options)
         let okB = BondLayerBuilder.updatePositions(bondLayer, molecule: molecule, options: options)
         if !okA { replace(&atomLayer, with: AtomLayerBuilder.build(molecule: molecule, options: options, colors: currentColors, materials: materials)) }
         if !okB { replace(&bondLayer, with: BondLayerBuilder.build(molecule: molecule, options: options, colors: currentColors, materials: materials)) }
         rebuildOverlays()
+    }
+
+    /// Move only the position-following overlays (highlights, labels, measurements, H-bonds) and the model
+    /// coordinates; the atom/bond layers are untouched (used while the GPU vibration mesh is shown).
+    func updateOverlayPositions(_ positions: [Vec3]) {
+        guard positions.count == molecule.atoms.count else { return }
+        for i in positions.indices { molecule.atoms[i].position = positions[i] }
+        hoverRevision &+= 1
+        rebuildOverlays()
+    }
+
+    /// Hide/show the CPU atom and bond layers (the GPU vibration mesh replaces them while playing).
+    func setGeometryLayersHidden(_ hidden: Bool) {
+        atomLayer.isHidden = hidden; bondLayer.isHidden = hidden
     }
 
     /// Display colors per atom for the current options.
@@ -130,6 +176,12 @@ public struct PickEvent: Sendable {
         let atoms = molecule.atoms.filter { RenderMetrics.isAtomVisible($0, options: options) }
         var pts = atoms.map(\.position)
         if let cell = options.unitCell, options.showUnitCell { pts += cell.corners }
+        // Visible isosurfaces (orbital lobes extend well past the atoms): their bounding-box corners.
+        var surf: [Vec3] = []
+        for (id, b) in surfaceBounds where isosurfaces[id]?.visible == true {
+            for n in 0..<8 { surf.append(Vec3(n & 1 == 0 ? b.lo.x : b.hi.x, n & 2 == 0 ? b.lo.y : b.hi.y, n & 4 == 0 ? b.lo.z : b.hi.z)) }
+        }
+        pts += surf
         guard !pts.isEmpty else { return (.zero, 5) }
         var lo = pts[0], hi = pts[0]
         for p in pts { lo = simd_min(lo, p); hi = simd_max(hi, p) }
@@ -137,6 +189,8 @@ public struct PickEvent: Sendable {
         var r = 0.0
         for a in atoms { r = max(r, simd_distance(a.position, c) + RenderMetrics.atomRadius(atomicNumber: a.atomicNumber, options: options)) }
         if let cell = options.unitCell, options.showUnitCell { for p in cell.corners { r = max(r, simd_distance(p, c)) } }
+        // Box corners overestimate a lobe's extent; use 85 % of the corner distance.
+        for p in surf { r = max(r, 0.85 * simd_distance(p, c)) }
         return (c, max(r, 1))
     }
 
@@ -152,15 +206,18 @@ public struct PickEvent: Sendable {
 
     public func setIsosurface(_ s: Isosurface) {
         isosurfaces[s.id] = s
+        var lo = SIMD3<Float>(repeating: .infinity), hi = -lo
+        for m in s.meshes { for v in m.vertices where v.x.isFinite && v.y.isFinite && v.z.isFinite { lo = simd_min(lo, v); hi = simd_max(hi, v) } }
+        surfaceBounds[s.id] = lo.x <= hi.x ? (Vec3(lo), Vec3(hi)) : nil
         surfaceLayer.childNode(withName: "surface:\(s.id)", recursively: false)?.removeFromParentNode()
         if s.visible { surfaceLayer.addChildNode(IsosurfaceNodeBuilder.build(s)) }
     }
     public func removeIsosurface(id: String) {
-        isosurfaces[id] = nil
+        isosurfaces[id] = nil; surfaceBounds[id] = nil
         surfaceLayer.childNode(withName: "surface:\(id)", recursively: false)?.removeFromParentNode()
     }
     public func removeAllIsosurfaces() {
-        isosurfaces.removeAll(); surfaceLayer.childNodes.forEach { $0.removeFromParentNode() }
+        isosurfaces.removeAll(); surfaceBounds.removeAll(); surfaceLayer.childNodes.forEach { $0.removeFromParentNode() }
     }
 
     // MARK: Displacement vectors
@@ -174,6 +231,7 @@ public struct PickEvent: Sendable {
     // MARK: Building
 
     func rebuildAll() {
+        hoverRevision &+= 1
         cachedBounds = boundingSphere()
         let colors = currentColors
         materials.preset = options.material
@@ -183,12 +241,17 @@ public struct PickEvent: Sendable {
         rebuildOverlays()
         if surfaceLayer.parent == nil { root.addChildNode(surfaceLayer) }
         if vectorLayer.parent == nil { vectorLayer.name = NodeName.vectors; root.addChildNode(vectorLayer) }
+        vibration?.layersRebuilt()
     }
 
     func rebuildOverlays() {
         rebuildHighlight()
         replace(&labelLayer, with: LabelLayerBuilder.build(molecule: molecule, options: options))
         replace(&measurementLayer, with: MeasurementLayerBuilder.build(molecule: molecule, options: options))
+        if options.showHydrogenBonds || hbondLayer.childNodes.count > 0 {
+            replace(&hbondLayer, with: HydrogenBondLayerBuilder.build(molecule: molecule, options: options))
+        }
+        if !options.measurements.isEmpty, let cb = onMeasurementValues { cb(measurementValues()) }
     }
 
     func rebuildHighlight() {
@@ -205,7 +268,7 @@ public struct PickEvent: Sendable {
         var geometryChanged = old.style != options.style || old.colorScheme != options.colorScheme
             || old.atomScale != options.atomScale || old.bondRadius != options.bondRadius || old.tubeRadius != options.tubeRadius
             || old.wireWidth != options.wireWidth || old.splitBondColors != options.splitBondColors || old.bondColor != options.bondColor
-            || old.showBondOrders != options.showBondOrders || old.dashedBonds != options.dashedBonds
+            || old.showBondOrders != options.showBondOrders || old.aromaticStyle != options.aromaticStyle || old.dashedBonds != options.dashedBonds
             || old.showHydrogens != options.showHydrogens || old.geometryQuality != options.geometryQuality
         if old.material != options.material { geometryChanged = true }
         if geometryChanged {
@@ -213,11 +276,17 @@ public struct PickEvent: Sendable {
         } else {
             if old.unitCell != options.unitCell || old.showUnitCell != options.showUnitCell { rebuildCell() }
             if old.labelMode != options.labelMode || old.labelSize != options.labelSize || old.measurements != options.measurements
+                || old.showHydrogenBonds != options.showHydrogenBonds || old.hydrogenBondMaxDistance != options.hydrogenBondMaxDistance
+                || old.hydrogenBondMinAngle != options.hydrogenBondMinAngle || old.hydrogenBondColor != options.hydrogenBondColor
                 || old.selectionColor != options.selectionColor || old.hoverColor != options.hoverColor || old.theme != options.theme {
                 rebuildOverlays()
             }
         }
         if old.projection != options.projection { camera.projection = options.projection }
+        if old.slabNear != options.slabNear || old.slabFar != options.slabFar { applySlab() }
+        if old.showAxes != options.showAxes || old.showScaleBar != options.showScaleBar || (annotationsShown && old.theme != options.theme) {
+            refreshAnnotations(); annotationsShown = options.showAxes || options.showScaleBar
+        }
         applyEnvironment()
     }
 
@@ -243,6 +312,7 @@ public struct PickEvent: Sendable {
     }
 
     func replace(_ layer: inout SCNNode, with new: SCNNode) {
+        if vibration?.isGPUActive == true, new.name == NodeName.atoms || new.name == NodeName.bonds { new.isHidden = true }
         layer.removeFromParentNode()
         layer = new
         root.addChildNode(new)

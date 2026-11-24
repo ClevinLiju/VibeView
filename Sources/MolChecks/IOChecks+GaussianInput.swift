@@ -1,7 +1,7 @@
 import Foundation
 import simd
 import MolCore
-@testable import MolIO
+import MolIO
 
 // Gaussian input (.gjf/.com) checks (worker A).
 

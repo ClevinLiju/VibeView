@@ -1,7 +1,7 @@
 import Foundation
 import MolCore
 import simd
-@testable import MolIO
+import MolIO
 
 // Q-Chem checks. Q-Chem is not installed: the fixtures in TestData/io/qchem/ are hand-written from the
 // public Q-Chem manual formats (input) and documented output layout, so these checks validate the

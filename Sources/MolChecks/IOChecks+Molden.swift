@@ -1,7 +1,7 @@
 import Foundation
 import MolCore
 import simd
-@testable import MolIO
+import MolIO
 
 // Molden checks. Real fixtures: ORCA 6.1.1 orca_2mkl files in TestData/io/orca/.
 // The orthonormality checks use a self-contained Gaussian overlap routine (Obara-Saika 1D recursion,

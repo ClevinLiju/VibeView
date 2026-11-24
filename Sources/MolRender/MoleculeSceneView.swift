@@ -21,7 +21,7 @@ public final class MoleculeSCNView: SCNView {
     weak var renderer: MoleculeRenderer?
     private var downPoint: CGPoint?
     private var dragMode: DragMode = .none
-    private enum DragMode { case none, orbit, pan, box }
+    private enum DragMode { case none, orbit, pan, box, lasso, move, rotateSelection }
 
     public override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
@@ -69,15 +69,28 @@ public final class MoleculeSCNView: SCNView {
         let p = loc(e)
         if dragMode == .none {
             guard hypot(p.x - d.x, p.y - d.y) > Self.clickSlop else { return }
-            if e.modifierFlags.contains(.shift) { dragMode = .box; r.picking.beginBox(at: d) }
-            else if e.modifierFlags.contains(.option) { dragMode = .pan }
-            else { dragMode = .orbit }
+            let m = e.modifierFlags
+            switch r.dragTool {
+            case .rotate:
+                if m.contains(.shift) && m.contains(.option) { dragMode = .lasso; r.picking.beginLasso(at: d) }
+                else if m.contains(.shift) { dragMode = .box; r.picking.beginBox(at: d) }
+                else if m.contains(.option) { dragMode = .pan }
+                else { dragMode = .orbit }
+            case .boxSelect: dragMode = .box; r.picking.beginBox(at: d)
+            case .lasso: dragMode = .lasso; r.picking.beginLasso(at: d)
+            case .moveSelection:
+                if r.picking.beginMove() { dragMode = m.contains(.option) ? .rotateSelection : .move }
+                else { dragMode = .orbit }
+            }
         }
         if dragMode == .orbit || dragMode == .pan { record(e) }
         switch dragMode {
         case .orbit: r.camera.orbit(dx: Double(e.deltaX), dy: Double(e.deltaY))
         case .pan: r.camera.pan(dx: Double(e.deltaX), dy: Double(e.deltaY), viewSize: bounds.size)
         case .box: r.picking.dragBox(to: p)
+        case .lasso: r.picking.dragLasso(to: p)
+        case .move: r.picking.dragMove(dx: Double(e.deltaX), dy: -Double(e.deltaY), rotate: false)
+        case .rotateSelection: r.picking.dragMove(dx: Double(e.deltaX), dy: -Double(e.deltaY), rotate: true)
         case .none: break
         }
     }
@@ -87,6 +100,8 @@ public final class MoleculeSCNView: SCNView {
         switch dragMode {
         case .none: r.picking.click(at: p, modifiers: e.modifierFlags, clickCount: e.clickCount)
         case .box: r.picking.endBox(at: p, modifiers: e.modifierFlags)
+        case .lasso: r.picking.dragLasso(to: p); r.picking.endLasso(modifiers: e.modifierFlags)
+        case .move, .rotateSelection: r.picking.endMove()
         case .orbit: r.camera.startInertia(orbitVelocity: releaseVelocity(at: e.timestamp))
         case .pan: r.camera.startPanInertia(velocity: releaseVelocity(at: e.timestamp), viewSize: bounds.size)
         }
@@ -105,7 +120,7 @@ public final class MoleculeSCNView: SCNView {
     private func panRelease(_ e: NSEvent) {
         renderer?.camera.startPanInertia(velocity: releaseVelocity(at: e.timestamp), viewSize: bounds.size)
     }
-    public override func mouseMoved(with e: NSEvent) { renderer?.picking.hover(at: loc(e)) }
+    public override func mouseMoved(with e: NSEvent) { renderer?.picking.hover(at: loc(e), throttled: true) }
     public override func mouseExited(with e: NSEvent) { renderer?.picking.hover(at: nil) }
 
     public override func scrollWheel(with e: NSEvent) {

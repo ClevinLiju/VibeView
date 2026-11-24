@@ -6,7 +6,7 @@ import MolCore
 // is filled in. Works on truncated logs: anything not reached stays nil.
 
 extension OrcaOutput {
-    static func runInfo(text: String, inputLines: [String], keywordLines: [String]) -> CalculationInfo {
+    public static func runInfo(text: String, inputLines: [String], keywordLines: [String]) -> CalculationInfo {
         var info = CalculationInfo()
         info.keywords = keywordLines
 
@@ -161,7 +161,7 @@ extension OrcaOutput {
     private static func dottedValue(_ text: String, label: String) -> String? { settingValue(text, label: label) }
 
     /// "TOTAL RUN TIME: 0 days 0 hours 0 minutes 57 seconds 742 msec" → 57.742.
-    static func totalRunTime(_ text: String) -> Double? {
+    public static func totalRunTime(_ text: String) -> Double? {
         guard let r = text.range(of: "TOTAL RUN TIME:", options: .backwards) else { return nil }
         let line = text[r.upperBound...].prefix(while: { !$0.isNewline })
         let p = line.split(whereSeparator: { $0.isWhitespace })

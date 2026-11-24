@@ -35,6 +35,9 @@ struct MainWindowView: View {
                     if editor.result != nil && editor.showResults {
                         ResultsPanel(editor: editor).frame(minHeight: 220, idealHeight: 300)
                     }
+                    if editor.showConsole {
+                        ConsoleView(console: editor.console).frame(minHeight: 110, idealHeight: 180)
+                    }
                 }
                 StatusBar(editor: editor)
             }
@@ -45,7 +48,8 @@ struct MainWindowView: View {
         .toolbar { toolbarContent }
         .focusedSceneValue(\.editor, editor)
         .sheet(isPresented: $editor.showCalcSetup) { CalcSetupSheet(editor: editor) }
-        .sheet(isPresented: $editor.showPubChem) { PubChemSheet(editor: editor) }
+        .sheet(isPresented: $editor.showPubChem) { NameLookupSheet(editor: editor) }
+        .sheet(isPresented: $editor.showXTBSettings) { XTBSettingsSheet(editor: editor, isPresented: $editor.showXTBSettings) }
         .overlay(alignment: .top) {
             if editor.showCommandPalette {
                 ZStack(alignment: .top) {
@@ -60,6 +64,7 @@ struct MainWindowView: View {
         .navigationSubtitle(subtitle)
         .onAppear {
             editor.fileURL = fileURL
+            if let u = fileURL { editor.loadCompanions(for: u) }
             editor.onCommit = { m in document.molecule = m }
             syncTheme()
         }
@@ -90,7 +95,7 @@ struct MainWindowView: View {
             }
             .pickerStyle(.segmented)
             .labelStyle(.iconOnly)
-            .help("Orbit, Pick, Sketch or Gauge")
+            .help("Orbit, Pick (lasso), Shift (move selection), Sketch, Link (bonds) or Gauge (measure)")
         }
         ToolbarItemGroup(placement: .primaryAction) {
             Button { showElements.toggle() } label: {
@@ -184,5 +189,5 @@ enum FragmentNames {
 }
 
 func debugLog(_ s: String) {
-    if ProcessInfo.processInfo.environment["VIBEVIEW_DEBUG_IO"] != nil { FileHandle.standardError.write(Data((s + "\n").utf8)) }
+    if AppEnv.isSet("DEBUG_IO") { FileHandle.standardError.write(Data((s + "\n").utf8)) }
 }

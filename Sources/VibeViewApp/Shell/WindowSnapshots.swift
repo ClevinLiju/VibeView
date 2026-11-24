@@ -4,15 +4,20 @@ import MolCore
 import MolBuild
 import MolRender
 
-/// Developer aid for headless UI review: with `VIBEVIEW_SNAPSHOT_DIR` set, every window is written to
+/// Developer aid for headless UI review: with `VIBEVIEW_SNAPSHOT_DIR` (or the older `VIBEVIEW_SNAPSHOT_DIR`) set, every window is written to
 /// `<dir>/window-<n>.png` a few seconds after launch (SceneKit views are composited via `snapshot()`).
 @MainActor
 enum WindowSnapshots {
     static func scheduleIfRequested() {
-        guard let dir = ProcessInfo.processInfo.environment["VIBEVIEW_SNAPSHOT_DIR"], !dir.isEmpty else { return }
-        let delay = Double(ProcessInfo.processInfo.environment["VIBEVIEW_SNAPSHOT_DELAY"] ?? "") ?? 6
+        guard let dir = AppEnv.value("SNAPSHOT_DIR") else { return }
+        let delay = Double(AppEnv.value("SNAPSHOT_DELAY") ?? "") ?? 6
         let url = URL(fileURLWithPath: dir)
-        if ProcessInfo.processInfo.environment["VIBEVIEW_SELFTEST"] != nil {
+        if AppEnv.isSet("GALLERY") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if let ed = EditorRegistry.live.last { UIGallery.capture(to: url, editor: ed) }
+            }
+        }
+        if AppEnv.isSet("SELFTEST") {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { SelfTest.run(dir: url) }
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { capture(to: url) }
@@ -30,8 +35,12 @@ enum WindowSnapshots {
             img.lockFocus()
             // 3-D views first, then the window drawing on top (the SCNView area is transparent in the cache,
             // so SwiftUI overlays such as the command palette stay visible).
-            for v in allSubviews(root).compactMap({ $0 as? SCNView }) {
-                v.snapshot().draw(in: v.convert(v.bounds, to: root))
+            for (k, v) in allSubviews(root).compactMap({ $0 as? SCNView }).enumerated() {
+                let shot = v.snapshot()
+                shot.draw(in: v.convert(v.bounds, to: root))
+                if let t = shot.tiffRepresentation, let b = NSBitmapImageRep(data: t), let png = b.representation(using: .png, properties: [:]) {
+                    try? png.write(to: dir.appendingPathComponent("scene-\(n)-\(k).png"))
+                }
             }
             NSImage(cgImage: rep.cgImage!, size: b.size).draw(in: NSRect(origin: .zero, size: b.size), from: .zero, operation: .sourceOver, fraction: 1)
             img.unlockFocus()
@@ -77,10 +86,10 @@ enum SelfTest {
             return CGPoint(x: v.x, y: v.y)
         }
         r.performClick(at: screen(0))
-        say("grow C: \(ed.molecule.formula)")
+        say("click C with C (replace in place = no change): \(ed.molecule.formula)")
         ed.payload = .element(8)
         if let c2 = ed.molecule.atoms.indices.last(where: { ed.molecule.atoms[$0].atomicNumber == 6 }) { r.performClick(at: screen(c2)) }
-        say("grow O: \(ed.molecule.formula)")
+        say("click C with O (replace C by O): \(ed.molecule.formula)")
         ed.payload = .fragment("phenyl")
         if let h = ed.molecule.atoms.indices.first(where: { ed.molecule.atoms[$0].atomicNumber == 1 }) { r.performClick(at: screen(h)) }
         say("attach phenyl on H: \(ed.molecule.formula)")
@@ -101,6 +110,27 @@ enum SelfTest {
         say("measure picks \(ed.measurePicks) distance \(ed.measurePicks.count == 2 ? String(format: "%.3f", ed.molecule.distance(ed.measurePicks[0], ed.measurePicks[1])) : "-")")
         // select tool
         ed.tool = .select; r.performClick(at: screen(0)); say("select: \(ed.selection.sorted())")
+        // Delete key in the focused 3-D view (synthesized Backspace through NSApp.sendEvent → event monitor)
+        let before = ed.molecule.atoms.count
+        if let h = ed.molecule.atoms.indices.last(where: { ed.molecule.atoms[$0].atomicNumber == 1 }) { ed.selection = [h] }
+        r.view.window?.makeFirstResponder(r.view)
+        if let w = r.view.window, let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                             windowNumber: w.windowNumber, context: nil, characters: "\u{7F}",
+                                                             charactersIgnoringModifiers: "\u{7F}", isARepeat: false, keyCode: 51) {
+            NSApp.sendEvent(key)
+        }
+        say("delete key: atoms \(before) → \(ed.molecule.atoms.count), undo name \(ed.undoActionName ?? "-")")
+        ed.undo(); say("undo delete: atoms \(ed.molecule.atoms.count)")
+        // console delete
+        let con = ed.console
+        con.input = "select H"; con.submit()
+        let nh = ed.selection.count
+        con.input = "delete"; con.submit()
+        say("console delete (\(nh) H selected): \(ed.molecule.formula); last line: \(con.lines.last?.text ?? "")")
+        con.input = "undo"; con.submit(); say("console undo: \(ed.molecule.formula)")
+        // context menu contents
+        ed.selection = [0]
+        say("context menu: " + ViewportContextMenu.make(editor: ed).items.map { $0.isSeparatorItem ? "|" : $0.title + ($0.isEnabled ? "" : "(off)") }.joined(separator: ", "))
         // save + export
         do {
             let gjf = dir.appendingPathComponent("selftest.gjf")

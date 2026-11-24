@@ -46,12 +46,13 @@ extension EditorModel {
             return
         }
         guard mo >= 1, mo <= wf.alpha.orbitalCount else { orbitalStatus = "Orbital \(mo) is not in the wavefunction."; return }
-        let key = "\(ObjectIdentifier(self).hashValue)-\(spinBeta ? "b" : "a")\(mo)"
+        let quality = orbitalLook.quality
+        let key = "\(ObjectIdentifier(self).hashValue)-\(spinBeta ? "b" : "a")\(mo)-\(quality.rawValue)"
         if let g = cache.grid(key) { show(grid: g, iso: iso, gen: gen, label: "MO \(mo)"); return }
-        orbitalStatus = "Computing orbital \(mo)…"
+        orbitalStatus = "Computing orbital \(mo) (\(quality.title.lowercased()) grid)…"
         Task.detached(priority: .userInitiated) {
             let g = WavefunctionSurfaces.orbitalGrid(wf, mo: mo - 1, spin: spinBeta ? .beta : .alpha,
-                                                     grid: WavefunctionSurfaces.defaultGrid(wf, spacing: 0.18, maxPoints: 1_500_000))
+                                                     grid: GridSpec.adaptive(wf, quality: quality))
             await MainActor.run {
                 cache.store(key, g)
                 guard cache.generation == gen else { return }
@@ -65,8 +66,10 @@ extension EditorModel {
             let lobes = MarchingCubes.orbitalLobes(grid: g, isovalue: iso)
             await MainActor.run {
                 guard OrbitalSurfaceCache.shared.generation == gen else { return }
-                var s = Isosurface(id: "orbital", meshes: lobes)
-                s.opacity = 0.78
+                let occ = self.result?.orbitals.first { $0.index == self.activeOrbitalIndex }?.occupied ?? true
+                var s = Isosurface(id: "orbital", meshes: lobes, colors: self.orbitalLook.scheme(occupied: occ))
+                s.mode = self.orbitalLook.mode
+                s.opacity = self.orbitalLook.mode == .transparent ? 1 : 0.95
                 self.viewport.renderer.setIsosurface(s)
                 let tri = lobes.reduce(0) { $0 + $1.indices.count / 3 }
                 self.orbitalStatus = tri == 0 ? "\(label): no surface at ±\(iso) — try a smaller isovalue"

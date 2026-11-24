@@ -30,10 +30,11 @@ let allChecks: [Check] = ([
     // TEAM REGISTRATION — add one line each, e.g.  Checks.core,
     Checks.core,
     Checks.io,
+    Checks.command,
     Checks.analysis,
     Checks.render,
     Checks.compute,
-    Checks.buildCore + Checks.buildCalc,
+    Checks.buildCore + Checks.buildCalc + Checks.buildPlacement,
 ] as [[Check]]).flatMap { $0 }  // each team registers an array (fix by Lead 5, see CONTRACTS change log)
 
 @main

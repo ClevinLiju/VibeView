@@ -18,6 +18,8 @@ final class ViewportSync {
     private var didFit = false
     private var fittedRadius = 1.0
 
+    private var events: ViewportEventMonitor?
+
     init(editor: EditorModel) {
         self.editor = editor
         renderer = MoleculeRenderer(molecule: Molecule(), options: editor.renderOptions)
@@ -27,6 +29,7 @@ final class ViewportSync {
             if sel.count != 2 { ed.selectedBond = nil }
         }
         renderer.onPick = { [weak self] ev in self?.handlePick(ev) }
+        events = ViewportEventMonitor(editor: editor)
         renderer.onBoxSelect = { [weak self] sel, _ in self?.editor?.selection = sel }
 
         // Structure: either the browsed frame or the editable molecule.
@@ -43,16 +46,27 @@ final class ViewportSync {
             self.renderer.selection = sel.filter { $0 < self.shownMolecule.atoms.count }
             self.pushingSelection = false
         }.store(in: &bag)
-        Publishers.CombineLatest(editor.$renderOptions.removeDuplicates(), editor.$measurePicks.removeDuplicates())
+        Publishers.CombineLatest3(editor.$renderOptions.removeDuplicates(), editor.$measurePicks.removeDuplicates(),
+                                  editor.$monitors.removeDuplicates())
             .dropFirst()
-            .sink { [weak self] o, p in self?.applyOptions(o, picks: p) }
+            .sink { [weak self] o, p, mons in self?.applyOptions(o, picks: p, monitors: mons) }
             .store(in: &bag)
-        editor.$tool.sink { [weak self] t in self?.renderer.autoSelect = (t == .select || t == .rotate) }.store(in: &bag)
+        editor.$tool.sink { [weak self] t in
+            guard let r = self?.renderer else { return }
+            r.autoSelect = (t == .select || t == .rotate || t == .move)
+            // Pick: drag draws a lasso (shift adds, ⌘/⌥ subtracts). Shift: drag moves the selection, ⌥-drag rotates it.
+            r.dragTool = t == .select ? .lasso : t == .move ? .moveSelection : .rotate
+        }.store(in: &bag)
+        renderer.onSelectionMoved = { [weak self] _, after in
+            guard let self, let ed = self.editor, ed.frameIndex == nil, after.count == ed.molecule.atoms.count else { return }
+            let n = ed.selection.count
+            ed.apply(n == 1 ? "Move Atom" : "Move \(n) Atoms") { $0.positions = after }
+        }
         Publishers.CombineLatest3(editor.$activeModeIndex, editor.$vibrationAmplitude, editor.$showDisplacementArrows)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.refreshVibration() }
             .store(in: &bag)
-        Publishers.CombineLatest(editor.$activeOrbitalIndex, editor.$orbitalIsovalue.removeDuplicates())
+        Publishers.CombineLatest3(editor.$activeOrbitalIndex, editor.$orbitalIsovalue.removeDuplicates(), editor.$orbitalLook.removeDuplicates())
             .debounce(for: .milliseconds(120), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.editor?.refreshOrbitalSurface() }
             .store(in: &bag)
@@ -78,18 +92,22 @@ final class ViewportSync {
             }
         }
         shownMolecule = m
-        applyOptions(ed.renderOptions, picks: browsing ? [] : ed.measurePicks)
+        applyOptions(ed.renderOptions, picks: browsing ? [] : ed.measurePicks, monitors: ed.monitors)
     }
 
-    private func applyOptions(_ o: RenderOptions, picks: [Int]) {
+    private func applyOptions(_ o: RenderOptions, picks: [Int], monitors: [Monitor]) {
         var o = o
-        let p = picks.filter { $0 < shownMolecule.atoms.count }
-        switch p.count {
-        case 2: o.measurements = [.distance(p[0], p[1])]
-        case 3: o.measurements = [.angle(p[0], p[1], p[2])]
-        case 4: o.measurements = [.dihedral(p[0], p[1], p[2], p[3])]
-        default: o.measurements = []
+        let n = shownMolecule.atoms.count
+        let p = picks.filter { $0 < n }
+        var list = monitors.filter { $0.atoms.allSatisfy { $0 < n } }
+        let current: Monitor? = switch p.count {
+        case 2: .distance(p[0], p[1])
+        case 3: .angle(p[0], p[1], p[2])
+        case 4: .dihedral(p[0], p[1], p[2], p[3])
+        default: nil
         }
+        if let current, !list.contains(current) { list.append(current) }
+        o.measurements = list
         if renderer.options != o { renderer.options = o }
     }
 
@@ -118,7 +136,7 @@ final class ViewportSync {
         case .bond(let b) where m.bonds.indices.contains(b): target = .bond(m.bonds[b].a, m.bonds[b].b)
         default: break
         }
-        if ed.tool == .select || ed.tool == .rotate {
+        if ed.tool == .select || ed.tool == .rotate || ed.tool == .move {
             if case .bond(let a, let b) = target { ed.selectedBond = ed.displayedMolecule.bond(between: a, and: b) }
             else if case .empty = target { ed.selectedBond = nil }
             return   // the renderer's auto-select handles atom selection
@@ -147,13 +165,17 @@ struct MoleculeViewport: View {
     @ObservedObject var editor: EditorModel
 
     var body: some View {
-        MoleculeSceneView(renderer: editor.viewport.renderer)
+        ZStack {
+            MoleculeSceneView(renderer: editor.viewport.renderer)
+            HoverTooltipOverlay(renderer: editor.viewport.renderer)
+        }
             .overlay(alignment: .topTrailing) {
-                if editor.tool == .measure { MeasurePanel(editor: editor) }
+                if editor.tool == .measure || !editor.monitors.isEmpty { MeasurePanel(editor: editor) }
+                else if editor.tool == .bond { LinkPanel(editor: editor) }
             }
             .overlay(alignment: .topLeading) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let r = editor.result { CalculationInfoCard(result: r) }
+                    if let r = editor.result { CalculationInfoCard(result: r, companions: editor.companionSummary) }
                     if let f = editor.frameIndex, let n = editor.result?.steps.count, n > 1 {
                         Label("Frame \(f + 1) of \(n)", systemImage: "film.stack")
                             .font(.callout.monospacedDigit())

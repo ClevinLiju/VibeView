@@ -1,7 +1,7 @@
 import Foundation
 import MolCore
 import simd
-@testable import MolIO
+import MolIO
 
 // ORCA checks (worker W1). Fixtures are real ORCA 6.1.1 outputs in TestData/io/orca/.
 

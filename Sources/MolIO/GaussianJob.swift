@@ -39,7 +39,7 @@ public struct Link0: Sendable, Codable, Equatable {
     }
 
     /// Parse one Link 0 line (with or without trailing "!" comment). Unknown lines go to `other`.
-    mutating func absorb(_ rawLine: String) {
+    public mutating func absorb(_ rawLine: String) {
         var line = rawLine.trimmingCharacters(in: .whitespaces)
         if let bang = line.firstIndex(of: "!") { line = String(line[..<bang]).trimmingCharacters(in: .whitespaces) }
         guard line.hasPrefix("%") else { return }
@@ -127,7 +127,7 @@ public struct GaussianZMatrix: Sendable, Codable, Equatable {
 
     /// Cartesian positions (Å) of ALL rows including dummies, standard placement (atom 1 at the origin,
     /// atom 2 on +z from its reference, atom 3 in the xz-plane when no Cartesian atoms precede it).
-    func rowPositions() throws -> [Vec3] {
+    public func rowPositions() throws -> [Vec3] {
         var lookup: [String: Double] = [:]
         for v in variables { lookup[v.name.lowercased()] = v.value }
         func value(_ tok: String, _ row: Int) throws -> Double {

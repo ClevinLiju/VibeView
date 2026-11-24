@@ -75,6 +75,7 @@ public struct QChemOutput: Sendable {
             if out.messages.count >= 5 { break }
         }
         out.buildResult()
+        out.result.extras?.info = runInfo(lines: lines)
         return out
     }
 

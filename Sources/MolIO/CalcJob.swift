@@ -119,17 +119,13 @@ public enum CalcJobResults {
         var out = try MolecularFileLoader.load(text: text, format: format, fileName: plan.outputFileName)
         out.program = plan.program
         switch plan.program {
-        case .orca:
-            if var r = out.result {
-                let hess = plan.baseName + ".hess"
-                if r.normalModes.isEmpty, exists(hess), let h = try? OrcaHessian.read(url: url(hess)) { r.normalModes = h.normalModes }
-                out.result = r
+        case .orca, .gaussian:
+            // same-stem companions (.hess, .molden.input, .engrad, _trj.xyz, .fchk, cubes); gaps only
+            out.companions = CompanionFiles.merge(into: &out, primaryURL: logURL)
+            if plan.baseName != CompanionFiles.baseName(of: plan.outputFileName) {
+                // ORCA %base differs from the input stem: look next to a virtual "<base>.out" too
+                out.companions += CompanionFiles.merge(into: &out, primaryURL: url(plan.baseName + ".out"))
             }
-            let mol = plan.baseName + ".molden.input"
-            if exists(mol), let m = try? MoldenFile.read(url: url(mol)) { out.wavefunction = m.wavefunction }
-        case .gaussian:
-            let f = plan.baseName + ".fchk"
-            if exists(f), let fc = try? FormattedCheckpoint.read(url: url(f)) { out.wavefunction = fc.wavefunction }
         case .xtb:
             let x = try XTBOutput.parse(text)
             var geom: Molecule?

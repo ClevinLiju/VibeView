@@ -1,26 +1,51 @@
 import SwiftUI
 
+/// All 118 elements in the 18-column layout, with the f-block rows below a small gap.
 struct PeriodicTablePopover: View {
     @ObservedObject var editor: EditorModel
     @Binding var isPresented: Bool
-    private let cell: CGFloat = 34
+    @StateObject private var hover = StateBox<Int?>(nil)
+    static let cell: CGFloat = 34
+    /// Gap (in cells) between the main body (rows 0...6) and the lanthanide/actinide rows.
+    static let fBlockGap: CGFloat = 0.4
+    /// Total grid height in cells: 7 main rows + gap + 2 f-block rows.
+    static var gridRows: CGFloat { 7 + fBlockGap + 2 }
+
+    /// Vertical position (in cells) of a table row from `ElementInfo.gridPosition`.
+    static func displayRow(_ row: Int) -> CGFloat { row < 7 ? CGFloat(row) : CGFloat(row - 8) + 7 + fBlockGap }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Element").font(.headline)
+        let cell = Self.cell
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Element").font(.headline)
+                Spacer()
+                Text(hover.value.map { "\(ElementInfo.name($0)) · Z \($0)" } ?? "Click an element to sketch with it")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             ZStack(alignment: .topLeading) {
-                Color.clear.frame(width: cell * 18, height: cell * 9.6)
+                Color.clear
                 ForEach(1...118, id: \.self) { z in
                     if let p = ElementInfo.gridPosition(z) {
-                        button(z).offset(x: CGFloat(p.col) * cell, y: (CGFloat(p.row) + (p.row >= 8 ? 0.6 : 0)) * cell)
+                        button(z).offset(x: CGFloat(p.col) * cell, y: Self.displayRow(p.row) * cell)
                     }
                 }
+                // Markers showing where the f-block rows belong in the main table.
+                Text("57–70").font(.system(size: 9)).foregroundStyle(.secondary)
+                    .frame(width: 2 * cell - 4, alignment: .trailing).offset(x: 0, y: (Self.displayRow(8) + 0.35) * cell)
+                Text("89–102").font(.system(size: 9)).foregroundStyle(.secondary)
+                    .frame(width: 2 * cell - 4, alignment: .trailing).offset(x: 0, y: (Self.displayRow(9) + 0.35) * cell)
             }
+            .frame(width: cell * 18, height: cell * Self.gridRows, alignment: .topLeading)
         }
         .padding(12)
+        .fixedSize()
     }
 
+    private func marker(_ s: String) -> some View { Text(s).font(.system(size: 8)) }
+
     private func button(_ z: Int) -> some View {
+        let cell = Self.cell
         let selected = editor.payload == .element(z)
         let c = ElementInfo.rgb(z)
         let light = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) > 0.55
@@ -37,6 +62,7 @@ struct PeriodicTablePopover: View {
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(selected ? Color.accentColor : .clear, lineWidth: 2.5))
         }
         .buttonStyle(.plain)
-        .help("\(ElementInfo.symbol(z)) (Z = \(z))")
+        .onHover { inside in if inside { hover.value = z } else if hover.value == z { hover.value = nil } }
+        .help("\(ElementInfo.name(z)) (\(ElementInfo.symbol(z)), Z = \(z))")
     }
 }

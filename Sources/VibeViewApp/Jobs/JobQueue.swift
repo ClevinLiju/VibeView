@@ -79,6 +79,7 @@ final class JobQueue: ObservableObject {
     private var runner: JobProcess?
     private var runningID: UUID?
     private var completions: [UUID: (JobRunResult) -> Void] = [:]
+    private var externalCancels: [UUID: () -> Void] = [:]
 
     init() { refreshAvailability() }
 
@@ -99,6 +100,7 @@ final class JobQueue: ObservableObject {
     /// Writes the input into a fresh job directory and queues it.
     @discardableResult
     func submit(setup: CalcSetup, molecule: Molecule, name: String, documentURL: URL?, autoOpen: Bool = true,
+                iterations: CalcIterations = CalcIterations(),
                 completion: ((JobRunResult) -> Void)? = nil) throws -> UUID {
         let program = setup.program
         guard let exe = resolveExecutable(program) else { throw JobSubmitError.programMissing(program) }
@@ -124,7 +126,7 @@ final class JobQueue: ObservableObject {
         let output = dir.appendingPathComponent("job." + program.outputExtension)
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            try effective.inputText(molecule: molecule).write(to: input, atomically: true, encoding: .utf8)
+            try iterations.apply(to: effective.inputText(molecule: molecule), program: program, jobType: effective.jobType).write(to: input, atomically: true, encoding: .utf8)
         } catch {
             throw JobSubmitError.io("Could not write the job files: \(error.localizedDescription)")
         }
@@ -138,13 +140,56 @@ final class JobQueue: ObservableObject {
         return run.id
     }
 
-    private static func safeName(_ s: String) -> String {
+    // MARK: Externally driven jobs (xtb runs started from the xtb settings sheet)
+
+    /// Fresh job directory under the same root `submit` uses.
+    static func newJobDirectory(name: String, program: QCProgram, documentURL: URL? = nil) -> URL {
+        let base: URL
+        if let d = documentURL {
+            base = d.deletingLastPathComponent()
+        } else {
+            base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("VibeView/Jobs", isDirectory: true)
+        }
+        return base.appendingPathComponent("\(safeName(name))-\(program.rawValue)-\(stamp())", isDirectory: true)
+    }
+
+    /// Lists a job that something else is running (it shows in the queue window with its log) and returns its id.
+    @discardableResult
+    func registerExternal(program: QCProgram, name: String, directory: URL, outputURL: URL, setup: CalcSetup,
+                          message: String? = nil, cancel: @escaping () -> Void) -> UUID {
+        var run = JobRun(id: UUID(), program: program, name: Self.safeName(name), directory: directory,
+                         inputURL: directory.appendingPathComponent("input.xyz"), outputURL: outputURL, setup: setup)
+        run.status = .running
+        run.startDate = Date()
+        run.autoOpen = false
+        run.message = message
+        jobs.append(run)
+        externalCancels[run.id] = cancel
+        return run.id
+    }
+
+    func updateExternal(_ id: UUID, tail: String, energies: [Double]) {
+        guard let i = index(id) else { return }
+        jobs[i].liveLog = tail
+        jobs[i].energies = energies
+    }
+
+    func finishExternal(_ id: UUID, status: JobStatus, message: String? = nil) {
+        externalCancels[id] = nil
+        guard let i = index(id) else { return }
+        jobs[i].status = status
+        jobs[i].endDate = Date()
+        if let message { jobs[i].message = message }
+    }
+
+    static func safeName(_ s: String) -> String {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleaned = String(t.map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "_" })
         return cleaned.isEmpty ? "molecule" : cleaned
     }
 
-    private static func stamp() -> String {
+    static func stamp() -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd-HHmmss"
@@ -161,7 +206,7 @@ final class JobQueue: ObservableObject {
             jobs[i].endDate = Date()
             complete(jobs[i])
         case .running:
-            runner?.cancel()
+            if let c = externalCancels[id] { c() } else { runner?.cancel() }
         default: break
         }
     }
@@ -170,10 +215,11 @@ final class JobQueue: ObservableObject {
         guard let i = index(id), !jobs[i].status.isActive else { return }
         jobs.remove(at: i)
         completions[id] = nil
+        JobLogCenter.shared.forget(id)
     }
 
     func clearFinished() {
-        for j in jobs where !j.status.isActive { completions[j.id] = nil }
+        for j in jobs where !j.status.isActive { completions[j.id] = nil; JobLogCenter.shared.forget(j.id) }
         jobs.removeAll { !$0.status.isActive }
     }
 

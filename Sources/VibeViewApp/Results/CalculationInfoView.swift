@@ -84,6 +84,7 @@ struct CalculationInfoRows {
 /// Appears automatically when a loaded result carries calculation info.
 struct CalculationInfoCard: View {
     let result: CalculationResult
+    var companions: String? = nil
     @AppStorage("viewport.calcInfo.expanded") private var expanded = false
     @AppStorage("viewport.calcInfo.visible") private var visible = true
 
@@ -108,6 +109,9 @@ struct CalculationInfoCard: View {
                     Button { visible = false } label: { Image(systemName: "xmark") }
                         .buttonStyle(.borderless)
                         .help("Hide (View ▸ Calculation Info to show again)")
+                }
+                if let companions {
+                    Label(companions, systemImage: "doc.on.doc").font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 if expanded {
                     Divider()

@@ -23,8 +23,8 @@ public enum MolIOError: Error, CustomStringConvertible, Equatable {
 
 /// Private element lookup (to be replaced by Lead 1's MolCore element table once it lands).
 /// Z = 0 is used for dummy / ghost atoms ("X", "Bq").
-enum IOElements {
-    static let symbols: [String] = [
+public enum IOElements {
+    public static let symbols: [String] = [
         "X",
         "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
         "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
@@ -47,13 +47,13 @@ enum IOElements {
     }()
 
     /// Symbol for Z ("X" for 0 or out-of-range).
-    static func symbol(_ z: Int) -> String { (z >= 0 && z < symbols.count) ? symbols[z] : "X" }
+    public static func symbol(_ z: Int) -> String { (z >= 0 && z < symbols.count) ? symbols[z] : "X" }
 
     /// Exact symbol match, case-insensitive ("cl", "CL", "Cl" → 17).
-    static func atomicNumber(exact s: String) -> Int? { table[s.uppercased()] }
+    public static func atomicNumber(exact s: String) -> Int? { table[s.uppercased()] }
 
     /// Lenient match for labels such as "C1", "C-CA-0.1", "Cl(Fragment=2)", "H_a", "16" (numeric Z).
-    static func atomicNumber(label raw: String) -> Int? {
+    public static func atomicNumber(label raw: String) -> Int? {
         let s = raw.trimmingCharacters(in: .whitespaces)
         if let z = Int(s), z >= 0, z < symbols.count { return z }
         let letters = s.prefix { $0.isLetter }
@@ -75,13 +75,14 @@ func tokens<S: StringProtocol>(_ s: S) -> [Substring] where S.SubSequence == Sub
 }
 
 /// Parse a number that may use a Fortran exponent ("1.0D-03", "-0.5d+2").
-func parseFortranDouble<S: StringProtocol>(_ s: S) -> Double? {
+public func parseFortranDouble<S: StringProtocol>(_ s: S) -> Double? {
     if let d = Double(s) { return d }
     let fixed = s.replacingOccurrences(of: "D", with: "E").replacingOccurrences(of: "d", with: "e")
     return Double(fixed)
 }
 
-func readText(_ url: URL) throws -> String {
+/// Read a text file as UTF-8, falling back to Latin-1.
+public func readText(_ url: URL) throws -> String {
     guard let data = try? Data(contentsOf: url) else { throw MolIOError.unreadable(url.path) }
     if let s = String(data: data, encoding: .utf8) { return s }
     if let s = String(data: data, encoding: .isoLatin1) { return s }

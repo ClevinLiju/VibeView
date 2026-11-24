@@ -5,8 +5,9 @@ set -euo pipefail
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/dist}"
-SCRATCH="${VIBEVIEW_SCRATCH:-$ROOT/.build-app}"
-VERSION="${VIBEVIEW_VERSION:-0.1.0}"
+SCRATCH="${VIBEVIEW_SCRATCH:-${VIBEVIEW_SCRATCH:-$ROOT/.build-app}}"
+FILE_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)"
+VERSION="${VIBEVIEW_VERSION:-${VIBEVIEW_VERSION:-${FILE_VERSION:-0.3.0}}}"
 APP="$OUT/VibeView.app"
 
 echo "==> Building release (scratch: $SCRATCH)"
@@ -14,6 +15,8 @@ swift build -c release --product VibeView --package-path "$ROOT" --scratch-path 
 BIN="$(swift build -c release --product VibeView --package-path "$ROOT" --scratch-path "$SCRATCH" --show-bin-path)/VibeView"
 
 echo "==> Assembling $APP"
+# remove stale pre-rename artifacts
+rm -rf "$OUT/VibeView.app" "$OUT"/VibeView*.dmg
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/VibeView"
@@ -28,7 +31,12 @@ done
 echo "==> Generating icon"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-swift "$ROOT/scripts/make-icon.swift" "$TMP/VibeView.iconset" >/dev/null
+# Rendered by the app itself (MolRender, two waters forming a "W"); the drawn fallback needs no GPU/window server.
+if ! "$BIN" --render-icon "$TMP/VibeView.iconset" >/dev/null 2>&1 || [ ! -f "$TMP/VibeView.iconset/icon_512x512@2x.png" ]; then
+  echo "    (renderer icon unavailable, using scripts/make-icon.swift)"
+  rm -rf "$TMP/VibeView.iconset"
+  swift "$ROOT/scripts/make-icon.swift" "$TMP/VibeView.iconset" >/dev/null
+fi
 iconutil -c icns "$TMP/VibeView.iconset" -o "$APP/Contents/Resources/VibeView.icns"
 
 echo "==> Writing Info.plist"
@@ -44,26 +52,29 @@ uti() { # uti desc conforms exts...
 }
 # name | uti | role | conforms | extensions  (must match Sources/VibeViewApp/Core/MoleculeDocument.swift)
 FORMATS=(
-  "Gaussian Input|org.vibeview.gaussian-input|Editor|public.plain-text|gjf com"
-  "Calculation Output|org.vibeview.gaussian-output|Viewer|public.plain-text|log out"
-  "ORCA Input|org.vibeview.orca-input|Viewer|public.plain-text|inp"
-  "Molden File|org.vibeview.molden|Viewer|public.plain-text|molden"
-  "ORCA Hessian|org.vibeview.orca-hessian|Viewer|public.plain-text|hess"
-  "Formatted Checkpoint|org.vibeview.fchk|Viewer|public.plain-text|fchk fch"
-  "Cube File|org.vibeview.cube|Viewer|public.plain-text|cube cub"
-  "XYZ Coordinates|org.vibeview.xyz|Editor|public.plain-text|xyz"
-  "Protein Data Bank File|org.vibeview.pdb|Editor|public.plain-text|pdb ent"
-  "MDL Molfile|org.vibeview.mol|Editor|public.plain-text|mol"
-  "SD File|org.vibeview.sdf|Editor|public.plain-text|sdf sd"
-  "Chemical Markup Language|org.vibeview.cml|Editor|public.xml|cml"
+  "Gaussian Input|io.github.clevinliju.vibeview.gaussian-input|Editor|public.plain-text|gjf com"
+  "Calculation Output|io.github.clevinliju.vibeview.gaussian-output|Viewer|public.plain-text|log out"
+  "ORCA Input|io.github.clevinliju.vibeview.orca-input|Viewer|public.plain-text|inp"
+  "Molden File|io.github.clevinliju.vibeview.molden|Viewer|public.plain-text|molden"
+  "ORCA Hessian|io.github.clevinliju.vibeview.orca-hessian|Viewer|public.plain-text|hess"
+  "Formatted Checkpoint|io.github.clevinliju.vibeview.fchk|Viewer|public.plain-text|fchk fch"
+  "Cube File|io.github.clevinliju.vibeview.cube|Viewer|public.plain-text|cube cub"
+  "XYZ Coordinates|io.github.clevinliju.vibeview.xyz|Editor|public.plain-text|xyz"
+  "Protein Data Bank File|io.github.clevinliju.vibeview.pdb|Editor|public.plain-text|pdb ent"
+  "MDL Molfile|io.github.clevinliju.vibeview.mol|Editor|public.plain-text|mol"
+  "SD File|io.github.clevinliju.vibeview.sdf|Editor|public.plain-text|sdf sd"
+  "Chemical Markup Language|io.github.clevinliju.vibeview.cml|Editor|public.xml|cml"
 )
 DOCS=""; UTIS=""
+SESSION_ID="io.github.clevinliju.vibeview.session"
 for f in "${FORMATS[@]}"; do
   IFS='|' read -r name id role conf exts <<<"$f"
   DOCS+="$(doc "$name" "$id" "$role")"$'\n'
   # shellcheck disable=SC2086
   UTIS+="$(uti "$id" "$name" "$conf" $exts)"$'\n'
 done
+DOCS+="$(doc "VibeView Session" "$SESSION_ID" "Editor")"$'\n'
+UTIS+="$(uti "$SESSION_ID" "VibeView Session" "public.json" vibeview)"$'\n'
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -71,7 +82,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>VibeView</string>
   <key>CFBundleDisplayName</key><string>VibeView</string>
-  <key>CFBundleIdentifier</key><string>org.vibeview.VibeView</string>
+  <key>CFBundleIdentifier</key><string>io.github.clevinliju.VibeView</string>
   <key>CFBundleExecutable</key><string>VibeView</string>
   <key>CFBundleIconFile</key><string>VibeView</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -84,7 +95,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-  <key>NSHumanReadableCopyright</key><string>VibeView — open-source molecular builder and viewer.</string>
+  <key>NSHumanReadableCopyright</key><string>VibeView — open-source molecular builder and viewer. MIT License.</string>
   <key>CFBundleDocumentTypes</key>
   <array>
 $DOCS    <dict>

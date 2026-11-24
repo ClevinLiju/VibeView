@@ -7,18 +7,18 @@ import MolIO
 // SHARED APP CORE (owned by Lead 4). Reading/writing is delegated to IOBridge.
 
 public extension UTType {
-    static let gaussianInput = UTType(exportedAs: "org.vibeview.gaussian-input", conformingTo: .plainText)
-    static let gaussianOutput = UTType(exportedAs: "org.vibeview.gaussian-output", conformingTo: .plainText)
-    static let formattedCheckpoint = UTType(exportedAs: "org.vibeview.fchk", conformingTo: .plainText)
-    static let cubeFile = UTType(exportedAs: "org.vibeview.cube", conformingTo: .plainText)
-    static let xyzFile = UTType(exportedAs: "org.vibeview.xyz", conformingTo: .plainText)
-    static let pdbFile = UTType(exportedAs: "org.vibeview.pdb", conformingTo: .plainText)
-    static let mdlMolFile = UTType(exportedAs: "org.vibeview.mol", conformingTo: .plainText)
-    static let sdfFile = UTType(exportedAs: "org.vibeview.sdf", conformingTo: .plainText)
-    static let cmlFile = UTType(exportedAs: "org.vibeview.cml", conformingTo: .xml)
-    static let orcaInput = UTType(exportedAs: "org.vibeview.orca-input", conformingTo: .plainText)
-    static let moldenFile = UTType(exportedAs: "org.vibeview.molden", conformingTo: .plainText)
-    static let orcaHessian = UTType(exportedAs: "org.vibeview.orca-hessian", conformingTo: .plainText)
+    static let gaussianInput = UTType(exportedAs: "io.github.clevinliju.vibeview.gaussian-input", conformingTo: .plainText)
+    static let gaussianOutput = UTType(exportedAs: "io.github.clevinliju.vibeview.gaussian-output", conformingTo: .plainText)
+    static let formattedCheckpoint = UTType(exportedAs: "io.github.clevinliju.vibeview.fchk", conformingTo: .plainText)
+    static let cubeFile = UTType(exportedAs: "io.github.clevinliju.vibeview.cube", conformingTo: .plainText)
+    static let xyzFile = UTType(exportedAs: "io.github.clevinliju.vibeview.xyz", conformingTo: .plainText)
+    static let pdbFile = UTType(exportedAs: "io.github.clevinliju.vibeview.pdb", conformingTo: .plainText)
+    static let mdlMolFile = UTType(exportedAs: "io.github.clevinliju.vibeview.mol", conformingTo: .plainText)
+    static let sdfFile = UTType(exportedAs: "io.github.clevinliju.vibeview.sdf", conformingTo: .plainText)
+    static let cmlFile = UTType(exportedAs: "io.github.clevinliju.vibeview.cml", conformingTo: .xml)
+    static let orcaInput = UTType(exportedAs: "io.github.clevinliju.vibeview.orca-input", conformingTo: .plainText)
+    static let moldenFile = UTType(exportedAs: "io.github.clevinliju.vibeview.molden", conformingTo: .plainText)
+    static let orcaHessian = UTType(exportedAs: "io.github.clevinliju.vibeview.orca-hessian", conformingTo: .plainText)
 }
 
 /// One entry per supported format. `ext` is the canonical extension passed to IOBridge.

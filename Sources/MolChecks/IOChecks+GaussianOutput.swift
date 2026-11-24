@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-@testable import MolIO
+import MolIO
 
 // Gaussian output (.log) checks (Lead A, round 2). Gaussian is not installed, so the fixture
 // io/gaussian/water_optfreq_td.log is hand-written in the public log layout; the inline snippets

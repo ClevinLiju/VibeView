@@ -21,6 +21,10 @@ struct InspectorView: View {
                 } else {
                     SummarySection(editor: editor)
                 }
+                if !m.atoms.isEmpty {
+                    Divider().padding(.vertical, 4)
+                    SymmetrySection(editor: editor)
+                }
                 Divider().padding(.vertical, 4)
                 DisplaySection(editor: editor)
             }
@@ -151,5 +155,63 @@ private struct DisplaySection: View {
         LabeledContent("Atom size") {
             Slider(value: $editor.renderOptions.atomScale, in: 0.12...0.5)
         }
+        Picker("Aromatic", selection: $editor.renderOptions.aromaticStyle) {
+            Text("Kekulé").tag(AromaticBondStyle.kekule)
+            Text("Dashed").tag(AromaticBondStyle.dashed)
+            Text("Ring").tag(AromaticBondStyle.circle)
+        }
+        .help("How aromatic bonds are drawn")
+        Toggle("Axes", isOn: $editor.renderOptions.showAxes)
+        Toggle("Scale bar", isOn: $editor.renderOptions.showScaleBar)
+        Toggle("Hydrogen bonds", isOn: $editor.renderOptions.showHydrogenBonds)
+            .help("Dashed lines for X–H···Y contacts (H···Y up to \(String(format: "%.1f", editor.renderOptions.hydrogenBondMaxDistance)) Å)")
+        Toggle("Clipping slab", isOn: Binding(get: { editor.renderOptions.slabNear != nil },
+                                              set: { on in
+                                                  let r = max(editor.viewport.renderer.boundingSphere().radius, 2)
+                                                  editor.renderOptions.slabNear = on ? r * 0.5 : nil
+                                                  editor.renderOptions.slabFar = on ? r * 0.5 : nil }))
+            .help("Hide everything outside a slab around the view center")
+        if let near = editor.renderOptions.slabNear {
+            let r = max(editor.viewport.renderer.boundingSphere().radius, 2) * 1.2
+            LabeledContent("Slab") {
+                Slider(value: Binding(get: { near }, set: { editor.renderOptions.slabNear = $0; editor.renderOptions.slabFar = $0 }),
+                       in: 0.3...max(r, 0.6))
+            }
+            .help(String(format: "Half-thickness %.1f Å in front of and behind the view center", near))
+        }
     }
+}
+
+/// Point group of the current structure, with a one-click symmetrize.
+private struct SymmetrySection: View {
+    @ObservedObject var editor: EditorModel
+    @StateObject private var state = StateBox<(group: String, order: Int, atoms: Int)?>(nil)
+    @AppStorage("vibeview.symmetry.tolerance") private var tolerance = 0.1
+
+    var body: some View {
+        Text("Symmetry").font(.headline)
+        LabeledContent("Point group") {
+            if let g = state.value { Text(g.group).font(.body.weight(.semibold)) + Text("  order \(g.order)").foregroundStyle(.secondary) }
+            else { Text(editor.molecule.atoms.count > 400 ? "large structure" : "…").foregroundStyle(.secondary) }
+        }
+        Picker("Tolerance", selection: $tolerance) {
+            Text("Tight 0.01 Å").tag(0.01); Text("Normal 0.1 Å").tag(0.1); Text("Loose 0.3 Å").tag(0.3)
+        }
+        Button("Symmetrize") {
+            let t = tolerance
+            editor.apply("Symmetrize") { $0 = Symmetry.symmetrize($0, tolerance: t) }
+            editor.statusMessage = "Symmetrized to \(Symmetry.detect(editor.molecule, tolerance: 0.01).schoenflies)"
+        }
+        .help("Snap the coordinates to the exact point group found at this tolerance")
+        .task(id: TaskKey(molecule: editor.molecule, tolerance: tolerance)) {
+            let m = editor.molecule, t = tolerance
+            guard m.atoms.count <= 400 else { state.value = nil; return }
+            try? await Task.sleep(for: .milliseconds(150))
+            if Task.isCancelled { return }
+            let r = await Task.detached(priority: .utility) { Symmetry.detect(m, tolerance: t) }.value
+            state.value = (r.schoenflies, r.order, m.atoms.count)
+        }
+    }
+
+    private struct TaskKey: Equatable { let molecule: Molecule; let tolerance: Double }
 }
