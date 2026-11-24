@@ -1,0 +1,17 @@
+# water
+! B3LYP STO-3G CPCM
+%maxcore 1000
+%tddft
+  nroots 3
+  tda true
+  triplets true
+end
+%cpcm
+  smd true
+  SMDsolvent "water"
+end
+* xyz 0 1
+O     0.00000000     0.00000000     0.11730000
+H     0.00000000     0.75720000    -0.46920000
+H     0.00000000    -0.75720000    -0.46920000
+*

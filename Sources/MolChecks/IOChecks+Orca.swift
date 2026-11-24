@@ -113,14 +113,14 @@ extension Checks {
             try expect(o.orbitals.count == 7, "orbitals \(o.orbitals.count)")
             try expect(o.orbitals.filter(\.occupied).count == 5, "5 occupied")
             try expect(o.orbitals[4].occupied && !o.orbitals[5].occupied && o.orbitals[4].index == 5, "HOMO is #5")
-            try expectClose(o.orbitals[0].energy, -20.244733 , tol: 1e-6)
-            try expectClose(o.orbitals[4].energy, -0.387565, tol: 1e-6)
+            try expectClose(o.orbitals[0].energy, -20.251577, tol: 1e-6)   // last printed block (final geometry)
+            try expectClose(o.orbitals[4].energy, -0.392617, tol: 1e-6)
             try expect(o.orbitals.allSatisfy { $0.spin == .restricted }, "restricted")
-            try expectClose(o.result.extras?.homoLumoGapEV ?? 0, (0.560708 + 0.387565) * 27.211386, tol: 1e-3)
+            try expectClose(o.result.extras?.homoLumoGapEV ?? 0, (0.581795 + 0.392617) * 27.211386, tol: 1e-3)
             try expect(o.mullikenCharges.count == 3, "mulliken count")
-            try expectClose(o.mullikenCharges[0], -0.331141, tol: 1e-9)
+            try expectClose(o.mullikenCharges[0], -0.330530, tol: 1e-9)   // last block (final geometry), like the orbitals
             try expectClose(o.mullikenCharges.reduce(0, +), 0, tol: 1e-5)
-            try expectClose(o.loewdinCharges[1], 0.116568, tol: 1e-9)
+            try expectClose(o.loewdinCharges[1], 0.115776, tol: 1e-9)
             try expectClose(o.loewdinCharges.reduce(0, +), 0, tol: 1e-5)
             let ch = o.result.chargesByScheme
             try expect(ch["Mulliken"]?.count == 3 && ch["Loewdin"]?.count == 3, "schemes \(ch.keys)")
@@ -206,6 +206,23 @@ extension Checks {
             try expectClose(ex[1].oscillatorStrength, 0.154031786, tol: 1e-12)
             try expectClose(ex[2].wavelengthNM, 135.5, tol: 1e-9)
             try expectClose(ex[0].energyEV, 4.020, tol: 1e-9)
+        },
+        Check("io.orca.tddft.triplets_smd_orca6") {
+            // real ORCA 6.1.1 run of the writer's TD-DFT (TDA, triplets) + SMD layout: STATE lines are numbered
+            // globally, the spectrum labels states per multiplicity ("1-3A")
+            let o = try orcaParse("water_td_smd.out")
+            try expect(o.normalTermination, "terminated")
+            try expectClose(o.result.extras?.finalEnergy ?? 0, -74.834730581028, tol: 1e-10)
+            let st = o.excitedStates
+            try expect(st.count == 6 && st.filter { $0.multiplicity == 3 }.count == 3, "3 singlets + 3 triplets, got \(st.map(\.multiplicity))")
+            try expect(st.allSatisfy { $0.oscillatorStrength != nil }, "every state matched to a spectrum row")
+            try expectClose(st[0].energyEV, 12.193, tol: 1e-9)
+            try expectClose(st[0].oscillatorStrength ?? 0, 0.002945724, tol: 1e-12)
+            try expectClose(st[3].energyEV, 10.256, tol: 1e-9)
+            try expectClose(st[3].wavelengthNM ?? 0, 120.9, tol: 1e-9)
+            try expect(o.result.excitedStates.count == 6, "result states")
+            let inp = try OrcaInputFile.parse(try orcaText("water_td_smd.inp"))
+            try expect(inp.blocks.contains { $0.name == "cpcm" } && inp.molecule.atoms.count == 3, "input parses")
         },
         Check("io.orca.uhf.spin") {
             let o = try orcaParse("oh_uhf.out")
@@ -308,14 +325,14 @@ extension Checks {
                 let total = t.split(separator: "\n", omittingEmptySubsequences: false).count
                 var threw = 0, parsed = 0
                 var k = 1
-                while k < total {
+                while k < total - 1 {   // prefix(total - 1) is the whole file
                     let cut = orcaCutLines(t, k)
                     do {
                         let o = try OrcaOutput.parse(cut)
                         parsed += 1
                         try expect(!o.normalTermination, "\(name) cut at line \(k) cannot be terminated normally")
                         let r = o.result
-                        try expect(r.steps.count == r.energies.count, "\(name)@\(k): steps/energies consistent")
+                        try expect(r.energies.isEmpty || r.steps.count == r.energies.count, "\(name)@\(k): steps/energies consistent")  // a geometry printed before its first SCF has no energy yet
                         try expect(o.allNormalModes.isEmpty || o.allNormalModes.count == o.allFrequencies.count, "\(name)@\(k): modes complete")
                         try expect(o.mullikenCharges.isEmpty || o.mullikenCharges.count == r.steps.first?.atoms.count, "\(name)@\(k): charge count")
                     } catch is MolIOError { threw += 1 }
@@ -495,6 +512,7 @@ extension Checks {
             // TS + IRC + gradient
             s = CalcSpec(program: .orca, task: .transitionState, method: "HF", basis: "STO-3G", molecule: orcaWater())
             try expect(OrcaInput.write(s).contains("! HF STO-3G OptTS Freq"), "TS")
+            try expect(OrcaInput.write(s).contains("%geom\n  Calc_Hess true\nend"), "TS starts from an exact Hessian")
             s.computeFrequenciesAfterTS = false; s.tightOptimization = true
             try expect(OrcaInput.write(s).contains("! HF STO-3G OptTS TightOpt\n"), "TS tight")
             s.task = .irc

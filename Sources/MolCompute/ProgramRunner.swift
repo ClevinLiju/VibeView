@@ -95,6 +95,10 @@ public enum ProgramRunner {
                         group.leave()
                     }
                 }
+                // Exit is observed through terminationHandler (called on a Foundation background queue) instead of
+                // waitUntilExit(), which spins the calling thread's run loop; nothing here needs the main thread.
+                let exited = DispatchSemaphore(value: 0)
+                process.terminationHandler = { _ in exited.signal() }
                 do { try process.run() } catch {
                     cont.resume(throwing: ComputeError.processFailed(code: -1, stderr: error.localizedDescription))
                     return
@@ -113,7 +117,7 @@ public enum ProgramRunner {
                 // Cancellation may have fired before the process started.
                 if Task.isCancelled { state.withLock { state.cancelled = true }; kill(process) }
                 DispatchQueue.global().async {
-                    process.waitUntilExit()
+                    exited.wait()
                     group.wait()
                     let (o, e, c, t) = state.withLock { (state.out, state.err, state.cancelled, state.timedOut) }
                     if c { cont.resume(throwing: ComputeError.cancelled); return }

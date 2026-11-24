@@ -7,12 +7,14 @@ public enum SceneQuality {
         let base = max(6, q)
         if count > 20000 { return min(base, 6) }
         if count > 5000 { return min(base, 8) }
-        if count > 2000 { return min(base, 12) }
+        if count > 2000 { return min(base, 16) }
+        if count <= 300 { return max(base, 48) }      // small molecules: silky silhouettes, cheap (shared geometry)
         return base
     }
     /// Cylinder radial segment count for `count` cylinder nodes at quality `q`.
     public static func cylinderSegments(quality q: Int, segmentCount count: Int) -> Int {
         let base = max(6, q * 2 / 3)
+        if count <= 600 { return max(base, 32) }
         if count > 40000 { return min(base, 6) }
         if count > 10000 { return min(base, 8) }
         if count > 3000 { return min(base, 12) }

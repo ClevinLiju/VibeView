@@ -27,7 +27,11 @@ import simd
         if let t = cache[key] { return t }
         guard let device = MTLCreateSystemDefaultDevice() else { failed = true; return nil }
         let src = source(color: color, width: max(0.5, widthPixels), pixelAngle: max(1e-6, pixelAngle))
-        guard let lib = try? device.makeLibrary(source: src, options: nil) else { failed = true; return nil }
+        let lib: MTLLibrary
+        do { lib = try device.makeLibrary(source: src, options: nil) } catch {
+            FileHandle.standardError.write("MolRender: outline shader failed to compile: \(error)\n".data(using: .utf8)!)
+            failed = true; return nil
+        }
         let dict: [String: Any] = [
             "passes": ["vibeview_outline": [
                 "draw": "DRAW_QUAD",

@@ -142,7 +142,10 @@ public struct XTBOutput: Sendable, Codable, Equatable {
                 var closed = false
                 while k < L.count {
                     let t = tokens(L[k])
-                    if t.isEmpty { closed = true; break }
+                    if t.isEmpty {
+                        // a blank line closes the table only if the file goes on (a cut file ends in blanks)
+                        closed = L[(k + 1)...].contains { !tokens($0).isEmpty }; break
+                    }
                     guard t.count >= 4, Int(t[0]) != nil, let zz = Int(t[1]) else { throw xtbFail("xtb", k, "bad charge row '\(L[k])'") }
                     // columns: idx Z symbol covCN q ... (the symbol is its own token); q is at qi+1 because "#" has no counterpart
                     let col = t.count > qi + 1 && Double(t[2]) == nil ? qi + 1 : qi
@@ -300,7 +303,10 @@ public enum XTBG98Frequencies {
     public static func read(url: URL) throws -> [NormalMode] { try parse(try readText(url)) }
 
     public static func parse(_ text: String, atomCount: Int? = nil) throws -> [NormalMode] {
-        let L = splitLines(text)
+        var L = splitLines(text)
+        // An unterminated last line is a partial write; trailing blanks cannot close a block in a cut file.
+        if !(text.hasSuffix("\n") || text.hasSuffix("\r")), !L.isEmpty { L.removeLast() }
+        while let l = L.last, tokens(l).isEmpty { L.removeLast() }
         var modes: [NormalMode] = []
         var i = 0
         var natoms = atomCount
@@ -338,6 +344,8 @@ public enum XTBG98Frequencies {
                         rows += 1; k += 1
                     } else { terminated = true; break }
                 }
+                // A block that runs to end of file is complete only if its atom count is known to match.
+                if !terminated, rows > 0, let n = natoms, n == rows { terminated = true }
                 guard terminated, rows > 0 else { throw xtbFail("xtb-g98", L.count - 1, "truncated displacement block") }
                 if let n = natoms, n != rows { throw xtbFail("xtb-g98", k - 1, "displacement block has \(rows) atoms, expected \(n)") }
                 natoms = rows

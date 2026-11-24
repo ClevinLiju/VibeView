@@ -66,6 +66,9 @@ public enum Editing {
         let aromatic = m.bonds.contains { ($0.a == i || $0.b == i) && $0.order == .aromatic }
         var cands = allowed.map { $0 + sh }
         if aromatic && (z == 8 || z == 16 || z == 34) { cands = [2 + sh] }
+        // Aromatic N: pyridine-type (two ring bonds) and pyrrole-type (two ring bonds + H/R) are both saturated;
+        // the 1.5 bond-order bookkeeping would otherwise ask for a fifth bond on N-H.
+        if aromatic && z == 7 && sh == 0 && bos >= 3 { return 0 }
         if sh != 0 && (z == 7 || z == 15) && sh > 0 { cands = [4] }
         guard let v = cands.filter({ $0 >= bos }).min() else { return 0 }
         return max(0, v - bos)
@@ -259,6 +262,11 @@ public enum Editing {
 
     public static func setBondOrder(_ m: inout Molecule, _ a: Int, _ b: Int, _ order: BondOrder?, adjustHydrogens: Bool = true) {
         guard a != b, a >= 0, b >= 0, a < m.atoms.count, b < m.atoms.count else { return }
+        // A bond to hydrogen can only be single (and stripping terminal H would delete an endpoint).
+        if m.atoms[a].atomicNumber == 1 || m.atoms[b].atomicNumber == 1 {
+            if order == nil { m.buildSetBond(a, b, nil) } else { m.buildSetBond(a, b, .single) }
+            return
+        }
         var a2 = a, b2 = b
         if adjustHydrogens {
             let r = stripTerminalH(&m, from: [a, b])

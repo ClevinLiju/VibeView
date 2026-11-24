@@ -237,16 +237,18 @@ extension Checks {
             let c = RGBA(0.5, 0.2, 0.7)
             let lib = MaterialLibrary(preset: .matte)
             let m0 = lib.material(for: c)
-            try expect(m0.lightingModel == .blinn && lib.cachedCount == 1, "matte")
+            func num(_ p: SCNMaterialProperty) -> Double { ((p.contents as? NSNumber)?.doubleValue) ?? -1 }
+            try expect(m0.lightingModel == .physicallyBased && lib.cachedCount == 1, "matte")
             lib.preset = .glossy
             try expect(lib.cachedCount == 0, "cache cleared on preset change")
             let g = lib.material(for: c)
-            try expect(g !== m0 && g.lightingModel == .blinn && g.shininess > m0.shininess, "glossy")
+            try expect(g !== m0 && g.lightingModel == .physicallyBased && num(g.roughness) < num(m0.roughness), "glossy smoother than matte")
+            try expect(num(g.clearCoat) > 0, "glossy clear coat")
             lib.preset = .metallic
             let me = lib.material(for: c)
             try expect(me.lightingModel == .physicallyBased, "metallic")
-            try expectClose(((me.metalness.contents as? NSNumber)?.doubleValue) ?? -1, 0.5, tol: 1e-9)
-            try expectClose(((me.roughness.contents as? NSNumber)?.doubleValue) ?? -1, 0.3, tol: 1e-9)
+            try expectClose(num(me.metalness), 0.5, tol: 1e-9)
+            try expectClose(num(me.roughness), 0.3, tol: 1e-9)
             lib.preset = .flat
             try expect(lib.material(for: c).lightingModel == .constant, "flat")
             lib.preset = .glossy
@@ -259,7 +261,7 @@ extension Checks {
         },
         Check("render.scene.quality.reduction") {
             let q = 24
-            try expect(SceneQuality.sphereSegments(quality: q, atomCount: 10) == 24, "small")
+            try expect(SceneQuality.sphereSegments(quality: q, atomCount: 10) >= 24, "small")
             try expect(SceneQuality.sphereSegments(quality: q, atomCount: 3000) < 24, "big reduces")
             try expect(SceneQuality.sphereSegments(quality: q, atomCount: 10000) <= SceneQuality.sphereSegments(quality: q, atomCount: 3000), "monotone")
             let m = RenderFixtures.lattice(14)  // 2744
@@ -269,7 +271,7 @@ extension Checks {
             let g = geoNodes(buildAtoms(m, opts()))[0].geometry as! SCNSphere
             try expect(g.segmentCount < 24, "auto reduced \(g.segmentCount)")
             let w = geoNodes(buildAtoms(RenderFixtures.water, opts()))[0].geometry as! SCNSphere
-            try expect(w.segmentCount == 24, "water keeps quality")
+            try expect(w.segmentCount >= 24, "water keeps (or boosts) quality")
         },
         Check("render.scene.updatePositions") {
             var m = RenderFixtures.benzene

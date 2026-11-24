@@ -76,6 +76,8 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
     public var messages: [String] = []
     public var normalTermination = false
     public var errorTermination = false
+    /// Calculation setup (method, basis, solvation, resources); see OrcaRunInfo.swift.
+    public var info: CalculationInfo?
 
     public static let debyePerAU = 2.541746
 
@@ -121,6 +123,7 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
         x.thermochemistry = thermochemistry
         x.optimizationConverged = optimizationConverged
         x.messages = messages
+        x.info = info
         if !orbitals.isEmpty {
             func gap(_ o: [OrbitalInfo]) -> Double? {
                 guard let h = o.last(where: { $0.occupied }), let l = o.first(where: { !$0.occupied }) else { return nil }
@@ -151,6 +154,8 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
         let lastTerminated = text.hasSuffix("\n") || text.hasSuffix("\r")
         let tailLine = lines.last.map(String.init) ?? ""
         if !lastTerminated, !lines.isEmpty { lines.removeLast() }
+        // Trailing blank lines cannot close a table: in a cut (still running) file the block is incomplete.
+        while let l = lines.last, tokens(l).isEmpty { lines.removeLast() }
         var out = OrcaOutput()
         let L = lines
         var i = 0
@@ -460,9 +465,14 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
                     rowsSeen += 1; k += 1
                 }
                 guard closed else { throw fail(L.count - 1, "truncated absorption spectrum") }
+                // ORCA 6 numbers STATE lines globally (triplets continue after the singlets) but labels spectrum
+                // rows per multiplicity ("1-3A" = first triplet): match by rank within the multiplicity.
+                var rank: [Int: Int] = [:]
                 for n in out.excitedStates.indices {
-                    let key = "\(out.excitedStates[n].multiplicity)-\(out.excitedStates[n].index)"
-                    if let r = spectrumRows[key] { out.excitedStates[n].wavelengthNM = r.nm; out.excitedStates[n].oscillatorStrength = r.f }
+                    let st = out.excitedStates[n]
+                    rank[st.multiplicity, default: 0] += 1
+                    let r0 = spectrumRows["\(st.multiplicity)-\(rank[st.multiplicity]!)"] ?? spectrumRows["\(st.multiplicity)-\(st.index)"]
+                    if let r = r0 { out.excitedStates[n].wavelengthNM = r.nm; out.excitedStates[n].oscillatorStrength = r.f }
                 }
                 i = k; continue
             }
@@ -521,6 +531,7 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
         guard !out.inputLines.isEmpty || !out.geometries.isEmpty || out.programVersion != nil else {
             throw MolIOError.parse(format: "orca", line: nil, message: "no recognizable ORCA content")
         }
+        out.info = runInfo(text: text, inputLines: out.inputLines, keywordLines: out.keywordLines)
         return out
     }
 }

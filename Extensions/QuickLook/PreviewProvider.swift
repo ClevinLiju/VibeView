@@ -56,7 +56,24 @@ enum QuickLookRenderer {
             details.append(("Method", "\(f.method)/\(f.basisName)"))
         case .cube?:
             m = try CubeFile.parse(text).molecule
-        case nil:
+        case .orcaOutput?, .qchemOutput?:
+            let r = fmt == .orcaOutput ? try OrcaOutput.parse(text).result : try QChemOutput.parse(text).result
+            m = r.steps.last ?? Molecule()
+            details.append(("Program", fmt == .orcaOutput ? "ORCA" : "Q-Chem"))
+            if let e = r.energies.last { details.append(("Final energy", String(format: "%.6f Eh", e))) }
+            if r.steps.count > 1 { details.append(("Geometries", "\(r.steps.count)")) }
+            if !r.normalModes.isEmpty { details.append(("Frequencies", "\(r.normalModes.count) modes")) }
+            details.append(("Termination", r.normalTermination ? "Normal" : "Not normal / incomplete"))
+        case .orcaInput?:
+            let f = try OrcaInputFile.parse(text); m = f.molecule
+            details.append(("Keywords", f.keywords.joined(separator: " ")))
+        case .qchemInput?:
+            m = try QChemInputFile.parse(text).jobs.compactMap(\.molecule).first ?? Molecule()
+        case .molden?:
+            let f = try MoldenFile.parse(text); m = f.geometries.last ?? f.molecule
+        case .orcaHessian?:
+            m = try OrcaHessian.parse(text).molecule
+        case .xtbOutput?, nil:
             throw CocoaError(.fileReadCorruptFile)
         }
         if m.bonds.isEmpty && m.atoms.count > 1 && m.atoms.count < 5000 { m.perceiveBonds() }

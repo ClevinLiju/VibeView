@@ -81,6 +81,9 @@ struct FB {
         Editing.addHydrogens(&mol)
         for a in forcedH { Editing.placeHydrogens(&mol, atom: a, count: 1, hyb: .sp2) }
         if let test = mirrorIfNeeded, test(mol) { Editing.mirror(&mol, planeNormal: Vec3(0, 0, 1)) }
+        // Templates built from internal coordinates can fold side chains onto each other; relax those.
+        let relaxed = Builder.relaxClashes(mol, newFrom: 0)
+        if relaxed.atoms.count == mol.atoms.count { mol = relaxed }
         let c = Editing.centroid(mol)
         for i in mol.atoms.indices { mol.atoms[i].position -= c }
         mol.title = name

@@ -75,6 +75,7 @@ public final class EditorModel: ObservableObject {
         self.molecule = molecule
         self.result = result
         self.wavefunction = wavefunction
+        EditorRegistry.all.append(WeakEditor(editor: self))
     }
 
     static func defaultRenderOptions() -> RenderOptions {
@@ -159,3 +160,7 @@ enum ViewKeys {
 extension EditorTool {
     var shortcutDigit: Int { (EditorTool.allCases.firstIndex(of: self) ?? 0) + 1 }
 }
+
+/// Weak list of open editors (used by the developer self-test / snapshot hooks).
+struct WeakEditor { weak var editor: EditorModel? }
+@MainActor enum EditorRegistry { static var all: [WeakEditor] = [] ; static var live: [EditorModel] { all.compactMap(\.editor) } }

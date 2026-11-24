@@ -48,6 +48,7 @@ FORMATS=(
   "Calculation Output|org.vibeview.gaussian-output|Viewer|public.plain-text|log out"
   "ORCA Input|org.vibeview.orca-input|Viewer|public.plain-text|inp"
   "Molden File|org.vibeview.molden|Viewer|public.plain-text|molden"
+  "ORCA Hessian|org.vibeview.orca-hessian|Viewer|public.plain-text|hess"
   "Formatted Checkpoint|org.vibeview.fchk|Viewer|public.plain-text|fchk fch"
   "Cube File|org.vibeview.cube|Viewer|public.plain-text|cube cub"
   "XYZ Coordinates|org.vibeview.xyz|Editor|public.plain-text|xyz"
@@ -86,7 +87,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHumanReadableCopyright</key><string>VibeView — open-source molecular builder and viewer.</string>
   <key>CFBundleDocumentTypes</key>
   <array>
-$DOCS  </array>
+$DOCS    <dict>
+      <key>CFBundleTypeName</key><string>Structure or Calculation File</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>public.plain-text</string><string>com.apple.log</string><string>public.xml</string><string>public.data</string></array>
+    </dict>
+  </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
 $UTIS  </array>

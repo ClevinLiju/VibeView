@@ -172,6 +172,8 @@ public enum IsosurfaceNodeBuilder {
             }
             if s.mode == .mesh || s.mode == .points { m.emission.contents = hasVC ? NSColor.white : color.nsColor }
             g.materials = [m]
+            // Coarse grids give faceted lobes: let SceneKit subdivide small solid meshes at render time.
+            if s.mode == .solid, mesh.indices.count / 3 < 40_000 { g.subdivisionLevel = 1 }
             let child = SCNNode(geometry: g)
             child.name = mesh.sign == .positive ? "lobe.positive" : "lobe.negative"
             child.renderingOrder = renderingOrder
