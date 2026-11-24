@@ -31,6 +31,30 @@ Licensed under the MIT License (see `LICENSE`).
 
 _TODO: add screenshots to `docs/screenshots/`._
 
+## Quick install
+
+Paste this into Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash
+```
+
+It downloads the latest release, installs VibeView in `/Applications`, and opens it. It also clears the download quarantine flag, so the first launch shows no Gatekeeper prompt. Requires an Apple Silicon Mac with macOS 14 or later.
+
+Other options:
+
+```sh
+# install a specific version
+curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash -s -- --version v0.3.0
+# build from source instead (needs Xcode; also works on Intel Macs)
+curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash -s -- --from-source
+# uninstall
+curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash -s -- --uninstall
+```
+
+To read the script before running it, download it first:
+`curl -fsSLO https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh`, then `less install.sh`, then `bash install.sh`.
+
 ## Install from DMG
 
 Download `VibeView-<version>.dmg`, open it and drag VibeView to Applications.
