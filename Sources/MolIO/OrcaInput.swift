@@ -68,6 +68,8 @@ public enum OrcaInput {
             out.append("end")
         }
         var geom: [String] = []
+        // OptTS needs a starting Hessian with the right negative eigenvalue: compute it exactly.
+        if spec.task == .transitionState { geom.append("  Calc_Hess true") }
         if spec.task == .scan, let s = spec.scan {
             let tag = ["", "", "B", "A", "D"][min(max(s.atoms.count, 0), 4)]
             geom.append("  Scan")

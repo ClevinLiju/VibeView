@@ -22,8 +22,8 @@ public enum GeometryEdit {
     static func dihedralOf(_ p0: Vec3, _ p1: Vec3, _ p2: Vec3, _ p3: Vec3) -> Double {
         let b1 = p1 - p0, b2 = p2 - p1, b3 = p3 - p2
         let n1 = simd_cross(b1, b2), n2 = simd_cross(b2, b3)
-        let m1 = simd_cross(n1, bUnit(b2))
-        let x = simd_dot(n1, n2), y = simd_dot(m1, n2)
+        // IUPAC sign: positive when the front bond turns clockwise onto the back bond, viewed along b2.
+        let x = simd_dot(n1, n2), y = simd_length(b2) * simd_dot(b1, n2)
         return atan2(y, x) * 180 / .pi
     }
 
@@ -74,6 +74,12 @@ public enum GeometryEdit {
         while delta > 180 { delta -= 360 }
         while delta < -180 { delta += 360 }
         let pb = m.atoms[b].position, pc = m.atoms[c].position
-        rotate(&m, movingSide(m, fixed: c, moving: d), about: pc, axis: pc - pb, radians: delta * .pi / 180)
+        let side = movingSide(m, fixed: c, moving: d)
+        rotate(&m, side, about: pc, axis: pc - pb, radians: delta * .pi / 180)
+        // The handedness of the rotation relative to the dihedral sign is checked rather than assumed.
+        var err = dihedral(m, a, b, c, d) - degrees
+        while err > 180 { err -= 360 }
+        while err < -180 { err += 360 }
+        if abs(err) > 1e-6 { rotate(&m, side, about: pc, axis: pc - pb, radians: -2 * delta * .pi / 180) }
     }
 }

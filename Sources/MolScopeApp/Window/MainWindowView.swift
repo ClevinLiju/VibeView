@@ -153,7 +153,9 @@ private struct DropHighlight: View {
 @MainActor
 enum DocumentOpener {
     static func open(_ url: URL) {
-        NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
+        debugLog("open \(url.path)")
+        NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { doc, _, error in
+            debugLog("opened doc=\(doc.map { String(describing: type(of: $0)) } ?? "nil") error=\(error.map { "\($0)" } ?? "none")")
             if let error {
                 let alert = NSAlert(error: error)
                 alert.messageText = "“\(url.lastPathComponent)” could not be opened."
@@ -179,4 +181,8 @@ enum FragmentNames {
         let n = BuildOps.fragmentName(id)
         return n.count <= 8 ? n : String(n.prefix(7)) + "…"
     }
+}
+
+func debugLog(_ s: String) {
+    if ProcessInfo.processInfo.environment["MOLSCOPE_DEBUG_IO"] != nil { FileHandle.standardError.write(Data((s + "\n").utf8)) }
 }

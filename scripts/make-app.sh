@@ -48,6 +48,7 @@ FORMATS=(
   "Calculation Output|org.molscope.gaussian-output|Viewer|public.plain-text|log out"
   "ORCA Input|org.molscope.orca-input|Viewer|public.plain-text|inp"
   "Molden File|org.molscope.molden|Viewer|public.plain-text|molden"
+  "ORCA Hessian|org.molscope.orca-hessian|Viewer|public.plain-text|hess"
   "Formatted Checkpoint|org.molscope.fchk|Viewer|public.plain-text|fchk fch"
   "Cube File|org.molscope.cube|Viewer|public.plain-text|cube cub"
   "XYZ Coordinates|org.molscope.xyz|Editor|public.plain-text|xyz"
@@ -86,7 +87,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHumanReadableCopyright</key><string>MolScope — open-source molecular builder and viewer.</string>
   <key>CFBundleDocumentTypes</key>
   <array>
-$DOCS  </array>
+$DOCS    <dict>
+      <key>CFBundleTypeName</key><string>Structure or Calculation File</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>public.plain-text</string><string>com.apple.log</string><string>public.xml</string><string>public.data</string></array>
+    </dict>
+  </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
 $UTIS  </array>

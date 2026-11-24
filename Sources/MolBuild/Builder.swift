@@ -57,7 +57,18 @@ public enum Builder {
         for b in fm.bonds { out.bonds.append(Bond(b.a + off, b.b + off, order: b.order)) }
         out.buildSetBond(x, off + f.anchor, .single)
         out.charge += fm.charge
-        return out.buildRemovingAtoms([h, off + f.leaving])
+        out = out.buildRemovingAtoms([h, off + f.leaving])
+        return relaxClashes(out, newFrom: off - 1)
+    }
+
+    /// If the joined structure has atoms closer than 0.9 Å, relax only the new atoms (indices ≥ `newFrom`).
+    static func relaxClashes(_ m: Molecule, newFrom: Int) -> Molecule {
+        let n = m.atoms.count
+        var clash = false
+        outer: for i in 0..<n { for j in (i + 1)..<max(n, i + 1) where simd_distance(m.atoms[i].position, m.atoms[j].position) < 0.9 { clash = true; break outer } }
+        guard clash, newFrom >= 0, newFrom < n else { return m }
+        let frozen = Set(0..<newFrom)
+        return Cleanup.minimize(m, frozen: frozen, maxSteps: 300).molecule
     }
 
     public static func place(_ f: Fragment, in m: Molecule, at p: Vec3) -> Molecule {

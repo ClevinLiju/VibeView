@@ -59,3 +59,6 @@ extension BuildOps {
 extension BuildOps {
     static func removeHydrogens(_ m: inout Molecule, atoms: Set<Int>?) { Editing.removeHydrogens(&m, atoms: atoms.map { Array($0).sorted() }) }
 }
+extension Cleanup {
+    static func energyFacade(_ m: Molecule) -> Double { Cleanup.energy(m) }
+}

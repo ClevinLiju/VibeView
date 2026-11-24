@@ -25,7 +25,10 @@ private func overlap(_ a: VolumeGrid, _ b: VolumeGrid) -> Double {
 private func integrateBohr(_ g: VolumeGrid) -> Double { g.integral() * pow(PhysConst.angstromToBohr, 3) }
 
 private func moldenWF(_ name: String) throws -> Wavefunction {
-    try MoldenWavefunctionReader.read(url: testDataURL("analysis/\(name)"))
+    // Lead A's MolIO reader is the primary path; the local fallback is only kept for the cross-check below.
+    guard let wf = try MoldenFile.read(url: testDataURL("analysis/\(name)")).wavefunction else {
+        throw CheckFailure(description: "no wavefunction in \(name)") }
+    return wf
 }
 
 private func ms(_ t0: DispatchTime) -> Double { Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1e6 }
@@ -149,6 +152,23 @@ extension Checks {
                 try expect(abs(o) < 2e-3, "\(name) overlap \(o)")
                 let lobes = MarchingCubes.orbitalLobes(grid: g, isovalue: 0.05)
                 try expect(lobes.allSatisfy { !$0.isEmpty && MarchingCubes.isClosedManifold($0) })
+            }
+        },
+        Check("analysis.orbitals.moldenReadersAgree") {
+            // Lead A's MolIO Molden reader and the local fallback give the same orbitals (up to phase).
+            for name in ["water_tzvp.molden", "oh_uhf_svp.molden"] {
+                let mine = try MoldenWavefunctionReader.read(url: testDataURL("analysis/\(name)"))
+                guard let theirs = try MoldenFile.read(url: testDataURL("analysis/\(name)")).wavefunction else {
+                    throw CheckFailure(description: "MolIO returned no wavefunction for \(name)") }
+                try expect(theirs.basis.functionCount == mine.basis.functionCount && theirs.alphaElectrons == mine.alphaElectrons)
+                let pts = [Vec3(0.3, 0.5, 0.9), Vec3(-0.8, 0.1, -0.4), Vec3(0.2, -1.3, 0.6)]
+                let e1 = OrbitalEvaluator(wavefunction: mine), e2 = OrbitalEvaluator(wavefunction: theirs)
+                for mo in 0..<mine.alphaElectrons {
+                    let a = e1.values(coefficients: Array(mine.alpha.orbital(mo)), atBohr: pts)
+                    let b = e2.values(coefficients: Array(theirs.alpha.orbital(mo)), atBohr: pts)
+                    let sgn = (a[0] * b[0] >= 0) ? 1.0 : -1.0
+                    for k in pts.indices { try expect(abs(a[k] - sgn * b[k]) < 1e-6, "\(name) MO \(mo): \(a[k]) vs \(b[k])") }
+                }
             }
         },
         Check("analysis.orbitals.gridTiming") {

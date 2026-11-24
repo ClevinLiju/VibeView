@@ -40,6 +40,18 @@ private func bcEthane() -> Molecule {
     return Builder.attach(FragmentLibrary.fragment(id: "methyl")!, to: me, replacingHydrogen: h)!
 }
 
+/// Ethane with the two carbons renumbered to atoms 0 and 1 (attach() appends the new carbon last).
+private func bcEthaneCC() -> Molecule {
+    let e = bcEthane()
+    let order = e.atoms.indices.filter { e.atoms[$0].atomicNumber == 6 } + e.atoms.indices.filter { e.atoms[$0].atomicNumber != 6 }
+    var inv = [Int](repeating: 0, count: order.count)
+    for (n, o) in order.enumerated() { inv[o] = n }
+    var m = Molecule()
+    for (n, o) in order.enumerated() { var a = e.atoms[o]; a.id = n; m.atoms.append(a) }
+    m.bonds = e.bonds.map { Bond(inv[$0.a], inv[$0.b], order: $0.order) }
+    return m
+}
+
 private func bcBenzeneMolecule() -> Molecule { FragmentLibrary.fragment(id: "benzene")!.molecule }
 private func bcCyclohexane() -> Molecule { FragmentLibrary.fragment(id: "cyclohexane")!.molecule }
 
@@ -248,7 +260,7 @@ extension Checks {
             var m = bcMethane()
             Editing.setElement(&m, atom: 0, to: 7)
             try expect(m.atoms.count == 4 && m.atoms[0].atomicNumber == 7, "NH3 atoms \(m.atoms.count)")
-            var e = bcEthane()
+            var e = bcEthaneCC()
             Editing.setBondOrder(&e, 0, 1, .double)
             try expect(e.atoms.count == 6, "ethene atoms \(e.atoms.count)")
             try expect(abs(GeometryEdit.distance(e, 0, 1) - 1.32) < 0.05)
@@ -277,7 +289,7 @@ extension Checks {
             for b in d.bonds { try expect(b.b < d.atoms.count) }
         },
         Check("build.geom.roundTrip") {
-            var m = bcEthane()
+            var m = bcEthaneCC()
             // pick H-C-C-H chain
             let h0 = bcNeighbors(m, 0).first { $0 > 1 }!, h1 = bcNeighbors(m, 1).first { $0 > 1 }!
             GeometryEdit.setDistance(&m, 0, 1, to: 1.7)
@@ -297,7 +309,7 @@ extension Checks {
             // movingSide on ring is just {b}
             let bz = bcBenzeneMolecule()
             try expect(GeometryEdit.movingSide(bz, fixed: 0, moving: 1) == [1])
-            let eth = bcEthane()
+            let eth = bcEthaneCC()
             try expect(GeometryEdit.movingSide(eth, fixed: 0, moving: 1).count == 4)
         },
         Check("build.edit.invertMirror") {
@@ -361,6 +373,14 @@ extension Checks {
             try expect(m.formula == "H3N", m.formula)
             Editing.setElement(&m, atom: 0, to: 8)   // -> H2O
             try expect(m.formula == "H2O", m.formula)
+        },
+        Check("build.edit.bondOrderToHydrogenIsSafe") {
+            // regression: clicking an O–H bond with the Sketch tool crashed (endpoint H was stripped)
+            var w = Builder.placeElement(8, in: Molecule(), at: .zero)
+            let h = w.atoms.firstIndex { $0.atomicNumber == 1 }!
+            Editing.setBondOrder(&w, 0, h, .double)
+            try expect(w.formula == "H2O", w.formula)
+            try expect(w.bond(between: 0, and: h)?.order == .single)
         },
     ]
 }

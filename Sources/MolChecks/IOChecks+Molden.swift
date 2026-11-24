@@ -242,12 +242,14 @@ extension Checks {
             let dev = mldOrthoDeviation(wf.alpha, S)
             try expect(dev < 1e-4, "C S C^T deviates from I by \(dev)")
         },
-        Check("io.molden.h2co.no_renormalization_needed") {
-            // Documents the empirical conclusion: ORCA's coefficients are for unnormalized primitives and
-            // contracted functions already come out normalized (renormalizing is a no-op).
+        Check("io.molden.h2co.renormalization_required_for_d") {
+            // Documents the empirical conclusion (measured on the real ORCA 6.1.1 file): the contracted shells
+            // as written are not unit-normalized, so the default renormalization of each contracted shell
+            // is required for an orthonormal MO set.
             let t = try mldFixture("h2co_tddft.molden.input")
-            let a = try wfOrFail(try MoldenFile.parse(t)), b = try wfOrFail(try MoldenFile.parse(t, normalizeContractions: false))
-            for (s, u) in zip(a.basis.shells, b.basis.shells) { try expect(mldRelClose(s.coefficients, u.coefficients, 1e-3), "renormalization changed a shell by more than 1e-3") }
+            let b = try wfOrFail(try MoldenFile.parse(t, normalizeContractions: false))
+            let raw = mldOrthoDeviation(b.alpha, try mldOverlapMatrix(b.basis))
+            try expect(raw > 1e-4, "without renormalization the MOs should not be orthonormal (\(raw))")
             // The wrong convention must fail the orthonormality test (so the check is discriminating).
             let w = try wfOrFail(try MoldenFile.parse(t, normalizeContractions: false, primitiveConvention: .normalizedPrimitives))
             let dev = mldOrthoDeviation(w.alpha, try mldOverlapMatrix(w.basis))

@@ -41,6 +41,34 @@ extension Checks {
             try expect(counts(m) == [6: 6, 1: 6])
             try expect(orderCounts(m)[.aromatic] == 6, "aromatic bonds \(orderCounts(m))")
         },
+        Check("core.smiles.parse.aromatic_nitrogen_hydrogens") {
+            // (SMILES, Hill formula, atom count incl. H, N-H count)
+            let cases: [(String, String, Int, Int)] = [
+                ("Cn1cnc2c1c(=O)n(C)c(=O)n2C", "C8H10N4O2", 24, 0),   // caffeine
+                ("c1ccncc1", "C5H5N", 11, 0),                          // pyridine
+                ("c1cc[nH]c1", "C4H5N", 10, 1),                        // pyrrole
+                ("c1c[nH]cn1", "C3H4N2", 9, 1),                        // imidazole
+                ("Cn1ccnc1", "C4H6N2", 12, 0),                         // 1-methylimidazole
+            ]
+            for (smi, formula, count, nh) in cases {
+                var m = try Molecule(smiles: smi)
+                try expect(m.formula == formula, "\(smi): formula \(m.formula), expected \(formula)")
+                try expect(m.atoms.count == count, "\(smi): \(m.atoms.count) atoms, expected \(count)")
+                let nhCount = m.bonds.filter { b in
+                    let z = [m.atoms[b.a].atomicNumber, m.atoms[b.b].atomicNumber].sorted()
+                    return z == [1, 7]
+                }.count
+                try expect(nhCount == nh, "\(smi): \(nhCount) N-H bonds, expected \(nh)")
+                try expect(m.kekulize(), "\(smi): kekulizes")
+                try expect(!m.bonds.contains { $0.order == .aromatic }, "\(smi): no aromatic bonds left")
+                let ring = m.bonds.filter { $0.order == .double && m.atoms[$0.a].atomicNumber != 8 && m.atoms[$0.b].atomicNumber != 8 }.count
+                if smi == "c1ccncc1" { try expect(ring == 3, "pyridine: 3 ring double bonds, got \(ring)") }
+                if smi == "c1cc[nH]c1" || smi == "c1c[nH]cn1" { try expect(ring == 2, "\(smi): 2 ring double bonds, got \(ring)") }
+                // round trip keeps the hydrogens
+                let back = try Molecule(smiles: try Molecule(smiles: smi).smiles())
+                try expect(back.formula == formula, "\(smi): round trip \(back.formula)")
+            }
+        },
         Check("core.smiles.parse.orders") {
             let co2 = try Molecule(smiles: "O=C=O")
             try expect(orderCounts(co2) == [.double: 2])

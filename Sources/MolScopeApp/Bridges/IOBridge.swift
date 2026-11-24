@@ -28,9 +28,6 @@ public enum IOBridge {
         guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
             throw IOBridgeError.parse("not a text file")
         }
-        if let special = try readProgramOutput(text: text, ext: ext.lowercased()) {
-            return try finish(special)
-        }
         let format = MoleculeFileFormat.detect(contents: String(text.prefix(4096)), fileName: fileName)
             ?? MoleculeFileFormat.format(forExtension: ext)
         do {
@@ -53,36 +50,6 @@ public enum IOBridge {
         } catch let e as MolIOError {
             throw IOBridgeError.parse(e.description)
         }
-    }
-
-    /// ORCA / Q-Chem / xtb / Molden files, recognised by content (their extensions are ambiguous).
-    private static func readProgramOutput(text: String, ext: String) throws -> LoadedFile? {
-        let head = String(text.prefix(20000))
-        func fromResult(_ r: CalculationResult, fallback: Molecule = Molecule()) -> LoadedFile {
-            LoadedFile(molecule: r.steps.last ?? fallback, result: r)
-        }
-        do {
-            if head.contains("O   R   C   A") || head.contains("* O   R   C   A *") {
-                return fromResult(try OrcaOutput.parse(text).result)
-            }
-            if head.contains("Welcome to Q-Chem") || head.contains("Q-Chem, Inc.") {
-                return fromResult(try QChemOutput.parse(text).result)
-            }
-            if head.contains("[Molden Format]") || ext == "molden" {
-                let f = try MoldenFile.parse(text)
-                return LoadedFile(molecule: f.geometries.last ?? f.molecule, result: f.result, wavefunction: f.wavefunction)
-            }
-            if ext == "inp", head.contains("*") {
-                let f = try OrcaInputFile.parse(text)
-                return LoadedFile(molecule: f.molecule, result: nil)
-            }
-            if ext == "in" || head.contains("$molecule") {
-                if let m = try QChemInputFile.parse(text).jobs.compactMap(\.molecule).first { return LoadedFile(molecule: m, result: nil) }
-            }
-        } catch let e as MolIOError {
-            throw IOBridgeError.parse(e.description)
-        }
-        return nil
     }
 
     public static func read(url: URL) throws -> LoadedFile {
@@ -132,9 +99,30 @@ public enum IOBridge {
             return multiFrame(recs.map(\.molecule))
         case .cml:
             return multiFrame(try CMLFormat.parse(text))
-        default:
-            // TODO(Lead C): wire ORCA / Q-Chem / xtb / Molden readers from MolIO.
-            throw IOBridgeError.unsupported(ext)
+        case .orcaOutput:
+            let r = try OrcaOutput.parse(text).result
+            return LoadedFile(molecule: r.steps.last ?? Molecule(), result: r)
+        case .qchemOutput:
+            let r = try QChemOutput.parse(text).result
+            return LoadedFile(molecule: r.steps.last ?? Molecule(), result: r)
+        case .orcaInput:
+            return LoadedFile(molecule: try OrcaInputFile.parse(text).molecule, result: nil)
+        case .qchemInput:
+            guard let m = try QChemInputFile.parse(text).jobs.compactMap(\.molecule).first else { throw IOBridgeError.empty }
+            return LoadedFile(molecule: m, result: nil)
+        case .molden:
+            let f = try MoldenFile.parse(text)
+            return LoadedFile(molecule: f.geometries.last ?? f.molecule, result: f.result, wavefunction: f.wavefunction)
+        case .orcaHessian:
+            let h = try OrcaHessian.parse(text)
+            var r = CalculationResult()
+            r.steps = [h.molecule]
+            if let e = h.energy { r.energies = [e] }
+            r.normalModes = h.normalModes
+            r.normalTermination = true
+            return LoadedFile(molecule: h.molecule, result: r)
+        case .xtbOutput:
+            throw IOBridgeError.parse("an xtb log holds no coordinates — open xtbopt.xyz (or the input .xyz) from the same folder instead")
         }
     }
 

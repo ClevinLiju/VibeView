@@ -12,6 +12,7 @@ import MolIO
 /// - Cartesian g functions are reordered from the Molden order to `BasisSet.cartesianOrder(4)`.
 /// - Files written by ORCA: MO coefficients of pure functions with |m| ≥ 3 are sign-flipped to the standard
 ///   real solid harmonics.
+/// Legacy local reader, superseded by MolIO `MoldenFile`; kept for the `analysis.orbitals.moldenReadersAgree` cross-check.
 public enum MoldenWavefunctionReader {
     public enum ReadError: Error, CustomStringConvertible {
         case missing(String), malformed(String)

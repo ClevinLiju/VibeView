@@ -10,11 +10,16 @@ final class MolScopeAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in WindowSnapshots.scheduleIfRequested() }
         // Files passed on the command line (bare SwiftPM binary launch).
         let args = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         for a in args where FileManager.default.fileExists(atPath: a) {
             Task { @MainActor in DocumentOpener.open(URL(fileURLWithPath: a)) }
         }
+    }
+
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        !CommandLine.arguments.dropFirst().contains { !$0.hasPrefix("-") && FileManager.default.fileExists(atPath: $0) }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -44,6 +49,7 @@ struct MolScopeMain: App {
 
 struct MolScopeCommands: Commands {
     @FocusedValue(\.editor) private var editor: EditorModel?
+    @AppStorage("viewport.calcInfo.visible") private var showCalcInfo = true
     @Environment(\.openWindow) private var openWindow
 
     private var hasAtoms: Bool { !(editor?.molecule.atoms.isEmpty ?? true) }
@@ -111,6 +117,7 @@ struct MolScopeCommands: Commands {
             Toggle("Ambient Occlusion", isOn: Binding(get: { editor?.renderOptions.ambientOcclusion ?? false }, set: { _ in editor?.toggleAmbientOcclusion() }))
             Toggle("Depth Cueing", isOn: Binding(get: { editor?.renderOptions.depthCueing ?? false }, set: { _ in editor?.toggleDepthCue() }))
             Toggle("Orthographic Projection", isOn: Binding(get: { editor?.renderOptions.projection == .orthographic }, set: { _ in editor?.toggleProjection() }))
+            Toggle("Calculation Info", isOn: $showCalcInfo)
             Divider()
             Button("Fit to Window") { editor?.fitView() }
                 .keyboardShortcut("0", modifiers: .command)

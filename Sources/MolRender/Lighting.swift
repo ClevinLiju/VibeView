@@ -77,7 +77,13 @@ import MolCore
             cam.screenSpaceAmbientOcclusionBias = 0.03
             cam.screenSpaceAmbientOcclusionNormalThreshold = 0.3
             cam.screenSpaceAmbientOcclusionDepthThreshold = 0.25
-            cam.wantsHDR = o.material == .metallic
+            // HDR with a soft highlight shoulder keeps white (H) atoms from clipping to flat white.
+            cam.wantsHDR = o.material != .flat
+            cam.wantsExposureAdaptation = false
+            cam.exposureOffset = 0
+            cam.whitePoint = 1.5
+            cam.bloomIntensity = 0
+            cam.minimumExposure = 0; cam.maximumExposure = 0
             cam.wantsDepthOfField = o.depthOfField
             cam.fStop = CGFloat(max(0.5, o.depthOfFieldFStop))
             cam.apertureBladeCount = 6

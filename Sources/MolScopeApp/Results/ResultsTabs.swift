@@ -8,7 +8,12 @@ struct SummaryView: View {
     var body: some View {
         ScrollView {
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
-                row("Route", result.routeSection.isEmpty ? "–" : result.routeSection)
+                let setup = CalculationInfoRows(result: result).rows
+                if !setup.isEmpty {
+                    ForEach(Array(setup.enumerated()), id: \.offset) { _, r in row(r.0, r.1) }
+                    Divider().gridCellUnsizedAxes(.horizontal)
+                }
+                row(result.program == "orca" ? "Keywords" : "Route", result.routeSection.isEmpty ? "–" : result.routeSection)
                 row("Termination") {
                     TerminationBadge(normal: result.normalTermination)
                 }

@@ -59,10 +59,16 @@ extension Checks {
                 let px = try rgba(img)
                 try expect(px(0, 0)[3] == 0, "transparent corner")
                 // outline: some dark, opaque pixels exist on a white-paper render
-                var dark = 0
-                for y in stride(from: 0, to: 240, by: 2) { for x in stride(from: 0, to: 320, by: 2) {
-                    let p = px(x, y); if p[3] > 200 && Int(p[0]) + Int(p[1]) + Int(p[2]) < 120 { dark += 1 } } }
-                try expect(dark > 20, "outline pixels \(dark)")
+                func darkCount(_ img: CGImage) throws -> Int {
+                    let px = try rgba(img); var n = 0
+                    for y in 0..<img.height { for x in 0..<img.width {
+                        let p = px(x, y); if p[3] > 128 && Int(p[0]) + Int(p[1]) + Int(p[2]) < 150 { n += 1 } } }
+                    return n
+                }
+                let dark = try darkCount(img)
+                o.look = nil
+                let plain = try darkCount(try r.renderImage(o))
+                try expect(dark > 10 && dark > plain * 2 + 5, "outline pixels \(dark) vs \(plain) without")
                 try expect(!r.options.outline, "look override restored")
                 try expect(ImageExportOptions.uhd4K.pixelSize == CGSize(width: 3840, height: 2160), "4K preset")
             }
@@ -82,8 +88,10 @@ extension Checks {
                 let b = MoleculeRenderer(molecule: RenderFixtures.benzene)
                 b.camera.orbit(dx: 40, dy: 60); b.fitToView(animated: false)
                 try save(b, "benzene_ballstick.png", o)
+                var bt = o; bt.look = .whitePaper; bt.transparentBackground = true
+                try save(b, "benzene_whitepaper_transparent.png", bt)
                 // 2. caffeine space-filling with AO
-                let caf = Cleanup.minimize(try Molecule(smiles: "Cn1cnc2c1c(=O)n(C)c(=O)n2C"), maxSteps: 800).molecule
+                let caf = Cleanup.minimize(try Molecule(smiles: "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"), maxSteps: 800).molecule
                 var co = RenderOptions(); co.style = .spaceFilling
                 let c = MoleculeRenderer(molecule: caf, options: co)
                 c.camera.orbit(dx: 30, dy: 20); c.fitToView(animated: false)
@@ -97,21 +105,22 @@ extension Checks {
                 var big = Molecule()
                 let cen = caf.centroid
                 for i in 0..<5 { for j in 0..<5 { for k in 0..<4 {
-                    let ang = Double(i * 7 + j * 3 + k * 5)
-                    let rot = simd_quatd(angle: ang, axis: simd_normalize(Vec3(sin(ang), cos(ang * 1.3), 0.5)))
+                    let ang = Double((i * 7 + j * 3 + k * 5) % 11) * 0.57
+                    let rot = simd_quatd(angle: ang, axis: simd_normalize(Vec3(1, Double((i + k) % 3) - 1, 0.7)))
                     let off = Vec3(Double(i) * 9.5, Double(j) * 9.5, Double(k) * 9.5)
                     let base = big.atoms.count
                     for a in caf.atoms { var a2 = a; a2.id = big.atoms.count; a2.position = rot.act(a.position - cen) + off; big.atoms.append(a2) }
                     for bd in caf.bonds { var b2 = bd; b2.a += base; b2.b += base; big.bonds.append(b2) }
                 } } }
-                let g = MoleculeRenderer(molecule: big)
-                g.camera.orbit(dx: 35, dy: 25); g.fitToView(animated: false)
+                var so = RenderOptions(); so.style = .spaceFilling
+                let g = MoleculeRenderer(molecule: big, options: so)
+                g.camera.orbit(dx: 35, dy: 25); g.fitToView(animated: false); g.camera.zoom(by: 1.25)
                 print("      crystal atoms \(big.atoms.count), atom-layer geometry nodes \(g.geometryNodeCount(layer: MoleculeRenderer.layerNames.atoms)), bond-layer \(g.geometryNodeCount(layer: MoleculeRenderer.layerNames.bonds))")
                 try save(g, "crystal_2400.png", o)
                 // 4. orbital isosurface (water HOMO cube)
                 let cubeURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("TestData/io/cube_water_homo.cube")
                 let cube = try CubeFile.read(url: cubeURL)
-                let lobes = MarchingCubes.orbitalLobes(grid: cube.grids[0], isovalue: 0.05)
+                let lobes = MarchingCubes.orbitalLobes(grid: cube.grids[0], isovalue: 0.12)
                 let w = MoleculeRenderer(molecule: cube.molecule)
                 w.setIsosurface(Isosurface(id: "homo", meshes: lobes))
                 w.camera.orbit(dx: 50, dy: 30)

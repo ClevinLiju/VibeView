@@ -24,7 +24,7 @@ fileprivate func xtbSweep(_ name: String, _ parse: (String) throws -> Void) thro
     let t = try xtbText(name)
     let lines = t.split(separator: "\n", omittingEmptySubsequences: false)
     var threw = 0, parsed = 0
-    for k in 1..<lines.count {
+    for k in 1..<max(1, lines.count - 1) {   // prefix(count - 1) would be the whole file
         do { try parse(lines.prefix(k).joined(separator: "\n") + "\n"); parsed += 1 } catch is MolIOError { threw += 1 }
     }
     for f in stride(from: 0.017, to: 1.0, by: 0.023) {

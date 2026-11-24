@@ -249,7 +249,7 @@ final class UFFSystem {
             let A2 = max(simd_length_squared(A), 1e-12), B2 = max(simd_length_squared(B), 1e-12)
             let lg = max(simd_length(G), 1e-9)
             let cosphi = max(-1, min(1, simd_dot(A, B) / (A2 * B2).squareRoot()))
-            let sinphi = simd_dot(simd_cross(A, B), G) / ((A2 * B2).squareRoot() * lg)
+            let sinphi = simd_dot(simd_cross(B, A), G) / ((A2 * B2).squareRoot() * lg)   // Blondel–Karplus sign, consistent with the derivatives below
             let phi = atan2(sinphi, cosphi)
             e += 0.5 * t.V * (1 - t.cosn0 * cos(t.n * phi))
             let dE = 0.5 * t.V * t.cosn0 * t.n * sin(t.n * phi)

@@ -42,8 +42,11 @@ public enum SMILES {
 
     static func implicitHydrogens(z: Int, bondSum: Int, aromatic: Bool) -> Int {
         guard let vals = organicValences[z] else { return 0 }
-        let used = bondSum + (aromatic ? 1 : 0)
-        for v in vals where v >= used { return v - used }
+        // Aromatic atoms: one valence unit goes to the pi system and only the lowest normal valence applies
+        // (OpenSMILES). So "c" with 2 ring bonds gets 1 H, pyridine "n" (2 bonds) and substituted or fused
+        // "n" (3 bonds) get 0; a pyrrole-type N-H must be written "[nH]".
+        if aromatic { return max(0, vals[0] - bondSum - 1) }
+        for v in vals where v >= bondSum { return v - bondSum }
         return 0
     }
 

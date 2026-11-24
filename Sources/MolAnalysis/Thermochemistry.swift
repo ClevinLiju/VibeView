@@ -35,6 +35,16 @@ public struct ThermoInput: Sendable {
     }
 }
 
+extension ThermoInput {
+    /// Final geometry, vibrational frequencies (translations/rotations dropped) and the electronic energy of an ORCA output.
+    public init?(orca out: OrcaOutput) {
+        guard let mol = out.geometries.last, !mol.atoms.isEmpty, !out.allFrequencies.isEmpty else { return nil }
+        let vib = Array(out.allFrequencies.dropFirst(out.firstVibrationIndex)).filter { abs($0) > 1e-3 }
+        guard let e = out.thermochemistry?.electronicEnergy ?? out.finalEnergy else { return nil }
+        self.init(molecule: mol, frequencies: vib, electronicEnergy: e, symmetryNumber: nil, multiplicity: out.multiplicity)
+    }
+}
+
 /// Grimme (Chem. Eur. J. 2012, 18, 9955) quasi-rigid-rotor–harmonic-oscillator entropy interpolation.
 public struct QuasiRRHO: Sendable, Equatable {
     /// ν0 in cm⁻¹
@@ -98,7 +108,7 @@ public struct ThermoResult: Sendable, Equatable {
 public enum Thermochemistry {
     static let hartreeJ = 4.3597447222071e-18
     /// 1 cal/mol/K in Hartree/K
-    static let calPerMolKToHartreePerK = 4.184 / PhysConst.NA / hartreeJ
+    public static let calPerMolKToHartreePerK = 4.184 / PhysConst.NA / hartreeJ
 
     /// Rotational symmetry number for a Schoenflies point-group name.
     public static func rotationalSymmetryNumber(pointGroup name: String) -> Int {

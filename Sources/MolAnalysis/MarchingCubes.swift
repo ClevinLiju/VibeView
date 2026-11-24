@@ -94,9 +94,39 @@ public enum MarchingCubes {
             var e = e0
             while !visited[e] { visited[e] = true; loop.append(e); e = next[e] }
             guard loop.count >= 3 else { continue }
-            for i in 1..<(loop.count - 1) { tris += [loop[0], loop[i], loop[i + 1]] }
+            tris += triangulateLoop(loop) ?? fan(loop)
         }
         return tris
+    }
+
+    /// Cube edges lying on each face (for diagonal validity).
+    static let faceEdgeSets: [Set<Int>] = faces.map { f in Set((0..<4).map { edgeIndex(f[$0], f[($0 + 1) % 4]) }) }
+
+    private static func fan(_ loop: [Int]) -> [Int] {
+        var t: [Int] = []
+        for i in 1..<(loop.count - 1) { t += [loop[0], loop[i], loop[i + 1]] }
+        return t
+    }
+
+    /// Triangulates a loop without diagonals that lie on a cube face: such a diagonal could be generated
+    /// by the neighbouring cell too and would make the shared edge non-manifold.
+    private static func triangulateLoop(_ loop: [Int]) -> [Int]? {
+        let n = loop.count
+        func adjacent(_ a: Int, _ b: Int) -> Bool { (a + 1) % n == b || (b + 1) % n == a }
+        func ok(_ a: Int, _ b: Int) -> Bool {
+            if adjacent(a, b) { return true }
+            let ea = loop[a], eb = loop[b]
+            return !faceEdgeSets.contains { $0.contains(ea) && $0.contains(eb) }
+        }
+        // Polygon given by loop positions i...j (i < j), with edge (i, j) closing it.
+        func solve(_ i: Int, _ j: Int) -> [Int]? {
+            if j - i < 2 { return [] }
+            for k in (i + 1)..<j where ok(i, k) && ok(k, j) {
+                if let l = solve(i, k), let r = solve(k, j) { return l + [loop[i], loop[k], loop[j]] + r }
+            }
+            return nil
+        }
+        return solve(0, n - 1)
     }
 
     // MARK: Extraction

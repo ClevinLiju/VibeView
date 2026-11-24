@@ -4,22 +4,47 @@ import MolIO
 import MolCompute
 import simd
 
-private final class ResultBox<T>: @unchecked Sendable { var r: Result<T, Error>? }
+/// Thread-safe result slot for async work driven from synchronous checks.
+final class ComputeResultBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Result<T, Error>?
+    var result: Result<T, Error>? { lock.lock(); defer { lock.unlock() }; return value }
+    func set(_ r: Result<T, Error>) { lock.lock(); value = r; lock.unlock() }
+}
 
-private func runAsync<T: Sendable>(_ op: @escaping @Sendable () async throws -> T) throws -> T {
+struct CheckHardTimeout: Error, CustomStringConvertible {
+    let seconds: TimeInterval
+    var description: String { "hard timeout: async work did not finish within \(Int(seconds)) s (cancelled)" }
+}
+
+/// Runs async work from a synchronous check without deadlocking: on the main thread the main run loop keeps
+/// spinning (so main-actor/main-queue work can proceed), and a hard timeout turns a hang into a FAIL.
+func computeRunAsync<T: Sendable>(timeout: TimeInterval = 30, _ op: @escaping @Sendable () async throws -> T) throws -> T {
+    let box = ComputeResultBox<T>()
     let sem = DispatchSemaphore(value: 0)
-    let box = ResultBox<T>()
-    Task.detached { 
-        do { box.r = .success(try await op()) } catch { box.r = .failure(error) }
+    let task = Task.detached {
+        do { box.set(.success(try await op())) } catch { box.set(.failure(error)) }
         sem.signal()
     }
-    sem.wait()
-    return try box.r!.get()
+    let deadline = Date().addingTimeInterval(timeout)
+    while box.result == nil {
+        if Date() >= deadline { task.cancel(); throw CheckHardTimeout(seconds: timeout) }
+        if Thread.isMainThread {
+            _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.005))
+            _ = sem.wait(timeout: .now() + .milliseconds(2))
+        } else {
+            _ = sem.wait(timeout: .now() + .milliseconds(50))
+        }
+    }
+    return try box.result!.get()
 }
 
-private func asyncError(_ op: @escaping @Sendable () async throws -> Void) -> Error? {
-    do { try runAsync(op); return nil } catch { return error }
+func computeAsyncError(timeout: TimeInterval = 30, _ op: @escaping @Sendable () async throws -> Void) -> Error? {
+    do { try computeRunAsync(timeout: timeout, op); return nil } catch { return error }
 }
+
+private func runAsync<T: Sendable>(_ op: @escaping @Sendable () async throws -> T) throws -> T { try computeRunAsync(op) }
+private func asyncError(_ op: @escaping @Sendable () async throws -> Void) -> Error? { computeAsyncError(op) }
 
 private let methaneSDF = """
 methane
@@ -81,7 +106,9 @@ private func formula(_ m: Molecule) -> [Int: Int] {
 }
 
 extension Checks {
-    static let compute: [Check] = [
+    static let compute: [Check] = computeCore + computeLive
+
+    static let computeCore: [Check] = [
         Check("compute.locator") {
             try expect(ProgramLocator.find("sh") != nil, "sh not found")
             try expect(ProgramLocator.find("ls") != nil, "ls not found")
@@ -120,15 +147,21 @@ extension Checks {
             let water = Molecule(atoms: [Atom(id: 0, atomicNumber: 8, position: Vec3(0, 0, 0.12)),
                                          Atom(id: 1, atomicNumber: 1, position: Vec3(0, 0.76, -0.47)),
                                          Atom(id: 2, atomicNumber: 1, position: Vec3(0, -0.76, -0.47))])
-            if XTBRunner.locate() != nil {
-                print("    note: xtb is installed; skipping not-installed test")
-            } else {
-                let e = asyncError { _ = try await XTBRunner().run(water, task: .optimize) }
-                guard case .notInstalled(let p, let s)? = e as? ComputeError else { throw CheckFailure(description: "got \(String(describing: e))") }
-                try expect(p == "xtb" && !s.isEmpty)
-                let d = (e as! LocalizedError).errorDescription ?? ""
-                try expect(d.contains("xtb") && d.contains("conda install -c conda-forge xtb"), d)
-            }
+            let empty = FileManager.default.temporaryDirectory.appendingPathComponent("molscope-empty-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: empty) }
+            var runner = XTBRunner()
+            runner.searchDirectories = [empty.path]
+            try expect(XTBRunner.locate(searchDirectories: [empty.path]) == nil)
+            let r = runner
+            let e = asyncError { _ = try await r.run(water, task: .optimize) }
+            guard case .notInstalled(let p, let s)? = e as? ComputeError else { throw CheckFailure(description: "got \(String(describing: e))") }
+            try expect(p == "xtb" && s == [empty.path], "\(s)")
+            let d = (e as! LocalizedError).errorDescription ?? ""
+            try expect(d.contains("xtb") && d.contains("conda install -c conda-forge xtb"), d)
+            let bad = XTBRunner(executable: empty.appendingPathComponent("nope"))
+            let e2 = asyncError { _ = try await bad.run(water, task: .optimize) }
+            guard case .notInstalled("xtb", _)? = e2 as? ComputeError else { throw CheckFailure(description: "explicit: \(String(describing: e2))") }
             let log = """
              :: total energy              -5.070544 Eh    ::
              :: gradient norm              0.000123 Eh/a0 ::

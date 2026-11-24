@@ -16,6 +16,7 @@ final class ViewportSync {
     private var shownMolecule = Molecule()
     private var pushingSelection = false
     private var didFit = false
+    private var fittedRadius = 1.0
 
     init(editor: EditorModel) {
         self.editor = editor
@@ -29,9 +30,12 @@ final class ViewportSync {
         renderer.onBoxSelect = { [weak self] sel, _ in self?.editor?.selection = sel }
 
         // Structure: either the browsed frame or the editable molecule.
+        // @Published fires in willSet, so use the delivered values rather than reading the editor back.
         Publishers.CombineLatest3(editor.$molecule, editor.$frameIndex, editor.$result)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.refreshStructure() }
+            .sink { [weak self] m, f, r in
+                let shown = (f.flatMap { i in r?.steps.indices.contains(i) == true ? r?.steps[i] : nil }) ?? m
+                self?.refreshStructure(shown, browsing: f != nil)
+            }
             .store(in: &bag)
         editor.$selection.removeDuplicates().sink { [weak self] sel in
             guard let self else { return }
@@ -39,11 +43,10 @@ final class ViewportSync {
             self.renderer.selection = sel.filter { $0 < self.shownMolecule.atoms.count }
             self.pushingSelection = false
         }.store(in: &bag)
-        editor.$renderOptions.removeDuplicates().dropFirst().sink { [weak self] o in self?.applyOptions(o) }.store(in: &bag)
-        editor.$measurePicks.removeDuplicates().dropFirst().sink { [weak self] _ in
-            guard let self, let ed = self.editor else { return }
-            self.applyOptions(ed.renderOptions)
-        }.store(in: &bag)
+        Publishers.CombineLatest(editor.$renderOptions.removeDuplicates(), editor.$measurePicks.removeDuplicates())
+            .dropFirst()
+            .sink { [weak self] o, p in self?.applyOptions(o, picks: p) }
+            .store(in: &bag)
         editor.$tool.sink { [weak self] t in self?.renderer.autoSelect = (t == .select || t == .rotate) }.store(in: &bag)
         Publishers.CombineLatest3(editor.$activeModeIndex, editor.$vibrationAmplitude, editor.$showDisplacementArrows)
             .receive(on: RunLoop.main)
@@ -57,26 +60,30 @@ final class ViewportSync {
 
     // MARK: Sync
 
-    private func refreshStructure() {
+    private func refreshStructure(_ m: Molecule, browsing: Bool) {
         guard let ed = editor else { return }
-        let m = ed.displayedMolecule
         let sameTopology = m.atoms.count == shownMolecule.atoms.count && m.bonds == shownMolecule.bonds
             && zip(m.atoms, shownMolecule.atoms).allSatisfy { $0.atomicNumber == $1.atomicNumber && $0.charge == $1.charge }
         if sameTopology && !m.atoms.isEmpty {
             if m.atoms.map(\.position) != shownMolecule.atoms.map(\.position) { renderer.updatePositions(m.positions) }
         } else {
             let fit = !didFit || shownMolecule.atoms.isEmpty
-            renderer.setMolecule(m, fitCamera: fit && !m.atoms.isEmpty)
-            if !m.atoms.isEmpty { didFit = true }
+            renderer.setMolecule(m, fitCamera: false)
+            let sphere = renderer.boundingSphere()
+            // Leave room to sketch around small structures; refit once the structure outgrows the view.
+            let target = m.atoms.count <= 5 ? max(sphere.radius, 3.5) : sphere.radius
+            if !m.atoms.isEmpty && ((fit) || sphere.radius > fittedRadius * 1.2) {
+                renderer.camera.fit(center: sphere.center, radius: target, animated: didFit)
+                didFit = true; fittedRadius = target
+            }
         }
         shownMolecule = m
-        if ed.frameIndex == nil { applyOptions(ed.renderOptions) }
+        applyOptions(ed.renderOptions, picks: browsing ? [] : ed.measurePicks)
     }
 
-    private func applyOptions(_ o: RenderOptions) {
-        guard let ed = editor else { return }
+    private func applyOptions(_ o: RenderOptions, picks: [Int]) {
         var o = o
-        let p = ed.measurePicks.filter { $0 < shownMolecule.atoms.count }
+        let p = picks.filter { $0 < shownMolecule.atoms.count }
         switch p.count {
         case 2: o.measurements = [.distance(p[0], p[1])]
         case 3: o.measurements = [.angle(p[0], p[1], p[2])]
@@ -145,13 +152,16 @@ struct MoleculeViewport: View {
                 if editor.tool == .measure { MeasurePanel(editor: editor) }
             }
             .overlay(alignment: .topLeading) {
-                if let f = editor.frameIndex, let n = editor.result?.steps.count, n > 1 {
-                    Label("Frame \(f + 1) of \(n)", systemImage: "film.stack")
-                        .font(.callout.monospacedDigit())
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(10)
+                VStack(alignment: .leading, spacing: 8) {
+                    if let r = editor.result { CalculationInfoCard(result: r) }
+                    if let f = editor.frameIndex, let n = editor.result?.steps.count, n > 1 {
+                        Label("Frame \(f + 1) of \(n)", systemImage: "film.stack")
+                            .font(.callout.monospacedDigit())
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(.regularMaterial, in: Capsule())
+                    }
                 }
+                .padding(10)
             }
             .overlay {
                 if editor.molecule.atoms.isEmpty && editor.result == nil { EmptyCanvasHint(editor: editor) }

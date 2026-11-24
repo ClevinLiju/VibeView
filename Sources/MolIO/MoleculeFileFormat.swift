@@ -101,7 +101,7 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         if head.contains("Entering Gaussian System") || head.contains("Gaussian, Inc.") { return .gaussianOutput }
         if head.contains("* O   R   C   A *") || head.contains("O   R   C   A") { return .orcaOutput }
         if head.contains("Welcome to Q-Chem") || head.contains("Q-Chem, Inc.") { return .qchemOutput }
-        if head.contains("x T B") || head.contains("xtb version") && head.contains("normal termination of xtb") { return .xtbOutput }
+        if head.contains("x T B") || head.contains("* xtb version") { return .xtbOutput }
         if head.range(of: "[Molden Format]", options: .caseInsensitive) != nil { return .molden }
         if head.contains("$orca_hessian_file") { return .orcaHessian }
         // fchk: title, "type method basis", then "Number of atoms   I   n"
