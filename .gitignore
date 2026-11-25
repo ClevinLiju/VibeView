@@ -3,3 +3,9 @@
 *.app
 dist/
 .DS_Store
+
+.build-*/
+windows/node_modules/
+windows/dist/
+windows/engine/
+
