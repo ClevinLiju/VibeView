@@ -94,13 +94,23 @@ public enum SpectrumBuilder {
     public static func ir(modes: [NormalMode], scale: Double = 1.0, fwhm: Double = 10,
                           shape: LineShape = .lorentzian, range: ClosedRange<Double> = 0...4000,
                           pointCount: Int = 2000, includeImaginary: Bool = false) -> Spectrum {
+        ir(modes: modes, scale: scale, profile: LineShapeProfile(shape, fwhm: fwhm), range: range,
+           pointCount: pointCount, includeImaginary: includeImaginary)
+    }
+
+    /// IR spectrum with any line shape (`LineShapeProfile`, widths as FWHM in cm⁻¹). Height-normalised: an
+    /// isolated band of intensity I peaks at I for every shape, so switching shapes keeps peaks comparable.
+    /// `.sticks` gives an empty curve.
+    public static func ir(modes: [NormalMode], scale: Double = 1.0, profile: LineShapeProfile,
+                          range: ClosedRange<Double> = 0...4000, pointCount: Int = 2000,
+                          includeImaginary: Bool = false) -> Spectrum {
         var sticks: [SpectrumStick] = []
         for (i, m) in modes.enumerated() {
             if m.frequency < 0 && !includeImaginary { continue }
             let nu = m.frequency * scale
             sticks.append(SpectrumStick(x: nu, height: m.irIntensity, label: label(i, m.symmetry), sourceIndex: i))
         }
-        let pts = curve(sticks: sticks, shape: shape, fwhm: fwhm, range: range, count: pointCount)
+        let pts = curve(sticks: sticks, profile: profile, range: range, count: pointCount)
         return Spectrum(points: pts, sticks: sticks.filter { range.contains($0.x) },
                         xLabel: "Wavenumber (cm⁻¹)", yLabel: "IR intensity (km/mol)", xAxisReversed: true)
     }
@@ -113,6 +123,14 @@ public enum SpectrumBuilder {
                              shape: LineShape = .lorentzian, range: ClosedRange<Double> = 0...4000,
                              pointCount: Int = 2000, excitationNM: Double? = nil,
                              temperature: Double = 298.15) -> Spectrum {
+        raman(modes: modes, scale: scale, profile: LineShapeProfile(shape, fwhm: fwhm), range: range,
+              pointCount: pointCount, excitationNM: excitationNM, temperature: temperature)
+    }
+
+    /// Raman spectrum with any line shape (height-normalised like `ir(modes:profile:)`).
+    public static func raman(modes: [NormalMode], scale: Double = 1.0, profile: LineShapeProfile,
+                             range: ClosedRange<Double> = 0...4000, pointCount: Int = 2000,
+                             excitationNM: Double? = nil, temperature: Double = 298.15) -> Spectrum {
         var sticks: [SpectrumStick] = []
         for (i, m) in modes.enumerated() {
             guard m.frequency > 0, let s = m.ramanActivity else { continue }
@@ -128,7 +146,7 @@ public enum SpectrumBuilder {
         if excitationNM != nil, let mx = sticks.map({ abs($0.height) }).max(), mx > 0 {
             for k in sticks.indices { sticks[k].height /= mx }
         }
-        let pts = curve(sticks: sticks, shape: shape, fwhm: fwhm, range: range, count: pointCount)
+        let pts = curve(sticks: sticks, profile: profile, range: range, count: pointCount)
         return Spectrum(points: pts, sticks: sticks.filter { range.contains($0.x) },
                         xLabel: "Raman shift (cm⁻¹)",
                         yLabel: excitationNM == nil ? "Raman activity (Å⁴/amu)" : "Raman intensity (relative)",
@@ -138,6 +156,14 @@ public enum SpectrumBuilder {
     private static func label(_ i: Int, _ sym: String?) -> String {
         if let s = sym, !s.isEmpty { return "mode \(i + 1) (\(s))" }
         return "mode \(i + 1)"
+    }
+
+    private static func curve(sticks: [SpectrumStick], profile: LineShapeProfile,
+                              range: ClosedRange<Double>, count: Int) -> [SpectrumPoint] {
+        guard profile.hasCurve else { return [] }
+        let xs = grid(range, count)
+        let ys = profile.broaden(centers: sticks.map(\.x), weights: sticks.map(\.height), at: xs, normalization: .height)
+        return zip(xs, ys).map { SpectrumPoint(x: $0, y: $1) }
     }
 
     private static func curve(sticks: [SpectrumStick], shape: LineShape, fwhm: Double,
@@ -165,9 +191,15 @@ public enum SpectrumBuilder {
         case .wavenumber: return x / evToWavenumber
         }
     }
-    private static func defaultRange(axis: SpectrumAxis, energies: [Double], fwhmEV: Double,
-                                     shape: LineShape) -> ClosedRange<Double> {
-        let pad = fwhmEV * (shape == .lorentzian ? 12 : 4)
+    private static func defaultRange(axis: SpectrumAxis, energies: [Double], profile: LineShapeProfile) -> ClosedRange<Double> {
+        let p = profile
+        let pad: Double
+        switch p.kind {
+        case .gaussian: pad = 4 * p.fwhm
+        case .lorentzian, .pseudoVoigt: pad = 12 * p.fwhm
+        case .voigt: pad = 4 * p.gaussianFWHM + 12 * p.lorentzianFWHM
+        case .sticks: pad = 0.5
+        }
         let lo = max(0.2, (energies.min() ?? 3) - pad)
         let hi = (energies.max() ?? 6) + pad
         let a = axisValue(axis, eV: lo), b = axisValue(axis, eV: hi)
@@ -183,9 +215,18 @@ public enum SpectrumBuilder {
     public static func uvVis(states: [ExcitedState], fwhmEV: Double = 0.3, shape: LineShape = .gaussian,
                              axis: SpectrumAxis = .wavelengthNM, range: ClosedRange<Double>? = nil,
                              pointCount: Int = 1000) -> Spectrum {
+        uvVis(states: states, profile: LineShapeProfile(shape, fwhm: fwhmEV), axis: axis, range: range, pointCount: pointCount)
+    }
+
+    /// UV-Vis with any line shape; profile widths are FWHM in eV (broadening is done in energy). Area-normalised
+    /// (∫ε dν̃ = 2.3154e8·f for every shape). `.sticks` gives an empty curve; its sticks then use the peak ε of a
+    /// Gaussian of FWHM `profile.fwhm` (0.3 eV if unset) so their scale stays familiar.
+    public static func uvVis(states: [ExcitedState], profile: LineShapeProfile,
+                             axis: SpectrumAxis = .wavelengthNM, range: ClosedRange<Double>? = nil,
+                             pointCount: Int = 1000) -> Spectrum {
         electronic(states: states, strengths: states.map { $0.oscillatorStrength }, prefactor: { _, f in
             epsilonAreaConstant * f
-        }, fwhmEV: fwhmEV, shape: shape, axis: axis, range: range, pointCount: pointCount,
+        }, profile: profile, axis: axis, range: range, pointCount: pointCount,
         yLabel: "ε (L mol⁻¹ cm⁻¹)", wavenumberDomain: true)
     }
 
@@ -196,37 +237,44 @@ public enum SpectrumBuilder {
     public static func ecd(states: [ExcitedState], rotatoryStrengths: [Double], fwhmEV: Double = 0.3,
                            shape: LineShape = .gaussian, axis: SpectrumAxis = .wavelengthNM,
                            range: ClosedRange<Double>? = nil, pointCount: Int = 1000) -> Spectrum {
+        ecd(states: states, rotatoryStrengths: rotatoryStrengths, profile: LineShapeProfile(shape, fwhm: fwhmEV),
+            axis: axis, range: range, pointCount: pointCount)
+    }
+
+    /// ECD with any line shape (widths FWHM in eV; area-normalised per eV like the Gaussian formula above).
+    public static func ecd(states: [ExcitedState], rotatoryStrengths: [Double], profile: LineShapeProfile,
+                           axis: SpectrumAxis = .wavelengthNM, range: ClosedRange<Double>? = nil,
+                           pointCount: Int = 1000) -> Spectrum {
         let n = min(states.count, rotatoryStrengths.count)
         let st = Array(states.prefix(n))
         return electronic(states: st, strengths: Array(rotatoryStrengths.prefix(n)), prefactor: { s, r in
             s.energyEV * r * 1e-40 / ecdConstant
-        }, fwhmEV: fwhmEV, shape: shape, axis: axis, range: range, pointCount: pointCount,
+        }, profile: profile, axis: axis, range: range, pointCount: pointCount,
         yLabel: "Δε (L mol⁻¹ cm⁻¹)", wavenumberDomain: false)
     }
 
     private static func electronic(states: [ExcitedState], strengths: [Double],
                                    prefactor: (ExcitedState, Double) -> Double,
-                                   fwhmEV: Double, shape: LineShape, axis: SpectrumAxis,
+                                   profile: LineShapeProfile, axis: SpectrumAxis,
                                    range: ClosedRange<Double>?, pointCount: Int,
                                    yLabel: String, wavenumberDomain: Bool) -> Spectrum {
         // wavenumberDomain: area measured per cm⁻¹ (ε); otherwise per eV (Δε).
-        let width = wavenumberDomain ? fwhmEV * evToWavenumber : fwhmEV
+        let unit = wavenumberDomain ? evToWavenumber : 1
+        let shape = profile.scaled(by: unit)
         let amps = zip(states, strengths).map { prefactor($0, $1) }
-        let rng = range ?? defaultRange(axis: axis, energies: states.map { $0.energyEV }, fwhmEV: fwhmEV, shape: shape)
+        let rng = range ?? defaultRange(axis: axis, energies: states.map { $0.energyEV }, profile: profile)
         let xs = grid(rng, pointCount)
-        let pts: [SpectrumPoint] = xs.map { x in
-            let e = eVFromAxis(axis, x: x)
-            let v = wavenumberDomain ? e * evToWavenumber : e
-            var y = 0.0
-            for (i, s) in states.enumerated() {
-                let c = wavenumberDomain ? s.energyEV * evToWavenumber : s.energyEV
-                y += amps[i] * Broadening.area(shape, x: v, center: c, fwhm: width)
-            }
-            return SpectrumPoint(x: x, y: y)
+        var pts: [SpectrumPoint] = []
+        if shape.hasCurve {
+            let vs = xs.map { eVFromAxis(axis, x: $0) * unit }
+            let ys = shape.broaden(centers: states.map { $0.energyEV * unit }, weights: amps, at: vs, normalization: .area)
+            pts = zip(xs, ys).map { SpectrumPoint(x: $0, y: $1) }
         }
+        let peak = shape.hasCurve ? shape.areaPeak
+            : LineShapeProfile.gaussian(fwhm: (profile.fwhm > 0 ? profile.fwhm : 0.3) * unit).areaPeak
         let sticks = states.enumerated().map { i, s in
             SpectrumStick(x: axisValue(axis, eV: s.energyEV),
-                          height: amps[i] * Broadening.area(shape, x: 0, center: 0, fwhm: width),
+                          height: amps[i] * peak,
                           label: "S\(i + 1)", sourceIndex: i)
         }
         let xLabel: String

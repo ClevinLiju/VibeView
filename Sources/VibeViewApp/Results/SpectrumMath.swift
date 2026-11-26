@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import MolAnalysis
 
 struct SpecPoint: Identifiable, Equatable {
     var x: Double
@@ -13,31 +15,28 @@ struct SpecStick: Identifiable, Equatable {
     var id: Int { index }
 }
 
-/// Small line-broadening helpers. Peak heights are preserved (a stick of height h gives a peak of height h).
+/// Line-broadening helpers for the results panels. Curves are peak-height normalised: an isolated stick of
+/// height h gives a band of height h for every line shape (MolAnalysis `LineShapeProfile`).
 enum SpectrumMath {
     static let hartreeToKcal = 627.5095
     static let hartreeToEV = 27.211386
     static let evNanometer = 1239.841984
 
-    /// Lorentzian with FWHM in x units (cm-1).
-    static func lorentzian(_ sticks: [SpecStick], fwhm: Double, from lo: Double, to hi: Double, count: Int = 1600) -> [SpecPoint] {
-        let g = max(fwhm, 0.01) / 2
-        return grid(lo, hi, count).map { x in
-            var y = 0.0
-            for s in sticks { let d = x - s.x; y += s.height * g * g / (d * d + g * g) }
-            return SpecPoint(x: x, y: y)
-        }
+    /// Broadened curve on an x grid (widths of `profile` in x units, e.g. cm⁻¹). Empty for sticks only.
+    static func broaden(_ sticks: [SpecStick], profile: LineShapeProfile, from lo: Double, to hi: Double, count: Int = 1600) -> [SpecPoint] {
+        guard profile.hasCurve else { return [] }
+        let xs = grid(lo, hi, count)
+        let ys = profile.broaden(centers: sticks.map(\.x), weights: sticks.map(\.height), at: xs, normalization: .height)
+        return zip(xs, ys).map { SpecPoint(x: $0, y: $1) }
     }
 
-    /// Gaussian broadening in energy (FWHM in eV), evaluated on a wavelength (nm) grid.
-    static func gaussianInEV(energiesEV: [(e: Double, h: Double)], fwhmEV: Double, fromNM lo: Double, toNM hi: Double, count: Int = 900) -> [SpecPoint] {
-        let sigma = max(fwhmEV, 0.005) / 2.354820045
-        return grid(lo, hi, count).map { nm in
-            let e = evNanometer / nm
-            var y = 0.0
-            for s in energiesEV { let d = e - s.e; y += s.h * exp(-d * d / (2 * sigma * sigma)) }
-            return SpecPoint(x: nm, y: y)
-        }
+    /// Broadening in energy (profile widths in eV), sampled on a wavelength (nm) grid.
+    static func broadenInEV(energiesEV: [(e: Double, h: Double)], profile: LineShapeProfile, fromNM lo: Double, toNM hi: Double, count: Int = 900) -> [SpecPoint] {
+        guard profile.hasCurve else { return [] }
+        let nms = grid(lo, hi, count)
+        let ys = profile.broaden(centers: energiesEV.map(\.e), weights: energiesEV.map(\.h),
+                                 at: nms.map { evNanometer / $0 }, normalization: .height)
+        return zip(nms, ys).map { SpecPoint(x: $0, y: $1) }
     }
 
     private static func grid(_ lo: Double, _ hi: Double, _ n: Int) -> [Double] {
@@ -48,5 +47,65 @@ enum SpectrumMath {
 
     static func nearest(_ sticks: [SpecStick], to x: Double) -> SpecStick? {
         sticks.min { abs($0.x - x) < abs($1.x - x) }
+    }
+}
+
+/// The user's last line-shape / display choice for one panel kind, saved to UserDefaults on every change.
+final class SpectrumDisplayStore: ObservableObject {
+    let key: String
+    @Published var settings: SpectrumDisplaySettings { didSet { settings.save(key: key) } }
+
+    init(key: String, default def: SpectrumDisplaySettings) {
+        self.key = key
+        settings = SpectrumDisplaySettings.load(key: key, default: def)
+    }
+
+    static func vibrational() -> SpectrumDisplayStore { .init(key: SpectrumDisplaySettings.vibrationalKey, default: .vibrationalDefault) }
+    static func electronic() -> SpectrumDisplayStore { .init(key: SpectrumDisplaySettings.electronicKey, default: .electronicDefault) }
+}
+
+/// Line-shape picker plus the width controls that shape needs. Widths are FWHM in `unit`.
+struct LineShapeControls: View {
+    @Binding var profile: LineShapeProfile
+    let unit: String
+    let range: ClosedRange<Double>
+    let format: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Picker("Line shape", selection: $profile.kind) {
+                ForEach(LineShapeKind.allCases) { Text($0.displayName).tag($0) }
+            }
+            .labelsHidden().fixedSize()
+            .help("Line shape used to broaden the sticks. Curves are peak-height normalised.")
+            switch profile.kind {
+            case .gaussian, .lorentzian:
+                width("FWHM", $profile.fwhm)
+            case .pseudoVoigt:
+                width("FWHM", $profile.fwhm)
+                Text("η").font(.caption).foregroundStyle(.secondary)
+                Slider(value: $profile.eta, in: 0...1).frame(maxWidth: 70)
+                Text(String(format: "%.2f", profile.eta)).monospacedDigit().font(.caption).frame(width: 30, alignment: .trailing)
+                    .help("Lorentzian fraction: η·Lorentzian + (1 − η)·Gaussian, same FWHM")
+            case .voigt:
+                width("Gauss", $profile.gaussianFWHM)
+                width("Lorentz", $profile.lorentzianFWHM)
+                Text(String(format: "→ \(format) \(unit)", profile.effectiveFWHM)).font(.caption).foregroundStyle(.secondary)
+                    .monospacedDigit().help("FWHM of the resulting Voigt band")
+            case .sticks:
+                EmptyView()
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func width(_ label: String, _ value: Binding<Double>) -> some View {
+        HStack(spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Slider(value: value, in: range).frame(minWidth: 50, maxWidth: 100)
+            Text(String(format: "\(format) \(unit)", value.wrappedValue)).monospacedDigit().font(.caption)
+                .frame(minWidth: 44, alignment: .trailing)
+        }
+        .help("\(label) FWHM in \(unit)")
     }
 }

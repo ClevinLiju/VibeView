@@ -1,6 +1,7 @@
 import SwiftUI
 import Charts
 import MolCore
+import MolAnalysis
 
 struct VibrationsView: View {
     @ObservedObject var editor: EditorModel
@@ -9,7 +10,7 @@ struct VibrationsView: View {
     enum Kind: String, CaseIterable, Identifiable { case ir = "IR", raman = "Raman"; var id: String { rawValue } }
 
     @State private var kind: Kind = .ir
-    @State private var fwhm = 20.0
+    @StateObject private var display = SpectrumDisplayStore.vibrational()
     @State private var scale = 1.0
     @State private var scaleText = "1.000"
 
@@ -41,42 +42,59 @@ struct VibrationsView: View {
         .onDisappear { editor.activeModeIndex = nil }
     }
 
+    /// IR in %Transmittance (the default) rather than absorbance; Raman is always intensity.
+    private var showsTransmittance: Bool { kind == .ir && display.settings.transmittance }
+
     private var spectrumControls: some View {
-        HStack(spacing: 10) {
-            if hasRaman {
-                Picker("", selection: $kind) { ForEach(Kind.allCases) { Text($0.rawValue).tag($0) } }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                if hasRaman {
+                    Picker("", selection: $kind) { ForEach(Kind.allCases) { Text($0.rawValue).tag($0) } }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize()
+                } else {
+                    Text("IR spectrum").font(.headline)
+                }
+                if kind == .ir {
+                    Picker("", selection: $display.settings.transmittance) {
+                        Text("%T").tag(true)
+                        Text("Absorbance").tag(false)
+                    }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
-            } else {
-                Text("IR spectrum").font(.headline)
+                    .help("Transmittance T = 100·10^(−k·I), k chosen so the strongest band reaches 15 %T; or the absorbance-like intensity")
+                }
+                Text("Scale").font(.caption).foregroundStyle(.secondary)
+                TextField("", text: $scaleText)
+                    .frame(width: 56).textFieldStyle(.roundedBorder).monospacedDigit()
+                    .onSubmit { if let v = Double(scaleText), v > 0.2, v < 2 { scale = v } else { scaleText = String(format: "%.3f", scale) } }
+                Spacer(minLength: 0)
             }
-            Text("FWHM").font(.caption).foregroundStyle(.secondary)
-            Slider(value: $fwhm, in: 2...100).frame(maxWidth: 120)
-            Text(String(format: "%.0f", fwhm)).monospacedDigit().font(.caption).frame(width: 26, alignment: .trailing)
-            Text("Scale").font(.caption).foregroundStyle(.secondary)
-            TextField("", text: $scaleText)
-                .frame(width: 56).textFieldStyle(.roundedBorder).monospacedDigit()
-                .onSubmit { if let v = Double(scaleText), v > 0.2, v < 2 { scale = v } else { scaleText = String(format: "%.3f", scale) } }
-            Spacer(minLength: 0)
+            LineShapeControls(profile: $display.settings.profile, unit: "cm⁻¹", range: 1...100, format: "%.0f")
         }
     }
 
     private var spectrumChart: some View {
         let s = sticks
-        let curve = SpectrumMath.lorentzian(s, fwhm: fwhm, from: 0, to: 4000)
-        let maxY = max(curve.map(\.y).max() ?? 1, s.map(\.height).max() ?? 1, 1e-9)
+        let raw = SpectrumMath.broaden(s, profile: display.settings.profile, from: 0, to: 4000)
+        let maxY = max(raw.map(\.y).max() ?? 0, s.map(\.height).max() ?? 0, 1e-9)
+        let percentT = showsTransmittance
+        // %T: Beer–Lambert mapping scaled so the strongest band (curve or stick) reaches 15 %T.
+        let tScale = TransmittanceScale(maxIntensity: maxY, minimumPercent: 15)
+        let curve = percentT ? raw.map { SpecPoint(x: $0.x, y: tScale.percent($0.y)) } : raw
+        let base = percentT ? 100.0 : 0.0
+        func tip(_ st: SpecStick) -> Double { percentT ? tScale.percent(st.height) : st.height }
         return Chart {
             ForEach(curve) { p in
                 LineMark(x: .value("Wavenumber", -p.x), y: .value("Intensity", p.y))
                     .foregroundStyle(Color.accentColor).lineStyle(StrokeStyle(lineWidth: 1.3))
             }
             ForEach(s) { st in
-                RuleMark(x: .value("Wavenumber", -st.x), yStart: .value("", 0), yEnd: .value("", st.height))
+                RuleMark(x: .value("Wavenumber", -st.x), yStart: .value("", base), yEnd: .value("", tip(st)))
                     .foregroundStyle(st.index == editor.activeModeIndex ? Color.orange : Color.secondary.opacity(0.55))
                     .lineStyle(StrokeStyle(lineWidth: st.index == editor.activeModeIndex ? 3 : 1.2))
             }
         }
         .chartXScale(domain: -4000...0)
-        .chartYScale(domain: 0...(maxY * 1.08))
+        .chartYScale(domain: percentT ? 0...105 : 0...(maxY * 1.08))
         .chartXAxis {
             AxisMarks(values: .stride(by: 500)) { v in
                 AxisGridLine(); AxisTick()
@@ -84,7 +102,7 @@ struct VibrationsView: View {
             }
         }
         .chartXAxisLabel("Wavenumber (cm⁻¹)")
-        .chartYAxisLabel(kind == .ir ? "IR intensity (km/mol)" : "Raman activity (Å⁴/amu)")
+        .chartYAxisLabel(percentT ? "Transmittance (%)" : (kind == .ir ? "IR intensity (km/mol)" : "Raman activity (Å⁴/amu)"))
         .chartOverlay { proxy in
             GeometryReader { geo in
                 Rectangle().fill(.clear).contentShape(Rectangle())

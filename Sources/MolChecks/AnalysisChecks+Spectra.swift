@@ -28,7 +28,7 @@ private func trapezoid(_ pts: [SpectrumPoint]) -> Double {
 }
 
 extension Checks {
-    static let analysisSpectra: [Check] = analysisSpectraOnly + analysisThermoChecks
+    static let analysisSpectra: [Check] = analysisSpectraOnly + analysisThermoChecks + analysisLineShapeChecks
 
     static let analysisSpectraOnly: [Check] = [
         Check("analysis.spec.lorentzianBand") {

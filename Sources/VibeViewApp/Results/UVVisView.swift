@@ -1,11 +1,12 @@
 import SwiftUI
 import Charts
 import MolCore
+import MolAnalysis
 
 struct UVVisView: View {
     let result: CalculationResult
 
-    @State private var fwhm = 0.35       // eV
+    @StateObject private var display = SpectrumDisplayStore.electronic()   // widths in eV
     @State private var selected: Int?
 
     private struct Row: Identifiable { var id: Int; var s: ExcitedState }
@@ -20,10 +21,9 @@ struct UVVisView: View {
                 HStack {
                     Text("Absorption").font(.headline)
                     Spacer()
-                    Text("FWHM").font(.caption).foregroundStyle(.secondary)
-                    Slider(value: $fwhm, in: 0.05...1.0).frame(maxWidth: 140)
-                    Text(String(format: "%.2f eV", fwhm)).monospacedDigit().font(.caption).frame(width: 52, alignment: .trailing)
+                    Text("Broadened in energy; peak height = f").font(.caption).foregroundStyle(.secondary)
                 }
+                LineShapeControls(profile: $display.settings.profile, unit: "eV", range: 0.02...1.0, format: "%.2f")
                 chart
             }
             .padding(10).frame(minWidth: 320)
@@ -42,9 +42,9 @@ struct UVVisView: View {
         let nms = s.map(\.x).filter { $0 > 0 }
         let lo = max(100, (nms.min() ?? 200) - 60)
         let hi = min(1500, (nms.max() ?? 600) + 120)
-        let curve = SpectrumMath.gaussianInEV(
+        let curve = SpectrumMath.broadenInEV(
             energiesEV: result.excitedStates.map { (e: $0.energyEV, h: $0.oscillatorStrength) },
-            fwhmEV: fwhm, fromNM: lo, toNM: hi)
+            profile: display.settings.profile, fromNM: lo, toNM: hi)
         let maxY = max(curve.map(\.y).max() ?? 0, s.map(\.height).max() ?? 0, 1e-6)
         return Chart {
             ForEach(curve) { p in
