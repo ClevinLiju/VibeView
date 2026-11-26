@@ -13,9 +13,11 @@ import MolCore
     var moveStart: [Vec3]?
     private var lastHover: (point: CGPoint, revision: Int)?
     private var lastHoverTime: TimeInterval = 0
+    /// Seconds since the last applied hover pick (for throttling checks).
+    public var timeSinceLastHover: TimeInterval { ProcessInfo.processInfo.systemUptime - lastHoverTime }
     private var pendingHoverPoint: CGPoint?
     /// Minimum interval between hover picks (s): coalesces mouse-move bursts to ~display rate.
-    static let hoverInterval: TimeInterval = 1.0 / 120
+    public static let hoverInterval: TimeInterval = 1.0 / 120
 
     init(renderer: MoleculeRenderer) { self.renderer = renderer }
 

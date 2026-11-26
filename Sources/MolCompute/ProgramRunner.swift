@@ -88,13 +88,11 @@ public enum ProgramRunner {
         process.standardInput = inPipe
         let state = State()
 
+        // Stops the whole process tree: programs such as ORCA (and plain shells) start children that inherit
+        // the output pipes, so signalling only the top process would leave them running and the pipes open.
         func kill(_ p: Process) {
             guard p.isRunning else { return }
-            p.terminate()
-            let pid = p.processIdentifier
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
-                if p.isRunning { Foundation.kill(pid, SIGKILL) }
-            }
+            ProcessTree.terminate(root: p.processIdentifier)
         }
 
         let output: ProcessOutput = try await withTaskCancellationHandler {
@@ -137,7 +135,10 @@ public enum ProgramRunner {
                 if Task.isCancelled { state.withLock { state.cancelled = true }; kill(process) }
                 DispatchQueue.global().async {
                     exited.wait()
-                    group.wait()
+                    // Output normally ends when the process exits. A stopped run (or a leftover grandchild that
+                    // still holds the pipe) must not hold the result back indefinitely.
+                    let stopped = state.withLock { state.cancelled || state.timedOut }
+                    _ = group.wait(timeout: .now() + (stopped ? 3 : 30))
                     let (o, e, c, t) = state.withLock { (state.out, state.err, state.cancelled, state.timedOut) }
                     if c { cont.resume(throwing: ComputeError.cancelled); return }
                     if t { cont.resume(throwing: ComputeError.timeout); return }
@@ -154,5 +155,44 @@ public enum ProgramRunner {
             throw ComputeError.processFailed(code: output.exitCode, stderr: output.stderr.isEmpty ? output.stdout : output.stderr)
         }
         return output
+    }
+}
+
+/// Child-process lookup for stopping a whole process tree.
+enum ProcessTree {
+    /// Terminates `root` and everything it started. Each process is paused (SIGSTOP) as it is found, so
+    /// nothing in the tree can start new children while it is being collected — otherwise a child forked
+    /// at the moment of cancellation escapes as an orphan that keeps running and holds the output pipes.
+    /// The tree then gets SIGTERM (with SIGCONT so it can act on it) and SIGKILL two seconds later.
+    static func terminate(root: pid_t) {
+        var tree: [pid_t] = []
+        var seen = Set<pid_t>()
+        var frontier = [root]
+        for pass in 0..<2 {
+            if pass == 1 {
+                usleep(20_000)                     // a fork in flight when its parent stopped lands now
+                frontier = tree
+            }
+            while let p = frontier.popLast(), tree.count < 4096 {
+                if seen.insert(p).inserted {
+                    Foundation.kill(p, SIGSTOP)
+                    tree.append(p)
+                }
+                frontier += children(of: p).filter { !seen.contains($0) }
+            }
+        }
+        for pid in tree { Foundation.kill(pid, SIGTERM); Foundation.kill(pid, SIGCONT) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            for pid in tree where Foundation.kill(pid, 0) == 0 { Foundation.kill(pid, SIGKILL) }
+        }
+    }
+
+    static func children(of pid: pid_t) -> [pid_t] {
+        var buf = [pid_t](repeating: 0, count: 256)
+        let bytes = buf.withUnsafeMutableBytes { proc_listchildpids(pid, $0.baseAddress, Int32($0.count)) }
+        guard bytes > 0 else { return [] }
+        // proc_listchildpids returns the number of pids on recent systems and bytes on older ones.
+        let n = min(Int(bytes) > buf.count ? Int(bytes) / MemoryLayout<pid_t>.size : Int(bytes), buf.count)
+        return Array(buf.prefix(n)).filter { $0 > 0 }
     }
 }

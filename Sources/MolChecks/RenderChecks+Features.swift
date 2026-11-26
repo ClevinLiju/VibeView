@@ -234,10 +234,15 @@ extension Checks {
                 r.picking.hover(at: CGPoint(x: p.x, y: p.y), throttled: true)
                 try expect(r.hovered == .atom(0), "hovered")
                 try expect(r.hoverTooltipModel.visible && r.hoverTooltipModel.tooltip.title == "O1", "model updated")
-                // rapid second hover inside the throttle window is coalesced, then applied
+                // rapid second hover inside the throttle window is coalesced, then applied. Timing-tolerant:
+                // on a slow machine the second call can land after the window, when it applies at once.
+                let sinceFirst = r.picking.timeSinceLastHover
                 r.picking.hover(at: CGPoint(x: 2, y: 2), throttled: true)
-                try expect(r.hovered == .atom(0), "coalesced inside the throttle window")
-                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                if sinceFirst < PickingController.hoverInterval / 2 {
+                    try expect(r.hovered == .atom(0), "coalesced inside the throttle window")
+                }
+                let deadline = Date().addingTimeInterval(1.0)
+                while r.hovered != .none && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
                 try expect(r.hovered == .none, "trailing hover applied")
                 r.performHover(at: nil)
                 try expect(!r.hoverTooltipModel.visible, "hidden on exit")

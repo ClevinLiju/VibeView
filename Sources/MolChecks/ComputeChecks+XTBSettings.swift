@@ -106,7 +106,7 @@ extension Checks {
         },
         Check("compute.runner.streamHandleCancel+timeout") {
             let h = ProgramRunner.stream(executable: URL(fileURLWithPath: "/bin/sh"),
-                                         arguments: ["-c", "echo begin; sleep 30; echo never"])
+                                         arguments: ["-c", "echo begin; sleep 29.37; echo never"])
             let r: (lines: [String], err: Error?, secs: Double) = try computeRunAsync(timeout: 20) {
                 let t = Date()
                 var lines: [String] = []
@@ -120,6 +120,16 @@ extension Checks {
             try expect(r.lines == ["begin"], "\(r.lines)")
             try expect((r.err as? ComputeError) == .cancelled, "\(String(describing: r.err))")
             try expect(r.secs < 5, "cancel took \(r.secs)")
+            // The shell's child (the sleep) must not survive as an orphan holding the pipes.
+            Thread.sleep(forTimeInterval: 2.5)
+            let pg = Process()
+            pg.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            pg.arguments = ["-f", "^sleep 29.37$"]
+            let pgOut = Pipe(); pg.standardOutput = pgOut
+            try pg.run(); pg.waitUntilExit()
+            let survivors = String(decoding: pgOut.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .split(separator: "\n").filter { !$0.isEmpty }
+            try expect(survivors.isEmpty, "orphaned child processes still running: \(survivors)")
             let e = computeAsyncError(timeout: 20) {
                 _ = try await ProgramRunner.runLogged(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["20"],
                                                       timeout: 0.5, onEvent: { _ in })
