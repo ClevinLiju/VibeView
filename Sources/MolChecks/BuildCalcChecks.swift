@@ -40,7 +40,7 @@ private func oh(charge: Int, mult: Int) -> Molecule {
 }
 
 extension Checks {
-    static let buildCalc: [Check] = buildCalcGaussian + buildCalcPrograms
+    static let buildCalc: [Check] = buildCalcGaussian + buildCalcPrograms + buildCalcDraft + buildPreflight
 
     static let buildCalcGaussian: [Check] = [
         Check("build.calc.input.energy") {

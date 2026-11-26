@@ -316,108 +316,32 @@ enum ZMatrixTools {
 
     // MARK: parsing text
 
-    private static func tokens(_ s: String) -> [String] {
-        s.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "," || $0 == "\r" }).map(String.init)
-    }
-
-    /// Parses a Z-matrix typed or pasted by the user. Accepts a bare Gaussian Z-matrix (with or without a variables
-    /// section, optionally preceded by a "charge multiplicity" line), a whole Gaussian input (route line), an ORCA
-    /// input or `* int` block, and bare ORCA internal-coordinate rows ("C 0 0 0 0.0 0.0 0.0").
+    /// Parses a Z-matrix typed or pasted by the user (shared MolIO `ZMatrixText.parse`). Accepts a bare Gaussian
+    /// Z-matrix (with or without a variables section, optionally preceded by a "charge multiplicity" line), a whole
+    /// Gaussian input (route line), an ORCA input or `* int` block, and bare ORCA internal-coordinate rows
+    /// ("C 0 0 0 0.0 0.0 0.0").
     static func parseText(_ text: String) throws -> (Molecule, JSON) {
-        let norm = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-        var lines = norm.components(separatedBy: "\n")
-        while let f = lines.first, f.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
-        guard let first = lines.first?.trimmingCharacters(in: .whitespaces) else { throw RPCError.parse("the Z-matrix is empty") }
-        let lowerAll = norm.lowercased()
-
-        func fromFile(_ fmt: MoleculeFileFormat, _ source: String) throws -> (Molecule, JSON) {
-            let f: LoadedMolecularFile
-            do { f = try MolecularFileLoader.load(text: norm, format: fmt, fileName: nil) } catch let e as MolIOError {
-                throw RPCError.parse(e.description)
-            }
-            var m = f.molecule
-            guard !m.atoms.isEmpty else { throw RPCError.parse("no atoms found") }
-            m.bonds = []
-            m = Preparation.prepared(m)
-            return (m, obj(["rowCount": m.atoms.count, "dummyCount": 0, "variables": JSON.object([:]), "source": source,
-                            "chargeGiven": true, "atomCount": m.atoms.count]))
-        }
-        if first.hasPrefix("#") || first.hasPrefix("%") { return try fromFile(.gaussianInput, "gaussianInput") }
-
-        var charge: Int?, mult: Int?
-        var source = "gaussian"
-        // ORCA `* int c m … *` block (with or without the rest of an ORCA input): its rows, charge and multiplicity.
-        if let k = lines.firstIndex(where: { let t = tokens($0.lowercased().replacingOccurrences(of: "*", with: "* ")); return t.count >= 4 && t[0] == "*" && t[1] == "int" }) {
-            let t = tokens(lines[k].replacingOccurrences(of: "*", with: "* "))
-            guard let c = Int(t[2]), let s = Int(t[3]), s >= 1 else { throw RPCError.parse("bad '* int' line: \(lines[k])") }
-            charge = c; mult = s
-            let body = lines[(k + 1)...].prefix(while: { let x = $0.trimmingCharacters(in: .whitespaces).lowercased(); return x != "*" && x != "end" })
-            lines = Array(body.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-            source = "orcaInput"
-        } else if first.hasPrefix("!") || lowerAll.contains("* xyz") || lowerAll.contains("*xyz") {
-            return try fromFile(.orcaInput, "orcaInput")
-        } else {
-            let t0 = tokens(first)
-            if t0.count == 2, let c = Int(t0[0]), let s = Int(t0[1]), s >= 1 { charge = c; mult = s; lines.removeFirst() }
-        }
-        var zm: ZMatrix
-        let specLines = lines.prefix(while: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("!") }
-        let orcaRows = specLines.map(tokens)
-        if let f = orcaRows.first, f.count >= 7, f[1] == "0", f[2] == "0", f[3] == "0",
-           orcaRows.allSatisfy({ $0.count >= 7 && Int($0[1]) != nil && Int($0[2]) != nil && Int($0[3]) != nil }) {
-            if source == "gaussian" { source = "orcaInternal" }
-            zm = ZMatrix()
-            for (r, t) in orcaRows.enumerated() {
-                let low = t[0].lowercased()
-                let zz: Int?
-                if low == "da" || low == "x" || low == "xx" { zz = 0 } else {
-                    let letters = String(t[0].prefix(while: { $0.isLetter }))
-                    zz = Elements.atomicNumber(symbol: letters.prefix(1).uppercased() + letters.dropFirst().lowercased())
-                }
-                guard let z = zz else { throw RPCError.parse("unknown element '\(t[0])' in row \(r + 1)") }
-                let a = Int(t[1])!, b = Int(t[2])!, c = Int(t[3])!
-                guard let rv = Double(t[4]), let av = Double(t[5]), let dv = Double(t[6]) else {
-                    throw RPCError.parse("bad number in row \(r + 1)")
-                }
-                for x in [a, b, c] where x < 0 || x > r { throw RPCError.parse("bad reference in row \(r + 1)") }
-                zm.rows.append(ZMatrixRow(atomicNumber: z, bondAtom: a > 0 ? a - 1 : nil, bond: a > 0 ? .number(rv) : nil,
-                                          angleAtom: b > 0 ? b - 1 : nil, angle: b > 0 ? .number(av) : nil,
-                                          dihedralAtom: c > 0 ? c - 1 : nil, dihedral: c > 0 ? .number(dv) : nil))
-            }
-        } else {
-            do { zm = try ZMatrix.parse(lines.joined(separator: "\n")) } catch let e as ZMatrixError { throw RPCError.parse(e.description) }
-        }
-        var m: Molecule
-        do { m = try zm.molecule() } catch let e as ZMatrixError { throw RPCError.parse(e.description) }
-        guard !m.atoms.isEmpty else { throw RPCError.parse("the Z-matrix has only dummy atoms") }
-        for i in m.atoms.indices { m.atoms[i].label = nil }
-        m = Preparation.prepared(m)
-        if let c = charge { m.charge = c }
-        if let s = mult { m.multiplicity = s }
-        let vars = zm.constants.merging(zm.variables) { _, n in n }
-        return (m, obj(["rowCount": zm.rows.count, "dummyCount": zm.rows.filter { $0.atomicNumber == 0 }.count,
-                        "variables": JSON.object(vars.mapValues { .number($0) }), "source": source,
-                        "chargeGiven": charge != nil, "atomCount": m.atoms.count]))
+        let p = try parsed(text)
+        return (p.molecule, info(p))
     }
 
-    /// Applies a parsed Z-matrix to a document molecule. When `order` is given and the parsed atoms match the
-    /// document's atoms in that row order (same count and elements), only the positions change (bonds, labels
-    /// and atom indices are kept; the result is superimposed on the old geometry). Otherwise the structure is replaced.
+    static func parsed(_ text: String) throws -> ZMatrixText.Parsed {
+        do { return try ZMatrixText.parse(text) } catch let e as MolIOError { throw RPCError.parse(e.description) }
+    }
+
+    static func info(_ p: ZMatrixText.Parsed) -> JSON {
+        obj(["rowCount": p.rowCount, "dummyCount": p.dummyCount, "variables": JSON.object(p.variables.mapValues { .number($0) }),
+             "source": p.source, "chargeGiven": p.chargeGiven, "atomCount": p.molecule.atoms.count])
+    }
+
+    /// Applies a parsed Z-matrix to a document molecule (shared MolIO `ZMatrixText.apply`). When `order` is given
+    /// and the parsed atoms match the document's atoms in that row order (same count and elements), only the
+    /// positions change (bonds, labels and atom indices are kept; the result is superimposed on the old geometry).
+    /// Otherwise the structure is replaced.
     static func applyParsed(_ parsed: Molecule, onto m: Molecule, order: [Int]?, chargeGiven: Bool) throws -> (Molecule, String) {
-        if let ord = order, isPermutation(ord, m.atoms.count), parsed.atoms.count == ord.count,
-           zip(ord, parsed.atoms).allSatisfy({ m.atoms[$0.0].atomicNumber == $0.1.atomicNumber }) {
-            let actual = ord.map { m.atoms[$0].position }
-            let k = Geometry.kabsch(moving: parsed.positions, target: actual)
-            var out = m
-            for (r, i) in ord.enumerated() { out.atoms[i].position = k.rotation * parsed.atoms[r].position + k.translation }
-            if chargeGiven { out.charge = parsed.charge; out.multiplicity = parsed.multiplicity }
-            return (out, "positions")
-        }
-        var r = parsed
-        r.title = m.title
-        if !chargeGiven { r.charge = m.charge; r.multiplicity = m.multiplicity }
-        return (r, "replace")
+        let p = ZMatrixText.Parsed(molecule: parsed, chargeGiven: chargeGiven, dummyCount: 0, source: "", rowCount: parsed.atoms.count)
+        let (out, mode) = ZMatrixText.apply(p, onto: m, order: order)
+        return (out, mode.rawValue)
     }
 
     // MARK: incremental builder

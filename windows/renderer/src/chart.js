@@ -29,7 +29,11 @@ export class XYChart {
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(canvas);
   }
-  /** data: {x: Float32Array, y: Float32Array, sticks: [{x, height, label, sourceIndex}], xLabel, yLabel, reversed, line: bool, markers: bool} */
+  /**
+   * data: {x: Float32Array, y: Float32Array, sticks: [{x, height, label, sourceIndex}], xLabel, yLabel, reversed, line: bool, markers: bool,
+   *   yRange: [lo, hi] (fixed y axis, e.g. [0, 105] for %T), baseline: y the sticks and the fill start from (default 0; 100 for %T),
+   *   sticksAbsolute: bool (draw stick heights as given instead of scaling them to the curve maximum)}
+   */
   set(data) { this.data = data; this.draw(); }
   select(sourceIndex) { this.selected = sourceIndex; this.draw(); }
 
@@ -75,7 +79,10 @@ export class XYChart {
     const text = css('--text-2'), grid = css('--border'), accent = css('--accent');
     if (!d) { ctx.fillStyle = text; ctx.font = '12px "Segoe UI"'; ctx.textAlign = 'center'; ctx.fillText('No data', w / 2, h / 2); return; }
     const b = this.bounds(), lay = this.layout();
-    const yScale = (y, max) => lay.T + lay.ph - ((y - Math.min(0, b.ymin)) / (max - Math.min(0, b.ymin))) * lay.ph;
+    const hasCurve = !!(d.x && d.x.length);
+    const y0 = d.yRange ? d.yRange[0] : Math.min(0, b.ymin);
+    const base = d.baseline ?? 0;
+    const yScale = (y, max) => lay.T + lay.ph - ((y - y0) / (max - y0)) * lay.ph;
     // grid + axes
     ctx.font = '11px "Segoe UI", sans-serif'; ctx.fillStyle = text; ctx.strokeStyle = grid; ctx.lineWidth = 1;
     const step = niceStep(b.xmax - b.xmin, Math.max(3, Math.floor(lay.pw / 80)));
@@ -85,10 +92,10 @@ export class XYChart {
       ctx.beginPath(); ctx.moveTo(px + 0.5, lay.T); ctx.lineTo(px + 0.5, lay.T + lay.ph); ctx.stroke();
       ctx.fillText(Math.abs(step) >= 1 ? x.toFixed(0) : x.toFixed(Math.max(0, -Math.floor(Math.log10(step)))), px, lay.T + lay.ph + 4);
     }
-    const ymaxCurve = d.y && d.y.length ? b.ymax * 1.08 : b.stickMax * 1.08;
-    const ystep = niceStep(ymaxCurve - Math.min(0, b.ymin), 4);
+    const ymaxCurve = d.yRange ? d.yRange[1] : hasCurve ? b.ymax * 1.08 : b.stickMax * 1.08;
+    const ystep = niceStep(ymaxCurve - y0, 4);
     ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-    for (let y = Math.ceil(Math.min(0, b.ymin) / ystep) * ystep; y <= ymaxCurve; y += ystep) {
+    for (let y = Math.ceil(y0 / ystep) * ystep; y <= ymaxCurve + 1e-9; y += ystep) {
       const py = yScale(y, ymaxCurve);
       ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(lay.L, py + 0.5); ctx.lineTo(lay.L + lay.pw, py + 0.5); ctx.stroke(); ctx.globalAlpha = 1;
       ctx.fillText(Math.abs(ystep) >= 1 ? y.toFixed(0) : y.toPrecision(2), lay.L - 6, py);
@@ -99,15 +106,15 @@ export class XYChart {
     ctx.save(); ctx.beginPath(); ctx.rect(lay.L, lay.T, lay.pw, lay.ph); ctx.clip();
     // sticks (scaled to the curve height so both read together)
     const sticks = d.sticks || [];
-    const stickScale = d.y && d.y.length ? (b.ymax / b.stickMax) : 1;
+    const stickScale = hasCurve && !d.sticksAbsolute ? (b.ymax / b.stickMax) : 1;
     for (const s of sticks) {
       const px = this.xToPx(s.x, b, lay);
       const on = this.selected != null && s.sourceIndex === this.selected;
       ctx.strokeStyle = on ? css('--err') : (d.stickColor || 'rgba(120,126,138,0.85)'); ctx.lineWidth = on ? 2.5 : 1.3;
-      ctx.beginPath(); ctx.moveTo(px, yScale(0, ymaxCurve)); ctx.lineTo(px, yScale(s.height * stickScale, ymaxCurve)); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px, yScale(base, ymaxCurve)); ctx.lineTo(px, yScale(s.height * stickScale, ymaxCurve)); ctx.stroke();
     }
     // curve
-    if (d.x && d.x.length) {
+    if (hasCurve) {
       ctx.strokeStyle = accent; ctx.lineWidth = 1.8; ctx.beginPath();
       for (let i = 0; i < d.x.length; i++) { const px = this.xToPx(d.x[i], b, lay), py = yScale(d.y[i], ymaxCurve); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
       ctx.stroke();
@@ -120,7 +127,7 @@ export class XYChart {
         }
       }
       if (!d.line) {
-        ctx.globalAlpha = 0.12; ctx.fillStyle = accent; ctx.lineTo(this.xToPx(d.x[d.x.length - 1], b, lay), yScale(0, ymaxCurve)); ctx.lineTo(this.xToPx(d.x[0], b, lay), yScale(0, ymaxCurve)); ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+        ctx.globalAlpha = 0.12; ctx.fillStyle = accent; ctx.lineTo(this.xToPx(d.x[d.x.length - 1], b, lay), yScale(base, ymaxCurve)); ctx.lineTo(this.xToPx(d.x[0], b, lay), yScale(base, ymaxCurve)); ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
       }
     }
     ctx.restore();

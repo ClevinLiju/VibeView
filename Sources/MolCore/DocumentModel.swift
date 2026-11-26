@@ -39,9 +39,29 @@ public struct MoleculeDocumentModel: Sendable {
 
     public mutating func markSaved() { savedRevision = revision }
 
+    /// About this many bytes of undo snapshots are kept; only very large structures reach it, and they still keep
+    /// at least `undoMinimumSteps` steps (or `undoLimit`, when lower).
+    public var undoByteBudget: Int = 256 << 20 { didSet { trim() } }
+    public static let undoMinimumSteps = 20
+
+    /// Upper estimate of one snapshot's storage (unchanged arrays are shared copy-on-write between snapshots).
+    public static func snapshotBytes(_ m: Molecule) -> Int {
+        m.atoms.count * MemoryLayout<Atom>.stride + m.bonds.count * MemoryLayout<Bond>.stride
+    }
+
     private mutating func trim() {
         let lim = max(undoLimit, 0)
         if undoStack.count > lim { undoStack.removeFirst(undoStack.count - lim) }
+        let keep = min(Self.undoMinimumSteps, lim)
+        guard undoStack.count > keep else { return }
+        var total = 0
+        for s in undoStack { total += Self.snapshotBytes(s.molecule) }
+        var drop = 0
+        while total > undoByteBudget && undoStack.count - drop > keep {
+            total -= Self.snapshotBytes(undoStack[drop].molecule)
+            drop += 1
+        }
+        if drop > 0 { undoStack.removeFirst(drop) }
     }
 
     private func snapshot(_ name: String) -> Snapshot {

@@ -16,7 +16,7 @@ public enum ComputeError: Error, LocalizedError, Sendable, Equatable {
             #if os(Windows)
             let hint: String
             switch p {
-            case "xtb": hint = " Install it with `conda install -c conda-forge xtb` or put xtb.exe on PATH."
+            case "xtb": hint = " Install it with Calculate > Install xtb…, with `conda install -c conda-forge xtb`, or put xtb.exe on PATH."
             case "mpiexec":
                 hint = " Parallel ORCA (nprocs > 1) on Windows needs Microsoft MPI (MS-MPI): install msmpisetup.exe "
                     + "from Microsoft, or run with 1 processor."

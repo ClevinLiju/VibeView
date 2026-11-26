@@ -62,6 +62,7 @@ main/            Electron main process
   engine.js      spawns the engine, matches responses by id, timeouts, cancel, restart, stderr log
   menu.js        File / Edit / View / Build / Calculate / Help menus
   preload.js     the narrow window.vibeview bridge (contextIsolation on, nodeIntegration off, sandbox on)
+  xtb-install.js Calculate > Install xtb…: downloads the official xtb Windows build (SHA-256 checked) to %APPDATA%\VibeView\xtb
 renderer/
   index.html, styles.css
   src/main.js        entry point and the smoke test

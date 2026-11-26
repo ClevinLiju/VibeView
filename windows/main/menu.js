@@ -99,6 +99,7 @@ function buildMenu({ send, recent, openPath, clearRecent, logDir, dev }) {
         { type: 'separator' },
         c('&Job Log', 'calc.jobs', 'Ctrl+Alt+J'),
         c('Program &Locations…', 'calc.programs'),
+        c('&Install xtb…', 'calc.installXtb'),
         c('Point &Group', 'analysis.symmetry'),
       ],
     },

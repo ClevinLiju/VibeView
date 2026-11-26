@@ -775,7 +775,7 @@ export class App {
   /** ViewChange from console commands. */
   applyViewChange(v) {
     const vp = this.viewport; const d = this.active;
-    const styleMap = { ball: 'ballAndStick', stick: 'tube', spacefill: 'spaceFilling', wire: 'wireframe', ballAndStick: 'ballAndStick', tube: 'tube', spaceFilling: 'spaceFilling', wireframe: 'wireframe' };
+    const styleMap = { ball: 'ballAndStick', stick: 'tube', spacefill: 'spaceFilling', wire: 'wireframe', cartoon: 'cartoon', ballAndStick: 'ballAndStick', tube: 'tube', spaceFilling: 'spaceFilling', wireframe: 'wireframe' };
     const hex = (c) => '#' + c.slice(0, 3).map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, '0')).join('');
     const patch = {};
     if (v.style && styleMap[v.style]) patch.style = styleMap[v.style];
@@ -802,7 +802,12 @@ export class App {
     else if (v.fit) vp.fit();
     if (v.orbital && v.orbital.index != null) { this.pendingOrbital = v.orbital; this.emit('results-tab', 'orbitals'); this.emit('show-orbital', v.orbital); }
     if (v.vibration) { this.emit('results-tab', 'vibrations'); this.emit('show-mode', v.vibration.mode); }
-    if (v.exportImage?.path) {
+    if (v.exportImage?.token) {
+      // Console `export image|gif|mp4|csv` (export.js runConsoleExport; the engine writes the bytes).
+      import('./export.js').then((m) => m.runConsoleExport(this, v.exportImage))
+        .then((msg) => { this.status(msg); toast(msg, { kind: 'ok' }); })
+        .catch((e) => this.error('Export failed', e));
+    } else if (v.exportImage?.path) {
       const w = v.exportImage.width || Math.round(vp.width * 2), h2 = v.exportImage.height || Math.round((w * vp.height) / vp.width);
       const url = vp.exportPNG(w, h2);
       api.writeFileBase64(v.exportImage.path, url.split(',')[1]).then(() => this.status(`Saved ${v.exportImage.path}`));

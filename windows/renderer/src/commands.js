@@ -3,7 +3,7 @@ import { api, request } from './api.js';
 import { openPalette } from './palette.js';
 import { openPeriodicTable } from './sidebar.js';
 import { detectSymmetry } from './inspector.js';
-import { openLookup, openCalcSetup, openXTBSettings, runXTB, defaultXTBSettings, openExportImage, openJobLog, openChargeDialog, openAbout, openShortcuts, openProgramPaths } from './dialogs.js';
+import { openLookup, openCalcSetup, openXTBSettings, runXTB, defaultXTBSettings, openExportImage, openJobLog, openChargeDialog, openAbout, openShortcuts, openProgramPaths, openInstallXtb } from './dialogs.js';
 import { toast } from './dom.js';
 import { openZMatrixDialog, showZMatrixTab } from './zmatrix.js';
 import { openExport } from './export.js';
@@ -17,6 +17,7 @@ export const CATALOG = [
   { id: 'file.exportImage', title: 'Export image…', category: 'File', key: 'Ctrl+E', keywords: 'png screenshot picture' },
   { id: 'file.export', title: 'Export… (structure formats, image, animation, data)', category: 'File', key: 'Ctrl+Shift+E', keywords: 'xyz sdf pdb mol cml molden cube gjf inp csv jpeg' },
   { id: 'file.exportAnimation', title: 'Export animation (GIF / video)…', category: 'File', keywords: 'gif webm mp4 movie trajectory vibration spin' },
+  { id: 'file.exportConsoleHelp', title: 'Export from the console (export image|gif|mp4|csv|structure)…', category: 'File', keywords: 'command line tiff dpi transparent publication 4k' },
   { id: 'file.close', title: 'Close document', category: 'File', key: 'Ctrl+W' },
   { id: 'edit.undo', title: 'Undo', category: 'Edit', key: 'Ctrl+Z' },
   { id: 'edit.redo', title: 'Redo', category: 'Edit', key: 'Ctrl+Y' },
@@ -41,6 +42,7 @@ export const CATALOG = [
   { id: 'view.style.tube', title: 'Tube', category: 'View', key: 'Alt+2', keywords: 'licorice stick' },
   { id: 'view.style.wireframe', title: 'Wireframe', category: 'View', key: 'Alt+3' },
   { id: 'view.style.spaceFilling', title: 'Space filling', category: 'View', key: 'Alt+4', keywords: 'cpk vdw' },
+  { id: 'view.style.cartoon', title: 'Cartoon (protein ribbons)', category: 'View', keywords: 'protein ribbon helix sheet secondary structure' },
   { id: 'view.fit', title: 'Fit to window', category: 'View', key: 'Ctrl+0' },
   { id: 'view.axis.x', title: 'View along X', category: 'View' },
   { id: 'view.axis.y', title: 'View along Y', category: 'View' },
@@ -69,6 +71,7 @@ export const CATALOG = [
   { id: 'calc.setup', title: 'Calculation setup…', category: 'Calculate', key: 'Ctrl+Alt+C', keywords: 'orca gaussian qchem input' },
   { id: 'calc.jobs', title: 'Job log', category: 'Calculate', key: 'Ctrl+Alt+J' },
   { id: 'calc.programs', title: 'Program locations…', category: 'Calculate', keywords: 'xtb orca gaussian qchem path exe settings' },
+  { id: 'calc.installXtb', title: 'Install xtb…', category: 'Calculate', keywords: 'download xtb grimme gfn' },
   { id: 'analysis.symmetry', title: 'Detect point group', category: 'Analysis', keywords: 'symmetry' },
   { id: 'help.shortcuts', title: 'Keyboard shortcuts', category: 'Help', key: 'F1' },
   { id: 'help.logs', title: 'Open logs folder', category: 'Help' },
@@ -91,6 +94,7 @@ export function installCommands(app) {
     'file.exportImage': () => openExportImage(app),
     'file.export': (arg) => openExport(app, arg?.tab || 'structure', arg || {}),
     'file.exportAnimation': (arg) => openExport(app, 'animation', arg || {}),
+    'file.exportConsoleHelp': () => { if (!app.settings.panels.console) togglePanel('console'); app.consoleRun?.('help export'); },
     'file.close': () => app.closeDoc(),
     'app.quit-request': () => app.quitRequest(),
     'edit.undo': () => (isEditable(document.activeElement) ? document.execCommand('undo') : app.undo()),
@@ -121,6 +125,7 @@ export function installCommands(app) {
     'calc.setup': () => openCalcSetup(app),
     'calc.jobs': (arg) => openJobLog(app, arg),
     'calc.programs': () => openProgramPaths(app),
+    'calc.installXtb': () => openInstallXtb(app),
     'analysis.symmetry': () => detectSymmetry(app),
     'help.shortcuts': () => openShortcuts(),
     'help.logs': () => api.openLogsFolder(),

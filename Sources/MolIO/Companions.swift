@@ -138,6 +138,8 @@ public enum CompanionFiles {
             func add(_ used: Bool, _ note: String) { report.append(CompanionFile(url: u, role: role, used: used, note: note)) }
             switch role {
             case .binary:
+                // Binary files sort last, so a readable wavefunction companion has already been merged by now.
+                if loaded.wavefunction != nil { add(false, "not needed: orbitals already loaded from another file"); continue }
                 let isChk = u.pathExtension.lowercased() == "chk"
                 let stem = baseName(of: u.lastPathComponent)
                 add(false, isChk ? "binary checkpoint; run `formchk \(u.lastPathComponent) \(stem).fchk` to view orbitals"

@@ -192,12 +192,60 @@ extension Engine {
         return ["modes": .array(out), "geometry": JSONShapes.molecule(geom)]
     }
 
+    /// The line shape requested by `analysis.spectrum`: `shape` is "gaussian" | "lorentzian" | "voigt" | "pseudoVoigt" |
+    /// "sticks"; `fwhm` (Gaussian, Lorentzian, pseudo-Voigt), `gaussianFWHM` + `lorentzianFWHM` (Voigt; each defaults to
+    /// fwhm / 2) and `eta` (pseudo-Voigt Lorentzian fraction, default 0.5). Widths are FWHM in the broadening unit.
+    private func spectrumProfile(_ p: Params, defaultKind: LineShapeKind, defaultFWHM: Double) throws -> LineShapeProfile {
+        var kind = defaultKind
+        if let raw = p.optString("shape") {
+            switch raw.lowercased().replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "_", with: "") {
+            case "gaussian": kind = .gaussian
+            case "lorentzian": kind = .lorentzian
+            case "voigt": kind = .voigt
+            case "pseudovoigt": kind = .pseudoVoigt
+            case "sticks", "sticksonly", "none": kind = .sticks
+            default: throw RPCError.badRequest("shape must be gaussian, lorentzian, voigt, pseudoVoigt or sticks")
+            }
+        }
+        let fwhm = p.optDouble("fwhm") ?? defaultFWHM
+        let profile = LineShapeProfile(kind: kind, fwhm: fwhm, gaussianFWHM: p.optDouble("gaussianFWHM"),
+                                       lorentzianFWHM: p.optDouble("lorentzianFWHM"), eta: p.optDouble("eta") ?? 0.5)
+        switch kind {
+        case .gaussian, .lorentzian, .pseudoVoigt:
+            guard fwhm > 0 else { throw RPCError.badRequest("fwhm must be positive") }
+        case .voigt:
+            guard profile.gaussianFWHM >= 0, profile.lorentzianFWHM >= 0, profile.gaussianFWHM + profile.lorentzianFWHM > 0
+            else { throw RPCError.badRequest("gaussianFWHM and lorentzianFWHM must be non-negative and not both zero") }
+            return .voigt(gaussianFWHM: profile.gaussianFWHM, lorentzianFWHM: profile.lorentzianFWHM)
+        case .sticks: break
+        }
+        return profile
+    }
+
+    /// Spectrum JSON plus the line shape actually used: `shape`, effective `fwhm` (the Voigt band's own FWHM),
+    /// the Voigt / pseudo-Voigt parameters, `normalization` ("height" | "area") and `transmittance` (+ `baseline` 100).
+    private func spectrumJSON(_ s: Spectrum, profile: LineShapeProfile, normalization: String, transmittance: Bool = false) -> JSON {
+        var j = JSONShapes.spectrum(s)
+        if case .object(var o) = j {
+            o["shape"] = .string(profile.kind.rawValue)
+            o["fwhm"] = .number(profile.effectiveFWHM)
+            if profile.kind == .voigt {
+                o["gaussianFWHM"] = .number(profile.gaussianFWHM); o["lorentzianFWHM"] = .number(profile.lorentzianFWHM)
+            }
+            if profile.kind == .pseudoVoigt { o["eta"] = .number(profile.eta) }
+            o["normalization"] = .string(normalization)
+            o["transmittance"] = .bool(transmittance)
+            if transmittance { o["baseline"] = .number(100) }
+            j = .object(o)
+        }
+        return j
+    }
+
     func analysisSpectrum(_ p: Params) async throws -> JSON {
         let d = try await store.get(try p.docId())
         let kind = try p.string("kind")
         let fwhm = p.optDouble("fwhm")
         let scale = p.optDouble("scale") ?? 1
-        let shape = p.optString("shape").flatMap(LineShape.init(rawValue:))
         switch kind {
         case "ir", "raman":
             let modes = d.result?.normalModes ?? []
@@ -205,22 +253,37 @@ extension Engine {
             let lo = p.optDouble("xMin") ?? 0, hi = p.optDouble("xMax") ?? 4000
             guard lo < hi else { throw RPCError.badRequest("xMin must be below xMax") }
             let n = max(2, min(p.optInt("points") ?? 2000, 100_000))
+            let profile = try spectrumProfile(p, defaultKind: .lorentzian, defaultFWHM: 10)
             if kind == "ir" {
-                return JSONShapes.spectrum(SpectrumBuilder.ir(modes: modes, scale: scale, fwhm: fwhm ?? 10, shape: shape ?? .lorentzian,
-                                                              range: lo...hi, pointCount: n))
+                let s = SpectrumBuilder.ir(modes: modes, scale: scale, profile: profile, range: lo...hi, pointCount: n)
+                // %Transmittance on request (Beer–Lambert, strongest band at `minimumPercent`, default 15 %T).
+                if p.optBool("transmittance") == true {
+                    let t = TransmittanceScale.transmittance(s, minimumPercent: p.optDouble("minimumPercent") ?? 15)
+                    return spectrumJSON(t, profile: profile, normalization: "height", transmittance: true)
+                }
+                return spectrumJSON(s, profile: profile, normalization: "height")
             }
             guard modes.contains(where: { $0.ramanActivity != nil }) else { throw RPCError.notFound("this document has no Raman activities") }
-            return JSONShapes.spectrum(SpectrumBuilder.raman(modes: modes, scale: scale, fwhm: fwhm ?? 10, shape: shape ?? .lorentzian,
-                                                             range: lo...hi, pointCount: n, excitationNM: p.optDouble("excitationNM")))
+            return spectrumJSON(SpectrumBuilder.raman(modes: modes, scale: scale, profile: profile, range: lo...hi, pointCount: n,
+                                                      excitationNM: p.optDouble("excitationNM")),
+                                profile: profile, normalization: "height")
         case "uvvis":
             let states = d.result?.excitedStates ?? []
             guard !states.isEmpty else { throw RPCError.notFound("this document has no excited states") }
             let axis = SpectrumAxis(rawValue: p.optString("axis") ?? "wavelengthNM") ?? .wavelengthNM
             var range: ClosedRange<Double>? = nil
             if let lo = p.optDouble("xMin"), let hi = p.optDouble("xMax"), lo < hi { range = lo...hi }
-            return JSONShapes.spectrum(SpectrumBuilder.uvVis(states: states, fwhmEV: fwhm ?? 0.3, shape: shape ?? .gaussian,
-                                                             axis: axis, range: range, pointCount: max(2, min(p.optInt("points") ?? 1000, 100_000))))
+            let profile = try spectrumProfile(p, defaultKind: .gaussian, defaultFWHM: 0.3)   // widths in eV
+            return spectrumJSON(SpectrumBuilder.uvVis(states: states, profile: profile, axis: axis, range: range,
+                                                      pointCount: max(2, min(p.optInt("points") ?? 1000, 100_000))),
+                                profile: profile, normalization: "area")
         case "dos":
+            // The density of states keeps the two-shape broadening (Gaussian or Lorentzian).
+            var shape: LineShape? = nil
+            if let raw = p.optString("shape") {
+                guard let s = LineShape(rawValue: raw.lowercased()) else { throw RPCError.badRequest("dos shape must be gaussian or lorentzian") }
+                shape = s
+            }
             var range: ClosedRange<Double>? = nil
             if let lo = p.optDouble("xMin"), let hi = p.optDouble("xMax"), lo < hi { range = lo...hi }
             let n = max(2, min(p.optInt("points") ?? 1500, 100_000))

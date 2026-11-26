@@ -201,16 +201,13 @@ public struct OrbitalEvaluator: Sendable {
         let grid = grid()
         let me = self
         // `Task.isCancelled` is always false on the concurrentPerform worker threads (no current task), so
-        // cancellation is carried by a shared flag set from the cancellation handler.
-        let flag = EvaluatorCancelFlag()
+        // cancellation is carried by a shared flag (see runCancellableWork).
         // `grid` (GridSpec) holds a SIMD3<Double>, so it goes in through `AsyncCapture` (Windows codegen bug).
         let input = AsyncCapture((me, field, grid))
-        let task = Task.detached(priority: .userInitiated) { () -> VolumeGrid? in
+        guard let result = await runCancellableWork({ isCancelled -> VolumeGrid? in
             let (me, field, grid) = input.value
-            return me.evaluate(field, on: grid, isCancelled: { flag.isSet })
-        }
-        let result = await withTaskCancellationHandler { await task.value } onCancel: { flag.set(); task.cancel() }
-        guard let result else { throw CancellationError() }
+            return me.evaluate(field, on: grid, isCancelled: isCancelled)
+        }) else { throw CancellationError() }
         return result
     }
 

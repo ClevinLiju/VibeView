@@ -1,6 +1,21 @@
 import Foundation
 
 public enum ProgramLocator {
+    /// Where VibeView keeps helper programs it installed itself, such as xtb (`<this>/xtb/bin`):
+    /// `%APPDATA%\VibeView` on Windows (the Electron app's data folder), `~/Library/Application Support/VibeView`
+    /// on macOS. `managedDirectoryOverride`, then `VIBEVIEW_MANAGED_DIR`, override it (tests, a custom data folder).
+    nonisolated(unsafe) public static var managedDirectoryOverride: URL?
+    public static var managedDirectory: URL {
+        if let o = managedDirectoryOverride { return o }
+        if let o = environmentValue("VIBEVIEW_MANAGED_DIR"), !o.isEmpty { return URL(fileURLWithPath: o, isDirectory: true) }
+        #if os(Windows)
+        let appData = environmentValue("APPDATA") ?? (NSHomeDirectory() + "\\AppData\\Roaming")
+        return URL(fileURLWithPath: appData, isDirectory: true).appendingPathComponent("VibeView", isDirectory: true)
+        #else
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/VibeView")
+        #endif
+    }
+
     public static func searchDirectories(for name: String = "") -> [String] {
         #if os(Windows)
         var seenWin = Set<String>()
@@ -19,6 +34,8 @@ public enum ProgramLocator {
             dirs.append("\(home)/\(root)/bin")
         }
         dirs += ["/opt/homebrew/bin", "/usr/local/bin"]
+        // Programs VibeView installed itself (xtb).
+        dirs.append(ProgramLocator.managedDirectory.appendingPathComponent("xtb/bin").path)
         var seen = Set<String>()
         return dirs.filter { !$0.isEmpty && seen.insert($0).inserted }
         #endif
@@ -48,7 +65,10 @@ public enum ProgramLocator {
 }
 
 #if os(Windows)
-/// `taskkill /PID <pid> /T /F`: terminates a process and all its descendants. Waits at most 5 s.
+import WinSDK
+
+/// `taskkill /PID <pid> /T /F`: terminates a process and all its descendants that can still be found through
+/// their parent process id. Waits at most 5 s. The fallback when the process could not be put in a job object.
 func killProcessTreeWindows(pid: Int32) {
     let root = ProgramLocator.environmentValue("SystemRoot") ?? "C:\\Windows"
     let tk = Process()
@@ -61,6 +81,58 @@ func killProcessTreeWindows(pid: Int32) {
     tk.terminationHandler = { _ in done.signal() }
     do { try tk.run() } catch { return }
     _ = done.wait(timeout: .now() + 5)
+}
+
+/// A Windows job object that holds a started program and, automatically, every process it starts (Gaussian's
+/// l*.exe links, ORCA's orca_* helpers, mpiexec/smpd and the MPI ranks), even after their parent has exited, which
+/// `taskkill /T` can no longer follow. `terminate()` stops the whole tree at once; closing the job (after the run,
+/// or when the engine itself dies) kills whatever is left (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).
+///
+/// It also keeps a handle to the started process: Foundation's `Process` on Windows reports the exit only once the
+/// output pipes are closed, so a helper that outlives the program (and holds the pipes) would hide the exit.
+final class WindowsJobObject: @unchecked Sendable {
+    private let lock = NSLock()
+    private var job: HANDLE?
+    private let process: HANDLE
+
+    /// Creates a job and assigns process `pid` to it; nil when that fails (e.g. a parent job forbids nesting).
+    init?(assigning pid: Int32) {
+        guard let j = CreateJobObjectW(nil, nil) else { return nil }
+        var info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = DWORD(0x0000_2000)          // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        let set = SetInformationJobObject(j, JobObjectExtendedLimitInformation, &info,
+                                          DWORD(MemoryLayout<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>.size))
+        // PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+        let access = DWORD(0x0100 | 0x0001 | 0x1000 | 0x0010_0000)
+        guard set, let proc = OpenProcess(access, false, DWORD(bitPattern: pid)) else { _ = CloseHandle(j); return nil }
+        guard AssignProcessToJobObject(j, proc) else { _ = CloseHandle(proc); _ = CloseHandle(j); return nil }
+        job = j
+        process = proc
+    }
+
+    /// Blocks until the started process itself has exited (its helpers may still run) and returns its exit code.
+    func waitForProcessExit() -> Int32 {
+        _ = WaitForSingleObject(process, INFINITE)
+        var code: DWORD = 0
+        return GetExitCodeProcess(process, &code) ? Int32(bitPattern: UInt32(code)) : -1
+    }
+
+    /// Terminates every process in the job.
+    func terminate() {
+        lock.lock(); defer { lock.unlock() }
+        if let j = job { _ = TerminateJobObject(j, 1) }
+    }
+
+    /// Closes the job; processes still in it are killed.
+    func close() {
+        lock.lock(); defer { lock.unlock() }
+        if let j = job { _ = CloseHandle(j); job = nil }
+    }
+
+    deinit {
+        if let j = job { _ = CloseHandle(j) }
+        _ = CloseHandle(process)
+    }
 }
 #endif
 
@@ -75,6 +147,11 @@ public enum ProgramRunner {
         let lock = NSLock()
         var out = Data(), err = Data()
         var cancelled = false, timedOut = false
+        #if os(Windows)
+        var job: WindowsJobObject?
+        /// Exit code seen through the job's process handle (Foundation may not have noticed the exit yet).
+        var exitCode: Int32?
+        #endif
         func withLock<T>(_ f: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return f() }
     }
 
@@ -113,17 +190,22 @@ public enum ProgramRunner {
         process.standardInput = inPipe
         let state = State()
 
+        // Stops the whole process tree: Gaussian, ORCA (orca_* helpers, mpiexec and the MPI ranks) and shells start
+        // children that inherit the output pipes, so stopping only the top process would leave them running.
         func kill(_ p: Process) {
-            guard p.isRunning else { return }
             #if os(Windows)
-            // terminate() is TerminateProcess on the child only; MPI ranks / helper processes it started would
-            // survive (and keep our pipes open). Kill the whole tree with taskkill first, then fall back.
+            // The job object holds every descendant, also those whose parent already exited. Without one (it could not
+            // be created), taskkill /T follows the parent ids. TerminateProcess on the child alone is the last resort.
+            let job = state.withLock { state.job }
+            if let job { job.terminate() }
+            guard p.isRunning else { return }
             let pid = p.processIdentifier
             DispatchQueue.global().async {
-                killProcessTreeWindows(pid: pid)
+                if job == nil || p.isRunning { killProcessTreeWindows(pid: pid) }
                 if p.isRunning { p.terminate() }
             }
             #else
+            guard p.isRunning else { return }
             p.terminate()
             let pid = p.processIdentifier
             DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
@@ -156,6 +238,18 @@ public enum ProgramRunner {
                     cont.resume(throwing: ComputeError.processFailed(code: -1, stderr: error.localizedDescription))
                     return
                 }
+                #if os(Windows)
+                if let job = WindowsJobObject(assigning: process.processIdentifier) {
+                    state.withLock { state.job = job }
+                    DispatchQueue.global().async {
+                        let code = job.waitForProcessExit()
+                        state.withLock { state.exitCode = code }
+                        exited.signal()
+                    }
+                } else if process.isRunning {
+                    FileHandle.standardError.write(Data("ProgramRunner: no job object for pid \(process.processIdentifier); cancel falls back to taskkill /T\n".utf8))
+                }
+                #endif
                 onStart?()
                 reader(outPipe, isOut: true)
                 reader(errPipe, isOut: false)
@@ -172,11 +266,24 @@ public enum ProgramRunner {
                 if Task.isCancelled { state.withLock { state.cancelled = true }; kill(process) }
                 DispatchQueue.global().async {
                     exited.wait()
-                    group.wait()
+                    #if os(Windows)
+                    // Helpers the program left behind would keep the output pipes open: the job takes them down.
+                    state.withLock { state.job }?.close()
+                    #endif
+                    // Output normally ends when the process exits. A stopped run (or a leftover grandchild that
+                    // still holds the pipe) must not hold the result back indefinitely.
+                    let stopped = state.withLock { state.cancelled || state.timedOut }
+                    _ = group.wait(timeout: .now() + (stopped ? 3 : 30))
                     let (o, e, c, t) = state.withLock { (state.out, state.err, state.cancelled, state.timedOut) }
                     if c { cont.resume(throwing: ComputeError.cancelled); return }
                     if t { cont.resume(throwing: ComputeError.timeout); return }
-                    cont.resume(returning: ProcessOutput(exitCode: process.terminationStatus,
+                    #if os(Windows)
+                    // terminationStatus traps while Foundation still counts the process as running.
+                    let code = state.withLock { state.exitCode } ?? (process.isRunning ? -1 : process.terminationStatus)
+                    #else
+                    let code = process.terminationStatus
+                    #endif
+                    cont.resume(returning: ProcessOutput(exitCode: code,
                                                          stdout: String(decoding: o, as: UTF8.self),
                                                          stderr: String(decoding: e, as: UTF8.self)))
                 }

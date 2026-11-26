@@ -30,7 +30,14 @@ public enum CommandCompleter {
         case "cd": return paths(partial, cwd, dirsOnly: true)
         case "ls": return paths(partial, cwd)
         case "save": return n == 1 ? paths(partial, cwd) : filter(["xyz", "pdb", "mol", "sdf", "cml", "gaussianInput", "orcaInput", "qchemInput"])
-        case "export": return n == 1 ? filter(["image"]) : (n == 2 ? paths(partial, cwd) : [])
+        case "export":
+            if n == 1 { return filter(["image", "gif", "mp4", "mov", "csv", "structure"]) }
+            if n == 2 { return paths(partial, cwd) }
+            let kind = words[1].lowercased()
+            if n == 3 && ["gif", "mp4", "mov"].contains(kind) { return filter(["vibration", "trajectory", "spin"]) }
+            if n == 3 && kind == "csv" { return filter(CSVTableName.allCases.map(\.rawValue)) }
+            if n == 3 && kind == "structure" { return filter(["all", "selected"]) }
+            return []
         case "style": return n == 1 ? filter(DisplayStyleName.allCases.map(\.rawValue)) : []
         case "measure": return n == 1 ? filter(["distance", "angle", "dihedral"]) : []
         case "view": return n == 1 ? filter(["x", "y", "z"]) : []

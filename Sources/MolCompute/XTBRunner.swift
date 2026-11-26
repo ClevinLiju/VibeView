@@ -76,6 +76,25 @@ public struct XTBRunner: Sendable {
         throw ComputeError.notInstalled(program: "xtb", searched: searchDirectories ?? ProgramLocator.searchDirectories(for: "xtb"))
     }
 
+    /// The settings' environment plus `XTBPATH` when the executable ships its parameter files beside it
+    /// (`<prefix>/bin/xtb[.exe]` with `<prefix>/share/xtb`, the layout of the official release archives, and of the
+    /// copy VibeView installs), unless the user already set one.
+    public static func environment(for exe: URL, settings: XTBSettings,
+                                   base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = settings.environment(base: base)
+        if let share = parameterDirectory(for: exe), ProgramLocator.environmentValue("XTBPATH", in: env) == nil {
+            ProgramLocator.setEnvironmentValue(ProgramLocator.nativePath(share), forKey: "XTBPATH", in: &env)
+        }
+        return env
+    }
+
+    /// `<prefix>/share/xtb` when it holds `param_gfn2-xtb.txt` for `<prefix>/bin/xtb`.
+    public static func parameterDirectory(for exe: URL) -> URL? {
+        let share = exe.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("share", isDirectory: true).appendingPathComponent("xtb", isDirectory: true)
+        return FileManager.default.fileExists(atPath: share.appendingPathComponent("param_gfn2-xtb.txt").path) ? share : nil
+    }
+
     static func newRunDirectory() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("molscope-xtb-\(UUID().uuidString)")
     }
@@ -98,7 +117,7 @@ public struct XTBRunner: Sendable {
         let cmd = settings.commandLine(molecule: molecule, executable: exe.path)
         let sink = onEvent ?? { _ in }
         let out = try await ProgramRunner.runLogged(
-            executable: exe, arguments: args, workingDirectory: dir, environment: settings.environment(),
+            executable: exe, arguments: args, workingDirectory: dir, environment: Self.environment(for: exe, settings: settings),
             timeout: settings.timeout, throwOnFailure: false,
             tailFiles: settings.task == .singlePoint ? [] : ["xtbopt.log"], stdoutFile: "xtb.out", onEvent: sink)
         let log = out.stdout

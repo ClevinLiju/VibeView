@@ -170,6 +170,25 @@ enum SelfTest {
         let ys = spec["result"]?["yB64"]?.stringValue.flatMap(Binary.decodeFloat32) ?? []
         check("analysis.spectrum ir", ys.count == 2000 && (ys.max() ?? 0) > 50 && spec["result"]?["sticks"]?.arrayValue?.count == 3,
               "\(ys.count) points, max \(ys.max() ?? 0)")
+        // line shapes + %T: every shape answers, Voigt reports its own FWHM, sticks-only has no curve, %T stays in 0…100
+        for shape in ["gaussian", "lorentzian", "voigt", "pseudoVoigt"] {
+            let r = await call("analysis.spectrum", ["docId": .string(mId), "kind": "ir", "shape": .string(shape), "fwhm": 20,
+                                                     "gaussianFWHM": 12, "lorentzianFWHM": 10, "eta": 0.3])
+            let y = r["result"]?["yB64"]?.stringValue.flatMap(Binary.decodeFloat32) ?? []
+            let want = shape == "voigt" ? 0.5346 * 10 + (0.2166 * 100 + 144.0).squareRoot() : 20   // Olivero–Longbothum
+            check("analysis.spectrum shape \(shape)", y.count == 2000 && r["result"]?["shape"]?.stringValue == shape
+                  && abs((r["result"]?["fwhm"]?.doubleValue ?? 0) - want) < 1e-9, err(r))
+        }
+        let sticksOnly = await call("analysis.spectrum", ["docId": .string(mId), "kind": "ir", "shape": "sticks"])
+        check("analysis.spectrum sticks only", sticksOnly["result"]?["pointCount"]?.intValue == 0
+              && sticksOnly["result"]?["sticks"]?.arrayValue?.count == 3, err(sticksOnly))
+        let pt = await call("analysis.spectrum", ["docId": .string(mId), "kind": "ir", "fwhm": 20, "transmittance": true])
+        let ty = pt["result"]?["yB64"]?.stringValue.flatMap(Binary.decodeFloat32) ?? []
+        check("analysis.spectrum transmittance", ty.count == 2000 && (ty.min() ?? 0) > 14.9 && (ty.min() ?? 0) < 16
+              && (ty.max() ?? 0) <= 100 && pt["result"]?["transmittance"]?.boolValue == true
+              && pt["result"]?["yLabel"]?.stringValue == "Transmittance (%)", "min \(ty.min() ?? 0); \(err(pt))")
+        let badShape = await call("analysis.spectrum", ["docId": .string(mId), "kind": "ir", "shape": "triangle"])
+        check("analysis.spectrum bad shape", badShape["error"] != nil)
 
         // orbital surface
         let h2 = await call("doc.openText", ["text": .string(h2Molden), "fileName": "h2.molden"])
@@ -185,6 +204,8 @@ enum SelfTest {
 
         await runFeatures(call: call, check: check, err: err, waterXYZ: waterXYZ)
         await runProtein(call: call, check: check, err: err)
+        await runMisc(call: call, check: check, err: err, waterXYZ: waterXYZ)     // SelfTest+Misc.swift
+        await runJobs(call: call, check: check, err: err, waterXYZ: waterXYZ)     // SelfTest+Jobs.swift
 
         // errors
         let bad = await call("doc.molecule", ["docId": "nope"])

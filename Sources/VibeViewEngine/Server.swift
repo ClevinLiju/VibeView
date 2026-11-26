@@ -226,6 +226,9 @@ final class Engine: @unchecked Sendable {
         case "calc.cancel": return try await calcCancel(p)
         case "xtb.run": return try await xtbRun(p)
         case "jobs.list": return await jobs.list()
+        case "calc.preflight": return try await calcPreflight(p)       // Methods+Jobs.swift
+        case "job.files": return try await jobFiles(p)
+        case "job.readFile": return try await jobReadFile(p)
         // lookup
         case "lookup.suggest": return try await lookupSuggest(p)
         case "lookup.structure": return try await lookupStructure(p)
@@ -234,6 +237,7 @@ final class Engine: @unchecked Sendable {
         // console
         case "command.execute": return try await commandExecute(p)
         case "command.complete": return try await commandComplete(p)
+        case "command.writeExport": return try await commandWriteExport(p)   // Methods+ConsoleExport.swift
         // sessions
         case "session.save": return try await sessionSave(p)
         case "session.load": return try await sessionLoad(p)

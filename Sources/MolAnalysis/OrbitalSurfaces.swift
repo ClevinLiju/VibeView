@@ -282,16 +282,31 @@ public actor OrbitalSurfaceService {
     public let wavefunction: Wavefunction
     let evaluator: OrbitalEvaluator
     let cacheLimit: Int
+    /// Bytes of grid values the cache may hold (a fine grid of a large molecule is tens of MB): least recently
+    /// used grids go first, but the newest always stays.
+    let byteBudget: Int
     private var cache: [Key: VolumeGrid] = [:]
     private var order: [Key] = []
+    public private(set) var cachedBytes = 0
 
-    public init(wavefunction: Wavefunction, cacheLimit: Int = 8) {
+    public init(wavefunction: Wavefunction, cacheLimit: Int = 8, byteBudget: Int = 256 << 20) {
         self.wavefunction = wavefunction
         self.evaluator = OrbitalEvaluator(wavefunction: wavefunction)
         self.cacheLimit = max(1, cacheLimit)
+        self.byteBudget = max(0, byteBudget)
     }
 
-    public func clearCache() { cache.removeAll(); order.removeAll() }
+    public func clearCache() { cache.removeAll(); order.removeAll(); cachedBytes = 0 }
+
+    static func bytes(_ g: VolumeGrid) -> Int { g.values.count * MemoryLayout<Float>.stride }
+
+    private func remember(_ key: Key, _ g: VolumeGrid) {
+        if let old = cache[key] { cachedBytes -= Self.bytes(old); order.removeAll { $0 == key } }
+        cache[key] = g; order.append(key); cachedBytes += Self.bytes(g)
+        while order.count > cacheLimit || (cachedBytes > byteBudget && order.count > 1) {
+            if let old = cache.removeValue(forKey: order.removeFirst()) { cachedBytes -= Self.bytes(old) }
+        }
+    }
 
     private func orbitalSet(_ spin: WavefunctionSurfaces.Spin) -> MOCoefficients { spin == .beta ? (wavefunction.beta ?? wavefunction.alpha) : wavefunction.alpha }
 
@@ -310,17 +325,14 @@ public actor OrbitalSurfaceService {
         let t0 = DispatchTime.now()
         let spec = GridSpec.adaptive(wavefunction, quality: quality)
         let coeffs = Array(set.orbital(orbital))
-        let flag = ManagedAtomicFlag()
         // `spec` holds a SIMD3<Double>, so the inputs go in through `AsyncCapture` (Windows codegen bug).
         let input = AsyncCapture((evaluator, coeffs, spec))
-        let task = Task.detached(priority: .userInitiated) { () -> VolumeGrid? in
+        let result = await runCancellableWork { isCancelled -> VolumeGrid? in
             let (ev, coeffs, spec) = input.value
-            return ev.evaluateOrbitalFast(coeffs, on: spec, isCancelled: { flag.value })
+            return ev.evaluateOrbitalFast(coeffs, on: spec, isCancelled: isCancelled)
         }
-        let result = await withTaskCancellationHandler { await task.value } onCancel: { flag.set() }
         guard let g = result, !Task.isCancelled else { throw CancellationError() }
-        cache[key] = g; order.append(key)
-        while order.count > cacheLimit { cache[order.removeFirst()] = nil }
+        remember(key, g)
         return (g, Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1e9)
     }
 
@@ -330,7 +342,7 @@ public actor OrbitalSurfaceService {
         let (grid, tGrid) = try await gridTimed(orbital: request.orbital, spin: request.spin, quality: request.quality)
         // `grid` (VolumeGrid) holds a SIMD3<Double>, so it goes in through `AsyncCapture` (Windows codegen bug).
         let input = AsyncCapture((grid, request))
-        let task = Task.detached(priority: .userInitiated) { () -> ([IsoSurfaceMesh], Double, Double) in
+        let work = await runCancellableWork { _ -> ([IsoSurfaceMesh], Double, Double)? in
             let (grid, req) = input.value
             let t0 = DispatchTime.now()
             var meshes = MarchingCubes.orbitalLobes(grid: grid, isovalue: req.isovalue)
@@ -342,7 +354,7 @@ public actor OrbitalSurfaceService {
             let t2 = DispatchTime.now()
             return (meshes, Double(t1.uptimeNanoseconds - t0.uptimeNanoseconds) / 1e9, Double(t2.uptimeNanoseconds - t1.uptimeNanoseconds) / 1e9)
         }
-        let (meshes, tMesh, tPost) = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        guard let (meshes, tMesh, tPost) = work else { throw CancellationError() }
         try Task.checkCancellation()
         let occ = request.spin == .beta ? wf.betaElectrons : wf.alpha.occupiedCount
         let perOrbital = (wf.beta != nil || wf.alphaElectrons != wf.betaElectrons) ? 1.0 : 2.0

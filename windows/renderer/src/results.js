@@ -307,6 +307,99 @@ function buildOrbitals(app, d, body) {
   return { dispose() { diagram.ro.disconnect(); off(); } };
 }
 
+// ---------- Spectrum line shapes (shared by IR/Raman and UV-Vis) ----------
+// The engine broadens the sticks (analysis.spectrum `shape`, `fwhm`, `gaussianFWHM`, `lorentzianFWHM`, `eta`,
+// `transmittance`); every width is a FWHM in the panel's broadening unit (cm⁻¹ for vibrations, eV for UV-Vis).
+const LINE_SHAPES = [
+  { value: 'gaussian', label: 'Gaussian' },
+  { value: 'lorentzian', label: 'Lorentzian' },
+  { value: 'voigt', label: 'Voigt' },
+  { value: 'pseudoVoigt', label: 'Pseudo-Voigt' },
+  { value: 'sticks', label: 'Sticks only' },
+];
+/** Per-panel display choice, remembered across documents and sessions (same defaults as the macOS app). */
+const SPECTRUM_DISPLAY = {
+  vibrational: { key: 'vibeview.spectrum.vibrational.display', def: { profile: { kind: 'lorentzian', fwhm: 20, gaussianFWHM: 10, lorentzianFWHM: 10, eta: 0.5 }, transmittance: true } },
+  electronic: { key: 'vibeview.spectrum.electronic.display', def: { profile: { kind: 'gaussian', fwhm: 0.35, gaussianFWHM: 0.25, lorentzianFWHM: 0.15, eta: 0.5 }, transmittance: false } },
+};
+function loadSpectrumDisplay(which) {
+  const { key, def } = SPECTRUM_DISPLAY[which];
+  const out = { profile: { ...def.profile }, transmittance: def.transmittance };
+  try {
+    const s = JSON.parse(localStorage.getItem(key) || 'null');
+    if (s && typeof s === 'object') {
+      const p = s.profile || {};
+      if (LINE_SHAPES.some((o) => o.value === p.kind)) out.profile.kind = p.kind;
+      for (const k of ['fwhm', 'gaussianFWHM', 'lorentzianFWHM']) if (Number.isFinite(p[k]) && p[k] > 0) out.profile[k] = p[k];
+      if (Number.isFinite(p.eta)) out.profile.eta = Math.min(1, Math.max(0, p.eta));
+      if (typeof s.transmittance === 'boolean') out.transmittance = s.transmittance;
+    }
+  } catch { /* corrupt or storage off: defaults */ }
+  return out;
+}
+function saveSpectrumDisplay(which, s) {
+  try { localStorage.setItem(SPECTRUM_DISPLAY[which].key, JSON.stringify(s)); } catch { /* storage off */ }
+}
+/** Olivero–Longbothum Voigt FWHM (0.02 %), the same formula the engine uses. */
+function voigtFWHM(g, l) { return 0.5346 * l + Math.sqrt(0.2166 * l * l + g * g); }
+function effectiveFWHM(p) { return p.kind === 'voigt' ? voigtFWHM(p.gaussianFWHM, p.lorentzianFWHM) : p.kind === 'sticks' ? 0 : p.fwhm; }
+/** analysis.spectrum parameters for a profile. */
+function profileParams(p) {
+  const o = { shape: p.kind, fwhm: p.fwhm };
+  if (p.kind === 'voigt') { o.gaussianFWHM = p.gaussianFWHM; o.lorentzianFWHM = p.lorentzianFWHM; }
+  if (p.kind === 'pseudoVoigt') o.eta = p.eta;
+  return o;
+}
+/** Runs `fn` at most once at a time; calls made while it runs collapse into one more run afterwards. */
+function coalesce(fn) {
+  let running = false, again = false;
+  const run = async () => {
+    if (running) { again = true; return; }
+    running = true;
+    try { do { again = false; await fn(); } while (again); } finally { running = false; }
+  };
+  return run;
+}
+/**
+ * Line-shape picker plus the width controls that shape needs (the macOS LineShapeControls). Mutates `profile`
+ * and calls onChange() on every change. opts: {unit, min, max, step, digits}.
+ */
+function lineShapeControls(profile, { unit, min, max, step, digits, hint }, onChange) {
+  // display: contents, so the picker and each width control wrap one by one inside the surrounding .chart-tools row.
+  const root = h('span', { style: { display: 'contents' } });
+  const widths = h('span', { style: { display: 'contents' } });
+  const kind = select(LINE_SHAPES, profile.kind, (v) => { profile.kind = v; renderWidths(); onChange(); });
+  kind.title = hint || 'Line shape used to broaden the sticks';
+  const voigtOut = h('span', { style: { color: 'var(--text-2)', fontVariantNumeric: 'tabular-nums' }, title: 'FWHM of the resulting Voigt band' });
+  const showVoigt = () => { voigtOut.textContent = `→ ${effectiveFWHM(profile).toFixed(digits)}`; voigtOut.title = `FWHM of the resulting Voigt band: ${effectiveFWHM(profile).toFixed(digits + 1)} ${unit}`; };
+  function slider(label, key, title, lo = min, hi = max, st = step, dg = digits, u = unit) {
+    const out = h('span', { style: { fontVariantNumeric: 'tabular-nums' } });
+    const show = () => { out.textContent = `${profile[key].toFixed(dg)}${u ? ' ' + u : ''}`; };
+    const r = h('input', { type: 'range', min: lo, max: hi, step: st, value: Math.min(hi, Math.max(lo, profile[key])), title, style: { width: '70px' },
+      oninput: () => { profile[key] = Number(r.value); show(); if (profile.kind === 'voigt') showVoigt(); onChange(); } });
+    show();
+    return [h('label', { title }, label), r, out];
+  }
+  function renderWidths() {
+    clear(widths);
+    switch (profile.kind) {
+      case 'gaussian': case 'lorentzian':
+        widths.append(...slider('FWHM', 'fwhm', `Full width at half maximum (${unit})`)); break;
+      case 'pseudoVoigt':
+        widths.append(...slider('FWHM', 'fwhm', `Full width at half maximum (${unit})`),
+          ...slider('η', 'eta', 'Lorentzian fraction: η·Lorentzian + (1 − η)·Gaussian, same FWHM', 0, 1, 0.01, 2, ''));
+        break;
+      case 'voigt':
+        widths.append(...slider('Gauss', 'gaussianFWHM', `Gaussian FWHM (${unit})`), ...slider('Lorentz', 'lorentzianFWHM', `Lorentzian FWHM (${unit})`), voigtOut);
+        showVoigt(); break;
+      default: break; // sticks only: no widths
+    }
+  }
+  renderWidths();
+  root.append(kind, widths);
+  return root;
+}
+
 // ---------- Vibrations ----------
 function buildVibrations(app, d, body) {
   const left = h('div.pane.fixed', { style: { width: '330px', padding: 0 } });
@@ -315,18 +408,29 @@ function buildVibrations(app, d, body) {
   const table = h('table.list');
   left.append(table);
   const vp = app.viewport;
-  const st = d.cache.vib || (d.cache.vib = { mode: null, amplitude: 0.5, speed: 1, arrows: false, kind: 'ir', fwhm: 20, scale: 1, playing: false });
-  const amp = h('input', { type: 'range', min: 0.05, max: 1.5, step: 0.05, value: st.amplitude, oninput: () => { st.amplitude = Number(amp.value); vp.setVibrationParams({ amplitude: st.amplitude }); } });
-  const speed = h('input', { type: 'range', min: 0.2, max: 3, step: 0.1, value: st.speed, oninput: () => { st.speed = Number(speed.value); vp.setVibrationParams({ speed: st.speed }); } });
+  const st = d.cache.vib || (d.cache.vib = { mode: null, amplitude: 0.5, speed: 1, arrows: false, kind: 'ir', scale: 1, playing: false });
+  const display = loadSpectrumDisplay('vibrational'); // line shape + %T, remembered for every document
+  const amp = h('input', { type: 'range', min: 0.05, max: 1.5, step: 0.05, value: st.amplitude, style: { width: '80px' }, oninput: () => { st.amplitude = Number(amp.value); vp.setVibrationParams({ amplitude: st.amplitude }); } });
+  const speed = h('input', { type: 'range', min: 0.2, max: 3, step: 0.1, value: st.speed, style: { width: '80px' }, oninput: () => { st.speed = Number(speed.value); vp.setVibrationParams({ speed: st.speed }); } });
   const arrows = h('input', { type: 'checkbox', checked: st.arrows, onchange: () => { st.arrows = arrows.checked; applyMode(); } });
   const playBtn = h('button.btn.small', { onclick: () => { st.playing = !st.playing; applyMode(); } });
-  const kind = segmented([{ value: 'ir', label: 'IR' }, { value: 'raman', label: 'Raman' }], st.kind, (v) => { st.kind = v; loadSpectrum(); });
-  const fwhm = h('input', { type: 'number', min: 1, max: 200, step: 1, value: st.fwhm, style: { width: '58px' }, onchange: () => { st.fwhm = Number(fwhm.value); loadSpectrum(); } });
-  const scale = h('input', { type: 'number', min: 0.8, max: 1.1, step: 0.001, value: st.scale, style: { width: '66px' }, title: 'Frequency scale factor', onchange: () => { st.scale = Number(scale.value); loadSpectrum(); } });
+  const kind = segmented([{ value: 'ir', label: 'IR' }, { value: 'raman', label: 'Raman' }], st.kind, (v) => { st.kind = v; showUnits(); loadSpectrum(); });
+  // IR in %Transmittance (the default) or the absorbance-like intensity; Raman is always intensity.
+  const units = segmented([{ value: 't', label: '%T', title: 'Transmittance T = 100·10^(−k·I), k chosen so the strongest band reaches 15 %T' },
+    { value: 'a', label: 'Absorbance', title: 'Absorbance-like IR intensity (km/mol)' }], display.transmittance ? 't' : 'a',
+  (v) => { display.transmittance = v === 't'; saveSpectrumDisplay('vibrational', display); loadSpectrum(); });
+  const showUnits = () => { units.style.display = st.kind === 'ir' ? '' : 'none'; };
+  showUnits();
+  const scale = h('input', { type: 'number', min: 0.8, max: 1.1, step: 0.001, value: st.scale, style: { width: '60px' }, title: 'Frequency scale factor', onchange: () => { st.scale = Number(scale.value); loadSpectrum(); } });
+  const shapeTools = lineShapeControls(display.profile, { unit: 'cm⁻¹', min: 1, max: 100, step: 1, digits: 0,
+    hint: 'Line shape. Curves are peak-height normalised: an isolated band peaks at its intensity for every shape' },
+    () => { saveSpectrumDisplay('vibrational', display); loadSpectrum(); });
   const canvas = h('canvas.chart-canvas');
-  right.append(h('div.chart-tools', {}, playBtn, h('label', {}, 'Amplitude'), amp, h('label', {}, 'Speed'), speed, h('label.check', {}, arrows, 'Arrows'), h('span', { style: { flex: 1 } }), kind, h('label', {}, 'FWHM'), fwhm, h('label', {}, 'Scale'), scale,
-    h('button.btn.small', { title: 'Export the spectrum as CSV', onclick: () => exportCSV() }, 'CSV'),
-    h('button.btn.small', { title: 'Export this mode as an animated GIF or video', onclick: () => app.command('file.exportAnimation', { source: 'vibration', mode: st.mode }) }, 'GIF…')), canvas);
+  right.append(h('div.chart-tools', {}, playBtn, h('label', {}, 'Amplitude'), amp, h('label', {}, 'Speed'), speed, h('label.check', {}, arrows, 'Arrows')),
+    h('div.chart-tools', {}, kind, units, h('label', {}, 'Scale'), scale, h('span', { style: { flex: 1 } }),
+      h('button.btn.small', { title: 'Export the spectrum as CSV', onclick: () => exportCSV() }, 'CSV'),
+      h('button.btn.small', { title: 'Export this mode as an animated GIF or video', onclick: () => app.command('file.exportAnimation', { source: 'vibration', mode: st.mode }) }, 'GIF…')),
+    h('div.chart-tools', {}, shapeTools), canvas);
   const chart = new XYChart(canvas, { onPick: (s) => selectMode(s.sourceIndex) });
   let modes = [];
   let geometry = null;
@@ -347,17 +451,21 @@ function buildVibrations(app, d, body) {
     vp.showArrows(st.arrows ? m.displacements : null, 1.6, base);
     app.status(`Mode ${m.index + 1}: ${m.frequency.toFixed(1)} cm⁻¹${m.symmetry ? ' (' + m.symmetry + ')' : ''}`);
   }
-  async function loadSpectrum() {
+  const loadSpectrum = coalesce(async () => {
     try {
       // The engine's default range is 0–4000 cm⁻¹; widen it so high modes (e.g. O–H/N–H stretches above
       // 4000 at low levels of theory) and their line shape tails stay on the plot.
       const top = modes.reduce((mx, m) => Math.max(mx, (m.frequency || 0) * (st.scale || 1)), 0);
-      const xMax = Math.max(4000, Math.ceil((top + 4 * (st.fwhm || 10) + 100) / 500) * 500);
-      spectrum = await request('analysis.spectrum', { docId: d.docId, kind: st.kind, fwhm: st.fwhm, scale: st.scale, xMin: 0, xMax, points: Math.round(xMax / 2) });
-      chart.set({ x: decodeF32(spectrum.xB64), y: decodeF32(spectrum.yB64), sticks: spectrum.sticks, xLabel: spectrum.xLabel, yLabel: spectrum.yLabel, reversed: spectrum.xAxisReversed });
+      const xMax = Math.max(4000, Math.ceil((top + 4 * (effectiveFWHM(display.profile) || 10) + 100) / 500) * 500);
+      const percentT = st.kind === 'ir' && display.transmittance;
+      spectrum = await request('analysis.spectrum', { docId: d.docId, kind: st.kind, ...profileParams(display.profile), transmittance: percentT, scale: st.scale, xMin: 0, xMax, points: Math.round(xMax / 2) });
+      // An engine without %T support answers with intensities (no `transmittance` flag): plot those as they are.
+      const isT = spectrum.transmittance === true;
+      chart.set({ x: decodeF32(spectrum.xB64), y: decodeF32(spectrum.yB64), sticks: spectrum.sticks, xLabel: spectrum.xLabel, yLabel: spectrum.yLabel, reversed: spectrum.xAxisReversed,
+        ...(isT ? { yRange: [0, 105], baseline: 100, sticksAbsolute: true } : {}) });
       chart.select(st.mode);
     } catch (e) { chart.set(null); app.status(`Spectrum: ${e.message}`); }
-  }
+  });
   function exportCSV() {
     if (!spectrum) return;
     const x = decodeF32(spectrum.xB64), y = decodeF32(spectrum.yB64);
@@ -398,21 +506,41 @@ function buildUVVis(app, d, body) {
   const left = h('div.pane.fixed', { style: { width: '300px', padding: 0 } });
   const right = h('div.pane.chart');
   body.append(left, right);
-  const st = d.cache.uv || (d.cache.uv = { fwhm: 0.3, unit: 'nm' });
-  const fwhm = h('input', { type: 'number', min: 0.01, step: 0.05, value: st.fwhm, style: { width: '64px' }, title: 'Broadening (eV)', onchange: () => { st.fwhm = Number(fwhm.value); load(); } });
+  const st = d.cache.uv || (d.cache.uv = { unit: 'nm' });
+  const display = loadSpectrumDisplay('electronic'); // line shape, widths in eV, remembered for every document
   const canvas = h('canvas.chart-canvas');
   const axis = segmented([{ value: 'wavelengthNM', label: 'nm' }, { value: 'energyEV', label: 'eV' }, { value: 'wavenumber', label: 'cm⁻¹' }], st.axis || 'wavelengthNM', (v) => { st.axis = v; load(); });
-  right.append(h('div.chart-tools', {}, axis, h('label', {}, 'FWHM (eV)'), fwhm), canvas);
+  const shapeTools = lineShapeControls(display.profile, { unit: 'eV', min: 0.02, max: 1, step: 0.01, digits: 2,
+    hint: 'Line shape. Bands are broadened in energy (widths in eV) and area-normalised: ∫ε dν̃ ∝ f for every shape' },
+  () => { saveSpectrumDisplay('electronic', display); load(); });
+  right.append(h('div.chart-tools', {}, axis, shapeTools), canvas);
   const chart = new XYChart(canvas, { onPick: (s) => mark(s.sourceIndex) });
   const table = h('table.list'); left.append(table);
   function mark(i) { chart.select(i); for (const tr of table.querySelectorAll('tr[data-i]')) tr.classList.toggle('on', Number(tr.dataset.i) === i); }
-  async function load() {
+  /**
+   * Plot window from the state wavelengths (as the macOS panel does: 60 nm below the shortest, 120 nm above the
+   * longest), converted to the chosen axis. Without it the engine pads by 12 FWHM for Lorentzian-type shapes, which
+   * stretches the plot far into the infrared. Null when the states are unknown (the engine default applies).
+   */
+  function plotRange(states, ax) {
+    const nms = states.map((x) => x.wavelengthNM || (x.energyEV > 0 ? 1239.841984 / x.energyEV : 0)).filter((x) => x > 0);
+    if (!nms.length) return null;
+    const mn = Math.min(...nms), mx = Math.max(...nms);
+    const lo = Math.max(Math.min(100, mn * 0.9), mn - 60), hi = mx + 120;
+    if (ax === 'energyEV') return [1239.841984 / hi, 1239.841984 / lo];
+    if (ax === 'wavenumber') return [1e7 / hi, 1e7 / lo];
+    return [lo, hi];
+  }
+  const load = coalesce(async () => {
     try {
-      const s = await request('analysis.spectrum', { docId: d.docId, kind: 'uvvis', fwhm: st.fwhm, scale: 1, axis: st.axis || 'wavelengthNM' });
-      chart.set({ x: decodeF32(s.xB64), y: decodeF32(s.yB64), sticks: s.sticks, xLabel: s.xLabel, yLabel: s.yLabel, reversed: s.xAxisReversed, stickColor: 'rgba(140,90,200,0.9)' });
       // Stick heights are in the curve's units (ε); the oscillator strengths come from doc.result.
       let states = [];
       try { states = (d.cache.result || (d.cache.result = await request('doc.result', { docId: d.docId }))).excitedStates || []; } catch { /* table shows ε only */ }
+      const ax = st.axis || 'wavelengthNM';
+      const range = plotRange(states, ax);
+      const s = await request('analysis.spectrum', { docId: d.docId, kind: 'uvvis', ...profileParams(display.profile), scale: 1, axis: ax,
+        ...(range ? { xMin: range[0], xMax: range[1] } : {}) });
+      chart.set({ x: decodeF32(s.xB64), y: decodeF32(s.yB64), sticks: s.sticks, xLabel: s.xLabel, yLabel: s.yLabel, reversed: s.xAxisReversed, stickColor: 'rgba(140,90,200,0.9)' });
       const unit = { wavelengthNM: 'nm', energyEV: 'eV', wavenumber: 'cm⁻¹' }[st.axis || 'wavelengthNM'];
       clear(table).append(h('tr', {}, h('th', {}, 'State'), h('th.num', {}, unit), h('th.num', {}, 'eV'), h('th.num', {}, 'f')));
       s.sticks.forEach((k) => {
@@ -421,7 +549,7 @@ function buildUVVis(app, d, body) {
           h('td.num', {}, k.x.toFixed(unit === 'eV' ? 3 : 1)), h('td.num', {}, es ? fmt(es.energyEV, 3) : '–'), h('td.num', {}, es ? fmt(es.oscillatorStrength, 4) : '–')));
       });
     } catch (e) { chart.set(null); clear(table).append(h('tr', {}, h('td', {}, e.message))); }
-  }
+  });
   load();
   return { dispose() { chart.ro.disconnect(); } };
 }

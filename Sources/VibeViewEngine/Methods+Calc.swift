@@ -2,6 +2,7 @@ import Foundation
 import MolCore
 import MolIO
 import MolCompute
+import enum MolBuild.XTBInputPreview   // MolBuild also has a QCProgram; import only this
 
 // MARK: - Program discovery
 
@@ -160,6 +161,14 @@ actor JobRegistry {
         var status: String
         var commandLine: String
         var cancelRequested = false
+        /// Job files, relative to `directory` (job.files / job.readFile): the input as written, the main output, the
+        /// stderr copy, and the Molden file made by orca_2mkl.
+        var program: String = ""
+        var inputFile: String? = nil
+        var outputFile: String? = nil
+        var errorFile: String? = nil
+        var moldenFile: String? = nil
+        var inputEdited = false
     }
     private var jobs: [String: Info] = [:]
     private var next = 1
@@ -172,6 +181,8 @@ actor JobRegistry {
     }
     func setStatus(_ id: String, _ s: String) { jobs[id]?.status = s }
     func setCommandLine(_ id: String, _ s: String) { jobs[id]?.commandLine = s }
+    func update(_ id: String, _ f: (inout Info) -> Void) { if var j = jobs[id] { f(&j); jobs[id] = j } }
+    func info(_ id: String) -> Info? { jobs[id] }
 
     func cancel(_ id: String) throws {
         guard let j = jobs[id] else { throw RPCError.notFound("no job '\(id)'") }
@@ -197,7 +208,8 @@ actor JobRegistry {
         ["jobs": .array(jobs.keys.sorted().map { k in
             let j = jobs[k]!
             return obj(["jobId": k, "kind": j.kind, "docId": j.docId, "directory": j.directory, "status": j.status,
-                        "commandLine": j.commandLine])
+                        "commandLine": j.commandLine, "program": j.program, "inputFile": j.inputFile, "outputFile": j.outputFile,
+                        "errorFile": j.errorFile, "moldenFile": j.moldenFile, "inputEdited": j.inputEdited])
         })]
     }
 }
@@ -295,8 +307,13 @@ extension Engine {
         let exe = programs.locate(spec.program)
         let issues = spec.program == .gaussian ? GaussianInputCheck.check(plan.inputText, profile: profile) : []
         warnings += issues.map(\.message)
+        // xtb reads its options from the command line: the editable preview is that command line (as a comment) followed
+        // by the XYZ file, and calc.run reads both back (XTBInputPreview).
+        let input = spec.program == .xtb
+            ? XTBInputPreview.compose(arguments: plan.arguments, inputFileName: plan.inputFileName, xyz: plan.inputText)
+            : plan.inputText
         return obj([
-            "input": plan.inputText, "errors": [String](), "files": plan.files.map(\.name),
+            "input": input, "inputFile": plan.inputFileName, "errors": [String](), "files": plan.files.map(\.name),
             "fileContents": JSON.array(plan.files.map { obj(["name": $0.name, "contents": $0.contents]) }),
             "commandLine": Engine.commandLine(plan, executable: exe.map(ProgramPaths.nativePath)), "outputFile": plan.outputFileName,
             "executable": exe.map(ProgramPaths.nativePath),
@@ -309,6 +326,14 @@ extension Engine {
         let name = p.optString("program") ?? "gaussian"
         guard let prog = QCProgram(rawValue: name) else { throw RPCError.badRequest("unknown program '\(name)'") }
         let text = try p.string("text")
+        if prog == .xtb {
+            // The edited xtb preview must still name xtb and the input file, and hold a geometry.
+            var issues: [InputIssue] = []
+            do { _ = try XTBInputPreview.parse(text, inputFileName: p.optString("inputFile") ?? "job.xyz") } catch {
+                issues.append(InputIssue(severity: .error, line: 1, message: error.localizedDescription, fixable: false))
+            }
+            return obj(["issues": Engine.issuesJSON(issues), "repaired": JSON.null, "fixes": [String](), "gaussian": JSON.null])
+        }
         guard prog == .gaussian else { return obj(["issues": JSON.array([]), "repaired": JSON.null, "fixes": [String](), "gaussian": JSON.null]) }
         let profile = programs.gaussianProfile()
         let issues = GaussianInputCheck.check(text, profile: profile)
@@ -381,6 +406,14 @@ extension Engine {
                 (t, repairs) = GaussianInputCheck.repair(text, profile: profile)
                 inputIssues = GaussianInputCheck.check(t, profile: profile)
             }
+            if spec.program == .xtb {
+                // "# xtb job.xyz --opt …" then the XYZ file (calc.preview): the command line supplies the arguments.
+                do {
+                    let parsed = try XTBInputPreview.parse(text, inputFileName: plan0.inputFileName)
+                    t = parsed.xyz
+                    plan0.arguments = parsed.arguments
+                } catch { throw RPCError.badRequest("xtb input: \(error.localizedDescription)") }
+            }
             plan0.files[0].contents = t.hasSuffix("\n") ? t : t + "\n"
         } else if spec.program == .gaussian {
             inputIssues = GaussianInputCheck.check(plan0.inputText, profile: profile)
@@ -398,6 +431,9 @@ extension Engine {
         let chkOverride = spec.program == .gaussian ? editedText.flatMap { Engine.gaussianCheckpoint(in: $0, directory: dir) } : nil
         var env = ProcessInfo.processInfo.environment
         for (k, v) in plan.environment { env[k] = v }
+        if spec.program == .xtb, let share = XTBRunner.parameterDirectory(for: exe), ProgramLocator.environmentValue("XTBPATH", in: env) == nil {
+            env["XTBPATH"] = ProgramPaths.nativePath(share)   // release-layout xtb: <prefix>\bin\xtb.exe + <prefix>\share\xtb
+        }
         if spec.program == .gaussian {
             if (env["GAUSS_EXEDIR"] ?? "").isEmpty { env["GAUSS_EXEDIR"] = ProgramPaths.nativePath(exe.deletingLastPathComponent()) }
             if (env["GAUSS_SCRDIR"] ?? "").isEmpty { env["GAUSS_SCRDIR"] = ProgramPaths.nativePath(dir) }
@@ -405,7 +441,13 @@ extension Engine {
         let jobId = await jobs.newId()
         let cmd = Engine.commandLine(plan, executable: ProgramPaths.nativePath(exe))
         let notes = warnings
-        await jobs.add(jobId, .init(kind: "calc", docId: docId, directory: dir.path, task: nil, status: "running", commandLine: cmd))
+        let inputEdited = p.bool("inputEdited", default: false)
+        let errName = plan.baseName + ".stderr.txt"
+        await jobs.add(jobId, .init(kind: "calc", docId: docId, directory: dir.path, task: nil, status: "running", commandLine: cmd,
+                                    program: spec.program.rawValue, inputFile: plan.inputFileName, outputFile: plan.outputFileName,
+                                    inputEdited: inputEdited))
+        // ORCA: orca_2mkl -molden after the job so the result has orbitals (on unless the request turns it off).
+        let orcaMolden = spec.program == .orca && p.bool("orcaMolden", default: true)
         let env2 = env
         // Capture only what the job needs: EngineDocument holds CalculationResult (inline SIMD3 dipole), which must
         // not be captured by an async closure (Windows codegen bug, see MolSIMD/AsyncCapture.swift).
@@ -418,14 +460,31 @@ extension Engine {
                                               stdin: nil, timeout: nil, throwOnFailure: false,
                                               tailFiles: plan.captureStdout ? [] : CalcJobResults.outputFileCandidates(plan),
                                               stdoutFile: plan.captureStdout ? plan.outputFileName : nil)
+            let stderrLines = LineCollector()
             await withTaskCancellationHandler {
-                for await ev in handle.events { await self.forward(jobId, ev) }
+                for await ev in handle.events {
+                    if case .stderr(let l) = ev { stderrLines.append(l) }
+                    await self.forward(jobId, ev)
+                }
             } onCancel: { handle.cancel() }
             var exitCode = -1
             var errorText: String? = nil
             do { exitCode = Int(try await handle.value.exitCode) } catch { errorText = RPCError.from(error).message }
             let cancelled = Task.isCancelled
             if cancelled { errorText = "cancelled" }
+            // The program's stderr, kept with the job files (job.files role "error").
+            let errText = stderrLines.text()
+            if let errText {
+                try? errText.write(to: dir.appendingPathComponent(errName), atomically: true, encoding: .utf8)
+                await self.jobs.update(jobId) { $0.errorFile = errName }
+            }
+            if let out = CalcJobResults.resolvedOutputFileName(plan, directory: dir) { await self.jobs.update(jobId) { $0.outputFile = out } }
+            // ORCA: <base>.gbw -> <base>.molden.input, which CalcJobResults.collect then loads as the wavefunction.
+            var molden: URL? = nil
+            var moldenError: String? = nil
+            if orcaMolden, !cancelled, OrcaMoldenConversion.hasWavefunction(baseName: plan.baseName, in: dir) {
+                (molden, moldenError) = await self.moldenAfterOrcaJob(jobId: jobId, baseName: plan.baseName, directory: dir, orca: exe)
+            }
             // Gaussian: make <checkpoint>.fchk from the .chk so the result document has orbitals.
             var fchk: URL? = nil
             var formchkError: String? = nil
@@ -472,11 +531,12 @@ extension Engine {
                 "jobId": jobId, "exitCode": exitCode, "ok": ok, "error": errorText, "cancelled": cancelled,
                 "docId": newDoc?.id, "summary": newDoc?.summary() ?? JSON.null, "directory": dir.path,
                 "fchk": fchk?.path, "formchkError": formchkError,
+                "molden": molden?.path, "moldenError": moldenError, "errorFile": errText == nil ? nil : errName,
             ]))
         }
         await jobs.setTask(jobId, task)
         return obj(["jobId": jobId, "directory": dir.path, "commandLine": cmd, "inputFile": plan.inputFileName,
-                    "outputFile": plan.outputFileName, "warnings": warnings, "repairs": repairs,
+                    "outputFile": plan.outputFileName, "orcaMolden": orcaMolden, "warnings": warnings, "repairs": repairs,
                     "check": Engine.issuesJSON(inputIssues)])
     }
 
@@ -498,7 +558,8 @@ extension Engine {
         let dir = directory ?? Engine.defaultJobDirectory(prefix: "xtb")
         let jobId = await jobs.newId()
         await jobs.add(jobId, .init(kind: "xtb", docId: docId, directory: dir.path, task: nil, status: "running",
-                                    commandLine: settings.commandLine(molecule: mol, executable: ProgramPaths.nativePath(exe))))
+                                    commandLine: settings.commandLine(molecule: mol, executable: ProgramPaths.nativePath(exe)),
+                                    program: "xtb", inputFile: "input.xyz", outputFile: "xtb.out"))
         let gate = ResponseGate.current
         let task = Task.detached { [self] in
             await gate?.wait()

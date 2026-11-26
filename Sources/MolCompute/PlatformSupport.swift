@@ -14,6 +14,19 @@ extension ProgramLocator {
         #endif
     }
 
+    /// A file path as child processes expect it: on Windows with backslashes and without the leading slash
+    /// Foundation may put before the drive letter ("/C:/x" -> "C:\x"). `url.path` elsewhere.
+    public static func nativePath(_ url: URL) -> String {
+        #if os(Windows)
+        var s = url.path.replacingOccurrences(of: "/", with: "\\")
+        let c = Array(s)
+        if c.count >= 3, c[0] == "\\", c[2] == ":", c[1].isLetter { s.removeFirst() }
+        return s
+        #else
+        return url.path
+        #endif
+    }
+
     /// Case-insensitive environment lookup on Windows (`Path` vs `PATH`), exact elsewhere.
     public static func environmentValue(_ key: String, in env: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         if let v = env[key] { return v }
@@ -217,6 +230,8 @@ extension ProgramLocator {
         let programFiles = [pf] + (pf86.map { [$0] } ?? [])
         switch prog {
         case "xtb":
+            // The copy VibeView downloads itself (Calculate > Install xtb…): <managed>\xtb\bin\xtb.exe.
+            dirs.append(managedDirectory.appendingPathComponent("xtb", isDirectory: true).appendingPathComponent("bin").path)
             for root in programFiles + [systemDrive + "\\"] {
                 for d in windowsDirectories(in: root, prefix: "xtb") { dirs += [d + "\\bin", d] }
             }

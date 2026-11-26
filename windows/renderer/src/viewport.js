@@ -395,7 +395,14 @@ export class Viewport {
     this.frameCallbacks = new Set();
     this.positionsVersion = 0; // bumped whenever displayed positions change (cartoon.sync follows it)
 
-    this.resizeObserver = new ResizeObserver(() => this.resize());
+    // Coalesce resize events to one per frame: each size change reallocates the composer's MSAA targets and
+    // both GTAO passes' G-buffer/AO/denoise targets, so a window drag that fired per pixel churned through GPU
+    // memory (the macOS fix for the same growth: evict intermediate-size render targets).
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.resizePending) return;
+      this.resizePending = true;
+      requestAnimationFrame(() => { this.resizePending = false; this.resize(); });
+    });
     this.resizeObserver.observe(container);
     this.resize();
     this.applyLook();
@@ -441,18 +448,39 @@ export class Viewport {
   }
 
   // ---------- sizing / camera ----------
-  resize() {
+  resize(force = false) {
+    if (this.exportHold) return; // an animation export owns the drawing buffer size (endExportHold restores it)
     const w = Math.max(1, this.container.clientWidth), h = Math.max(1, this.container.clientHeight);
+    const dpr = window.devicePixelRatio || 1;
+    // Unchanged size (ResizeObserver also fires for layout-only changes): keep every render target.
+    const key = `${w}x${h}@${dpr}/${this.renderer.getPixelRatio()}`;
+    if (!force && key === this.sizeKey && this.width === w && this.height === h) return;
+    this.sizeKey = key;
     this.width = w; this.height = h;
     this.renderer.setSize(w, h, false);
     this.renderer.domElement.style.width = w + 'px';
     this.renderer.domElement.style.height = h + 'px';
     this.composer.setSize(w, h);
-    const dpr = window.devicePixelRatio || 1;
     this.overlay.width = Math.round(w * dpr); this.overlay.height = Math.round(h * dpr);
     this.overlay.style.width = w + 'px'; this.overlay.style.height = h + 'px';
     this.updateCamera();
     this.dirty = true;
+  }
+
+  /**
+   * Animation export: frames rendered with `exportPNG(w, h, {hold: true})` keep the export-sized targets between
+   * frames instead of reallocating the MSAA and AO targets twice per frame; the on-screen loop pauses meanwhile.
+   * Always pair with endExportHold() (in a finally).
+   */
+  endExportHold() {
+    if (!this.exportHold) return;
+    const p = this.exportHold;
+    this.exportHold = null;
+    this.scene.background = p.bg;
+    this.renderer.setPixelRatio(p.pr);
+    this.composer.setPixelRatio(p.pr);
+    this.resize(true);
+    this.renderNow();
   }
 
   updateCamera() {
@@ -1273,6 +1301,7 @@ export class Viewport {
     const moving = performance.now() - this.motionAt < IDLE_MS;
     // Draw only when something changed, plus one full-quality frame once motion has stopped.
     if (!this.dirty && !(this.fastFrame && !moving)) return;
+    if (this.exportHold) return; // export-sized buffers: the export draws its own frames
     this.dirty = false;
     this.renderNow(moving);
   }
@@ -1367,19 +1396,22 @@ export class Viewport {
 
   // ---------- export ----------
   /** Renders at width×height and returns a PNG data URL (labels and measurements included). */
-  exportPNG(width, height, { transparent = false } = {}) {
+  exportPNG(width, height, { transparent = false, hold = false } = {}) {
     // Deterministic: queued input and the eased zoom are settled, inertia stops, full-quality AO.
     this.settleCamera();
     this.setAOQuality(false);
     const maxSize = this.renderer.capabilities.maxTextureSize || 8192;
     const f = Math.min(1, maxSize / Math.max(width, height));
     width = Math.round(width * f); height = Math.round(height * f);
-    const prev = { w: this.width, h: this.height, pr: this.renderer.getPixelRatio(), bg: this.scene.background };
-    this.renderer.setPixelRatio(1);
+    const held = this.exportHold;
+    const prev = held ? held.prev : { w: this.width, h: this.height, pr: this.renderer.getPixelRatio(), bg: this.scene.background };
+    if (!held || held.w !== width || held.h !== height) {
+      this.renderer.setPixelRatio(1);
+      this.renderer.setSize(width, height, false);
+      this.composer.setPixelRatio(1);
+      this.composer.setSize(width, height);
+    }
     this.width = width; this.height = height;
-    this.renderer.setSize(width, height, false);
-    this.composer.setPixelRatio(1);
-    this.composer.setSize(width, height);
     this.updateCamera();
     if (transparent) { this.scene.background = null; this.renderer.setClearColor(0x000000, 0); }
     // scale the camera so the framing matches the on-screen view at a different aspect ratio
@@ -1400,9 +1432,17 @@ export class Viewport {
     ctx.drawImage(lay, 0, 0);
     // restore
     this.scene.background = prev.bg;
+    if (hold) {
+      // Keep the export-sized targets for the next frame; the logical size goes back for overlay/camera math.
+      this.exportHold = { w: width, h: height, prev, pr: prev.pr, bg: prev.bg };
+      this.width = prev.w; this.height = prev.h;
+      this.updateCamera();
+      return out.toDataURL('image/png');
+    }
+    this.exportHold = null;
     this.renderer.setPixelRatio(prev.pr);
     this.composer.setPixelRatio(prev.pr);
-    this.resize();
+    this.resize(true);
     this.renderNow();
     return out.toDataURL('image/png');
   }

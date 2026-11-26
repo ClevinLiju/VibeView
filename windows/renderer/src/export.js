@@ -359,7 +359,8 @@ export async function renderAnimation(app, d, opts, hooks = {}) {
   };
   const capture = async (fr) => {
     showFrame(fr);
-    const url = vp.exportPNG(W, H, { transparent: false });
+    // hold: the export-sized render targets stay allocated from frame to frame (endExportHold in finally).
+    const url = vp.exportPNG(W, H, { transparent: false, hold: true });
     await dataURLToCanvas(url, W, H, work);
     const g = work.getContext('2d', { willReadFrequently: true });
     drawCaption(g, W, H, fr, info, opts, fg);
@@ -437,6 +438,7 @@ export async function renderAnimation(app, d, opts, hooks = {}) {
     }
     return { bytes, frames: frames.length, width: W, height: H, mime };
   } finally {
+    vp.endExportHold?.();
     // Restore the interactive view.
     if (changedMolecule) vp.setMolecule(saved.molecule, { keepSelection: true });
     vp.setDisplayedPositions(saved.positions);
@@ -649,6 +651,171 @@ function buildDataPane(app, d, ctx) {
   };
   ctx.runLabel = 'Export…';
   return h('div.export-pane', {}, list, h('div', { style: { fontSize: '12px', color: 'var(--text-2)', margin: '8px 0 2px' } }, 'Preview'), preview);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Console `export image|gif|mp4|csv` (engine Methods+ConsoleExport.swift): the engine validated the line and
+// granted a one-time token for the typed path; the bytes go back through command.writeExport.
+// ---------------------------------------------------------------------------------------------------------
+
+const b64ToBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+function crc32(bytes) {
+  let c, crc = 0xffffffff;
+  for (let n = 0; n < bytes.length; n++) {
+    c = (crc ^ bytes[n]) & 0xff;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crc = (crc >>> 8) ^ c;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** PNG with a pHYs chunk (pixels per metre) right after IHDR, so viewers and print layouts see the dpi. */
+export function pngWithDPI(bytes, dpi) {
+  if (!(dpi > 0) || bytes.length < 33) return bytes;
+  const ppm = Math.round(dpi / 0.0254);
+  const chunk = new Uint8Array(21);
+  const dv = new DataView(chunk.buffer);
+  dv.setUint32(0, 9); chunk.set([0x70, 0x48, 0x59, 0x73], 4); // "pHYs"
+  dv.setUint32(8, ppm); dv.setUint32(12, ppm); chunk[16] = 1;    // unit: metre
+  dv.setUint32(17, crc32(chunk.subarray(4, 17)));
+  const at = 8 + 25; // signature + IHDR (length, type, 13 data bytes, crc)
+  const out = new Uint8Array(bytes.length + 21);
+  out.set(bytes.subarray(0, at)); out.set(chunk, at); out.set(bytes.subarray(at), at + 21);
+  return out;
+}
+
+/** JPEG with the JFIF APP0 density set to `dpi` (Chromium writes a 1:1 aspect without units). */
+export function jpegWithDPI(bytes, dpi) {
+  if (!(dpi > 0)) return bytes;
+  // FF D8, FF E0, length (2), "JFIF\0", version (2), units, Xdensity (2), Ydensity (2)
+  if (bytes[2] === 0xff && bytes[3] === 0xe0 && bytes[6] === 0x4a && bytes[7] === 0x46 && bytes[8] === 0x49 && bytes[9] === 0x46) {
+    const out = bytes.slice();
+    const d = Math.max(1, Math.min(65535, Math.round(dpi)));
+    out[13] = 1; out[14] = d >> 8; out[15] = d & 0xff; out[16] = d >> 8; out[17] = d & 0xff;
+    return out;
+  }
+  return bytes;
+}
+
+/** Uncompressed baseline TIFF (RGB, or RGBA with unassociated alpha) with the resolution in dpi. */
+export function encodeTIFF(rgba, W, H, { alpha = false, dpi = 300 } = {}) {
+  const spp = alpha ? 4 : 3;
+  const dataLen = W * H * spp;
+  const tags = [];
+  const tag = (id, type, count, value) => tags.push({ id, type, count, value });
+  const nTags = alpha ? 15 : 14;
+  const ifdOff = 8, ifdLen = 2 + nTags * 12 + 4;
+  const bpsOff = ifdOff + ifdLen, resOff = bpsOff + spp * 2, dataOff = resOff + 16;
+  tag(256, 4, 1, W); tag(257, 4, 1, H);
+  tag(258, 3, spp, bpsOff);                   // BitsPerSample (offset to spp x 8)
+  tag(259, 3, 1, 1);                          // no compression
+  tag(262, 3, 1, 2);                          // RGB
+  tag(273, 4, 1, dataOff);                    // StripOffsets
+  tag(274, 3, 1, 1);                          // orientation: top-left
+  tag(277, 3, 1, spp);                        // SamplesPerPixel
+  tag(278, 4, 1, H);                          // RowsPerStrip
+  tag(279, 4, 1, dataLen);                    // StripByteCounts
+  tag(282, 5, 1, resOff); tag(283, 5, 1, resOff + 8); // X/Y resolution (rational)
+  tag(284, 3, 1, 1);                          // chunky
+  tag(296, 3, 1, 2);                          // inch
+  if (alpha) tag(338, 3, 1, 2);               // ExtraSamples: unassociated alpha
+  const buf = new Uint8Array(dataOff + dataLen);
+  const dv = new DataView(buf.buffer);
+  buf.set([0x49, 0x49]); dv.setUint16(2, 42, true); dv.setUint32(4, ifdOff, true);
+  dv.setUint16(ifdOff, tags.length, true);
+  tags.forEach((t, k) => {
+    const o = ifdOff + 2 + k * 12;
+    dv.setUint16(o, t.id, true); dv.setUint16(o + 2, t.type, true); dv.setUint32(o + 4, t.count, true);
+    if (t.type === 3 && t.count === 1) dv.setUint16(o + 8, t.value, true); else dv.setUint32(o + 8, t.value, true);
+  });
+  dv.setUint32(ifdOff + 2 + tags.length * 12, 0, true);
+  for (let i = 0; i < spp; i++) dv.setUint16(bpsOff + 2 * i, 8, true);
+  const r = Math.max(1, Math.round(dpi));
+  dv.setUint32(resOff, r, true); dv.setUint32(resOff + 4, 1, true); dv.setUint32(resOff + 8, r, true); dv.setUint32(resOff + 12, 1, true);
+  let o = dataOff;
+  for (let i = 0; i < W * H; i++) {
+    buf[o++] = rgba[4 * i]; buf[o++] = rgba[4 * i + 1]; buf[o++] = rgba[4 * i + 2];
+    if (alpha) buf[o++] = rgba[4 * i + 3];
+  }
+  return buf;
+}
+
+/** Render looks named like the macOS ones, on the Windows viewport's themes and materials. */
+const LOOKS = {
+  studio: { theme: 'light', background: null },
+  whitepaper: { theme: 'white', background: null },
+  darkstage: { theme: 'black', background: null },
+  illustration: { theme: 'white', background: null, material: 'flat' },
+};
+
+async function withLook(vp, look, body) {
+  const patch = look && LOOKS[look];
+  if (!patch) return body();
+  const saved = {}; for (const k of Object.keys(patch)) saved[k] = vp.options[k];
+  vp.setOptions(patch);
+  try { return await body(); } finally { vp.setOptions(saved); }
+}
+
+/** Image bytes for a console image request ({format, width, height, scale, dpi, transparent, quality, supersample}). */
+export async function renderConsoleImage(vp, r) {
+  const aspect = vp.width / vp.height;
+  let W = r.width, H = r.height;
+  if (!W && !H) { W = Math.round(vp.width * (r.scale || 2)); H = Math.round(vp.height * (r.scale || 2)); }
+  else if (!H) H = Math.round(W / aspect);
+  else if (!W) W = Math.round(H * aspect);
+  W = Math.max(1, Math.min(16384, W)); H = Math.max(1, Math.min(16384, H));
+  const transparent = !!r.transparent && r.format !== 'jpeg';
+  // Supersampling: render larger and filter down, within the GPU's texture limit.
+  const ss = Math.max(1, Math.min(4, r.supersample | 0 || 1));
+  const maxTex = vp.renderer?.capabilities?.maxTextureSize || 8192;
+  const k = Math.max(1, Math.min(ss, Math.floor(maxTex / Math.max(W, H)) || 1));
+  const url = vp.exportPNG(W * k, H * k, { transparent });
+  const c = await dataURLToCanvas(url, W, H);
+  const g = c.getContext('2d', { willReadFrequently: true });
+  const dpi = r.dpi || 300;
+  if (r.format === 'tiff') return { bytes: encodeTIFF(g.getImageData(0, 0, W, H).data, W, H, { alpha: transparent, dpi }), W, H };
+  if (r.format === 'jpeg') return { bytes: jpegWithDPI(b64ToBytes(c.toDataURL('image/jpeg', Math.max(0.1, Math.min(1, r.quality || 0.95))).split(',')[1]), dpi), W, H };
+  return { bytes: pngWithDPI(b64ToBytes(c.toDataURL('image/png').split(',')[1]), dpi), W, H };
+}
+
+const CONSOLE_TABLES = { frequencies: 'modes', orbitals: 'orbitals', states: 'states', energies: 'energies', charges: 'charges' };
+
+/** Runs a console export request from command.execute's ViewChange. Returns a status line. */
+export async function runConsoleExport(app, r) {
+  const d = app.active, vp = app.viewport;
+  const send = (payload) => request('command.writeExport', { token: r.token, ...payload });
+  if (r.kind === 'table') {
+    const t = d && dataTables(app, d).find((x) => x.id === CONSOLE_TABLES[r.table]);
+    if (!t) throw new Error(`no ${r.table} table for this document`);
+    const w = await send({ text: await t.make() });
+    return `Saved ${shortPath(w.path)}`;
+  }
+  if (r.kind === 'animation') {
+    if (!d) throw new Error('no document');
+    if (r.transparent) throw new Error('transparent GIFs are not available on Windows');
+    if (r.format !== 'gif' && !videoMime(r.format)) throw new Error(`${String(r.format).toUpperCase()} recording is not available here; use .gif`);
+    const W = r.width || (r.height ? Math.round((r.height * vp.width) / vp.height) : 800);
+    const H = r.height || Math.round((W * vp.height) / vp.width);
+    const src = r.source || {};
+    const opts = {
+      source: src.type, mode: src.mode, width: W, height: H, fps: r.fps || 24, format: r.format, loop: r.loopForever !== false,
+      cycleFrames: r.framesPerLoop, cycles: r.loops || 1, amplitude: r.amplitude ?? 0.5, step: r.step || 1,
+      spinFrames: r.framesPerLoop, spinAxis: src.axis || 'y', videoRepeats: r.loops || 1, dither: (r.quality ?? 0.8) >= 0.9,
+      caption: false, profile: false, bonds: false,
+    };
+    app.setBusy?.(`Exporting ${shortPath(r.path)}…`);
+    try {
+      const out = await withLook(vp, r.look, () => renderAnimation(app, d, opts, { onProgress: (t) => app.status?.(t) }));
+      const w = await send({ base64: bytesToB64(out.bytes) });
+      return `Saved ${shortPath(w.path)} (${out.frames} frames, ${out.width}×${out.height}, ${(out.bytes.length / 1024).toFixed(0)} KB)`;
+    } finally { app.setBusy?.(null); }
+  }
+  // image
+  if (r.fit) vp.fit();
+  const img = await withLook(vp, r.look, () => renderConsoleImage(vp, r));
+  const w = await send({ base64: bytesToB64(img.bytes) });
+  return `Saved ${shortPath(w.path)} (${img.W}×${img.H})`;
 }
 
 // ---------------------------------------------------------------------------------------------------------

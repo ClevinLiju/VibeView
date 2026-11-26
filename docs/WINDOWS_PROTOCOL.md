@@ -219,6 +219,10 @@ is either a clarification of something the table leaves open, or an additive fie
   `axis` (uvvis: "wavelengthNM" default | "energyEV" | "wavenumber"). Defaults: IR/Raman fwhm 10 cm⁻¹, 0–4000 cm⁻¹,
   2000 points; UV-vis fwhm 0.3 eV; DOS fwhm 0.3 eV. `scale` multiplies frequencies (IR/Raman). The result adds `pointCount`.
   DOS from a wavefunction adds `occupiedYB64` (occupied-only curve on the same x grid). Missing data gives `not_found`.
+  Line shapes (0.4.1): `shape` also takes "voigt" (`gaussianFWHM`, `lorentzianFWHM`, each default `fwhm`/2),
+  "pseudoVoigt" (`eta`, default 0.5) and "sticks"; an unknown shape is `bad_request` (DOS: Gaussian/Lorentzian only).
+  IR takes `transmittance: bool` and `minimumPercent` (default 15). The result adds `shape`, effective `fwhm`,
+  `normalization` ("height"|"area"), `transmittance`, and `baseline: 100` for %T.
 - `analysis.thermo` also takes `symmetryNumber` and `quasiRRHO: bool`. It returns rows (Electronic energy, ZPE, thermal
   corrections to E/H/G, E+ZPE, E+thermal, H, G, T·S) plus `entropy`, `heatCapacity` (cal/(mol·K)),
   `rotationalConstantsGHz`, `symmetryNumber`, `isLinear` and `frequenciesUsed`.
@@ -440,3 +444,35 @@ document atom index shown in that row. Every edit is one undo step.
   selected (or last) atom and its neighbours, the distance to the covalent bond length, the angle to the reference atom's
   hybridization, and the dihedral to the roomiest staggered position. `dryRun` returns only `defaults` and `position`. Undo
   "Add Atom (Z-Matrix)".
+
+**Jobs: input files, viewers, geometry check, ORCA orbitals** (`Sources/VibeViewEngine/Methods+Jobs.swift`, `Methods+Calc.swift`)
+- `calc.preview` adds `inputFile` (the name the input is written to). For xtb, `input` is the editable preview: the command line
+  as a comment, then the XYZ file (`# xtb job.xyz --opt --chrg 0 …`, `# job.xyz:`, blank line, XYZ; `MolBuild.XTBInputPreview`).
+- `calc.run` adds `inputEdited: bool` (the text was edited by hand; recorded for `job.files`) and `orcaMolden: bool = true`.
+  For xtb, `inputText` is that preview: the arguments come from its command line (it must name xtb and the input file), the
+  XYZ part is written as the input; a malformed preview gives `bad_request`. A release-layout xtb (`<prefix>\bin\xtb.exe` with
+  `<prefix>\share\xtb`) gets `XTBPATH` unless one is set. The response adds `orcaMolden`.
+- `calc.checkInput {program: "xtb", text, inputFile?}` → `issues` with one error when the preview can't be read back.
+- After an ORCA `calc.run` that wrote `<base>.gbw` (and was not cancelled), `orca_2mkl <base> -molden` runs in the job folder
+  (`orca_2mkl.exe` next to `orca.exe`, else on PATH; status `postprocessing`; its lines in `job.log`), so `CalcJobResults.collect`
+  loads `<base>.molden.input` as the wavefunction. `job.finished` adds `molden` (path|null) and `moldenError` (str|null); a failed
+  conversion doesn't fail the job. A `.gbw`/`.chk` companion is reported "not needed" once orbitals came from another file.
+- The program's stderr is saved as `<base>.stderr.txt` in the job folder when there was any; `job.finished.errorFile` names it.
+- `calc.preflight {docId}` → `{warnings: [{kind: "isolatedAtom"|"stretchedBond"|"fragments", atoms: [int], message, distance?,
+  ratio?, sizes?}], text: str|null}`: an atom with no neighbour within 3 Å, a stored bond longer than 1.6 × the sum of the
+  covalent radii, or several disconnected fragments (`MolBuild.GeometryPreflight`). `text` is the confirmation message (at most
+  five problems, ends "Run anyway?"), null when the geometry looks fine. The front end asks before Run (calc setup, xtb).
+- `job.files {jobId | directory}` → `{directory, files: [{name, size, modified (ms), role, path}], inputFile, outputFile, errorFile,
+  moldenFile, commandLine, status, program, inputEdited}`. `role`: `input`, `output`, `error`, `orbitals`, `geometry`, `data`,
+  `binary`, `other`. `directory` works for jobs the engine no longer knows (after a restart); the named files are null then.
+- `job.readFile {jobId | directory, name, maxBytes = 4 MB (max 64 MB)}` → `{name, path, size, truncated, text}`. `name` is a plain
+  file name in the job folder (paths give `bad_request`), binary files give `bad_request`; a larger file returns its last
+  `maxBytes` (from the first full line) with `truncated: true`.
+- `jobs.list` entries add `program`, `inputFile`, `outputFile`, `errorFile`, `moldenFile`, `inputEdited`.
+- Cancel and timeout stop the whole process tree. On Windows each started program is put in a job object
+  (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): cancel terminates the job (Gaussian's links, ORCA's `orca_*` helpers, `mpiexec`/`smpd`
+  and the MPI ranks, also when their parent already exited); helpers still running when the program exits are stopped when the
+  job closes; when the job object can't be created, `taskkill /T /F` is used. The result no longer waits for a pipe a leftover
+  child holds open (3 s after a stop, 30 s otherwise).
+- xtb installed by the app (Calculate > Install xtb…, `windows/main/xtb-install.js`) lives in `%APPDATA%\VibeView\xtb\{bin,share}`
+  (`ProgramLocator.managedDirectory`), which the xtb search includes.

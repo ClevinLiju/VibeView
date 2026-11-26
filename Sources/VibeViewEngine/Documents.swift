@@ -24,6 +24,12 @@ struct EngineDocument {
     var displayTitle: String
     /// A background formchk conversion is running for this document's `.chk` companion (see Formchk.swift).
     var formchkPending = false
+    /// Bond orders of the opened structure by atom pair (`Preparation.pairKey`), copied onto frames with the same
+    /// connectivity, so optimization / scan / trajectory frames keep double and aromatic bonds (`frame(_:)`).
+    var frameBondOrders: [Int64: BondOrder]?
+    /// Frames come from a format that never states bond orders (calculation outputs, XYZ): frames whose
+    /// connectivity differs from the opened structure get their orders perceived on their own when small.
+    var framesNeedOrders = false
 
     var molecule: Molecule { model.molecule }
 
@@ -40,7 +46,21 @@ struct EngineDocument {
     /// Frame `k` with connectivity (same topology rules as the macOS app's IOBridge).
     func frame(_ k: Int) -> Molecule? {
         guard frames.indices.contains(k) else { return nil }
-        return Preparation.prepared(frames[k], perceiveOrders: false)
+        return preparedFrame(frames[k])
+    }
+
+    /// A frame with connectivity and, when it only has single bonds, the opened structure's bond orders (same
+    /// connectivity) or perceived ones (small frames of order-less formats).
+    func preparedFrame(_ f: Molecule) -> Molecule {
+        var m = Preparation.prepared(f, perceiveOrders: false)
+        guard m.atoms.count > 1, !m.bonds.isEmpty, m.bonds.allSatisfy({ $0.order == .single }) else { return m }
+        if let orders = frameBondOrders, orders.count == m.bonds.count,
+           m.bonds.allSatisfy({ orders[Preparation.pairKey($0)] != nil }) {
+            for i in m.bonds.indices { m.bonds[i].order = orders[Preparation.pairKey(m.bonds[i])]! }
+        } else if framesNeedOrders && m.atoms.count < 300 {
+            m.perceiveBondOrders()
+        }
+        return m
     }
 
     var orbitalCount: Int {
@@ -50,7 +70,7 @@ struct EngineDocument {
 
     /// The geometry the result's modes refer to (the final structure when its atom count matches).
     var resultGeometry: Molecule {
-        if let f = result?.steps.last, f.atoms.count == molecule.atoms.count { return Preparation.prepared(f, perceiveOrders: false) }
+        if let f = result?.steps.last, f.atoms.count == molecule.atoms.count { return preparedFrame(f) }
         return molecule
     }
 
@@ -95,6 +115,9 @@ enum Preparation {
         return m
     }
 
+    /// Order-independent key of a bond's atom pair.
+    static func pairKey(_ b: Bond) -> Int64 { Int64(min(b.a, b.b)) << 32 | Int64(max(b.a, b.b)) }
+
     static func hasUnbondedHeavyAtoms(_ m: Molecule) -> Bool {
         var bonded = [Bool](repeating: false, count: m.atoms.count)
         for b in m.bonds where b.a < bonded.count && b.b < bonded.count { bonded[b.a] = true; bonded[b.b] = true }
@@ -123,6 +146,14 @@ enum Preparation {
             if d.frames.isEmpty, r.steps.count > 1 { d.frames = r.steps }
             d.result = r
         }
+        // Frames (optimization steps, scans, trajectories, extra models) take the opened structure's bond orders
+        // when their connectivity matches; macOS IOBridge.preparedSteps does the same.
+        let framesSource = d.frames.isEmpty ? (d.result?.steps ?? []) : d.frames
+        if !framesSource.isEmpty, shown.bonds.contains(where: { $0.order != .single }),
+           framesSource.contains(where: { $0.atoms.count == shown.atoms.count }) {
+            d.frameBondOrders = Dictionary(shown.bonds.map { (pairKey($0), $0.order) }, uniquingKeysWith: { a, _ in a })
+        }
+        d.framesNeedOrders = !formatsWithBondOrders.contains(file.format)
         d.wavefunction = file.wavefunction
         if let wf = file.wavefunction { d.surfaces = OrbitalSurfaceService(wavefunction: wf) }
         var vols: [(String, VolumeGrid)] = []

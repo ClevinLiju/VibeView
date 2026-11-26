@@ -1,9 +1,10 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeTheme, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, nativeTheme, session, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { EngineClient, resolveEnginePath, mockEngine } = require('./engine');
 const { buildMenu } = require('./menu');
+const xtbInstall = require('./xtb-install');
 
 const APP_ROOT = path.resolve(__dirname, '..');
 const OPENABLE = ['xyz', 'pdb', 'cif', 'mmcif', 'ent', 'mol', 'sdf', 'cml', 'gjf', 'com', 'log', 'out', 'fchk', 'fch', 'cube', 'cub', 'molden', 'input',
@@ -162,6 +163,25 @@ function main() {
     return 'not a folder';
   });
   ipcMain.handle('shell:openLogs', () => shell.openPath(logDir));
+  // Opens a job's text file with its default program, but only text-like job files (never executables or scripts).
+  ipcMain.handle('shell:openTextFile', (_e, p) => {
+    const ok = isAbsPath(p) && /\.(log|out|inp|in|gjf|com|xyz|txt|err|hess|engrad|molden|input)$/i.test(p);
+    try { if (ok && fs.statSync(p).isFile()) return shell.openPath(p); } catch { /* missing */ }
+    return 'not a job text file';
+  });
+  // ----- xtb that VibeView installs itself (Calculate > Install xtb…) into %APPDATA%\VibeView\xtb, where the engine
+  // looks for it (MolCompute ProgramLocator.managedDirectory). See xtb-install.js. -----
+  let xtbBusy = null;
+  ipcMain.handle('xtb:status', () => xtbInstall.status(app.getPath('appData')));
+  ipcMain.handle('xtb:install', () => {
+    if (xtbBusy) return xtbBusy;
+    const send = (p) => { if (win) win.webContents.send('xtb-install-progress', p); };
+    xtbBusy = xtbInstall.install({ net, appDataDir: app.getPath('appData'), onProgress: send })
+      .then((r) => ({ ok: true, ...r }), (e) => ({ ok: false, error: e.message }))
+      .finally(() => { xtbBusy = null; });
+    return xtbBusy;
+  });
+  ipcMain.handle('xtb:uninstall', () => { if (xtbBusy) throw new Error('an xtb install is running'); return xtbInstall.uninstall(app.getPath('appData')); });
   ipcMain.handle('settings:load', () => { try { return JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { return {}; } });
   ipcMain.handle('settings:save', (_e, s) => { if (!s || typeof s !== 'object') return; try { fs.mkdirSync(userDir, { recursive: true }); fs.writeFileSync(settingsPath, JSON.stringify(s, null, 1)); } catch { } });
   ipcMain.handle('window:setTitle', (_e, t) => { if (win && typeof t === 'string') win.setTitle(t.slice(0, 300)); });

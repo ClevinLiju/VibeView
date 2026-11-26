@@ -30,7 +30,7 @@ let allChecks: [Check] = ([
     // TEAM REGISTRATION — add one line each, e.g.  Checks.core,
     Checks.core,
     Checks.io,
-    Checks.command,
+    Checks.command + Checks.commandExport,
     Checks.analysis,
     Checks.compute,
     Checks.buildCore + Checks.buildCalc + Checks.buildPlacement + Checks.buildGroups,
@@ -42,6 +42,11 @@ struct CheckRunner {
         #if os(Windows)
         // `molscope-check --tool <name> ...`: stand-ins for /bin/echo, /bin/sh etc. (see CheckTools.swift).
         if CommandLine.arguments.count > 2, CommandLine.arguments[1] == CheckTool.flag { CheckTool.runHelper(Array(CommandLine.arguments.dropFirst(2))) }
+        #endif
+        #if !os(Windows)
+        // Line-buffer stdout so a crash in CI (stdout is a pipe there) does not swallow the last lines. (The MSVC
+        // runtime has no line buffering; the fflush after each check covers Windows.)
+        setvbuf(stdout, nil, _IOLBF, 0)
         #endif
         let filter = CommandLine.arguments.dropFirst().first
         var failed = 0, ran = 0

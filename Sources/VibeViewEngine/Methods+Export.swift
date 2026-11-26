@@ -60,20 +60,8 @@ enum ExportWriter {
         return (0..<n).map { k in e.indices.contains(k + off) ? e[k + off] : nil }
     }
 
-    static func subset(_ m: Molecule, _ atoms: [Int]) -> Molecule {
-        var map = [Int: Int]()
-        var out = Molecule(charge: m.charge, multiplicity: m.multiplicity, title: m.title)
-        for i in atoms where m.atoms.indices.contains(i) && map[i] == nil {
-            map[i] = out.atoms.count
-            var a = m.atoms[i]
-            a.id = out.atoms.count
-            out.atoms.append(a)
-        }
-        for b in m.bonds { if let a = map[b.a], let c = map[b.b] { out.bonds.append(Bond(a, c, order: b.order)) } }
-        // A fragment doesn't keep the whole molecule's charge/spin.
-        if out.atoms.count != m.atoms.count { out.charge = 0; out.multiplicity = 1 }
-        return out
-    }
+    /// The atoms `atoms` of `m` with the bonds among them (shared MolIO `StructureExport.subset`).
+    static func subset(_ m: Molecule, _ atoms: [Int]) -> Molecule { StructureExport.subset(m, atoms: atoms) }
 
     static func export(_ d: EngineDocument, _ p: Params) throws -> JSON {
         let name = try p.string("format")

@@ -33,13 +33,20 @@ extension Checks {
         Check("analysis.quality.adaptiveBounds") {
             let wf = try qualityWavefunction()
             let g = GridSpec.adaptive(wf, quality: .normal)
-            let hi = g.origin + Double(g.counts[0] - 1) * g.axes[0] + Double(g.counts[1] - 1) * g.axes[1] + Double(g.counts[2] - 1) * g.axes[2]
+            // Split for the type checker (one long SIMD sum times out).
+            let span0: Vec3 = Double(g.counts[0] - 1) * g.axes[0]
+            let span1: Vec3 = Double(g.counts[1] - 1) * g.axes[1]
+            let span2: Vec3 = Double(g.counts[2] - 1) * g.axes[2]
+            let hi: Vec3 = g.origin + span0 + span1 + span2
             for p in WavefunctionSurfaces.atomPositions(wf) {
                 for d in 0..<3 { try expect(p[d] - g.origin[d] >= 2.0 - 1e-9 && hi[d] - p[d] >= 2.0 - 1e-9, "atom within 2 A of grid edge on axis \(d)") }
             }
             let fixed = GridSpec.automatic(around: WavefunctionSurfaces.atomPositions(wf), padding: 4.0, spacing: 0.15, maxPoints: 2_000_000)
             let ext = hi - g.origin
-            let fhi = fixed.origin + Double(fixed.counts[0] - 1) * fixed.axes[0] + Double(fixed.counts[1] - 1) * fixed.axes[1] + Double(fixed.counts[2] - 1) * fixed.axes[2]
+            let fspan0: Vec3 = Double(fixed.counts[0] - 1) * fixed.axes[0]
+            let fspan1: Vec3 = Double(fixed.counts[1] - 1) * fixed.axes[1]
+            let fspan2: Vec3 = Double(fixed.counts[2] - 1) * fixed.axes[2]
+            let fhi: Vec3 = fixed.origin + fspan0 + fspan1 + fspan2
             let fext = fhi - fixed.origin
             print(String(format: "    adaptive box %.1f x %.1f x %.1f A (%d pts) vs fixed 4 A padding %.1f x %.1f x %.1f A (%d pts)",
                          ext.x, ext.y, ext.z, g.pointCount, fext.x, fext.y, fext.z, fixed.pointCount))
@@ -63,6 +70,34 @@ extension Checks {
                 var worst: Float = 0
                 for (x, y) in zip(a.values, b.values) { worst = max(worst, abs(x - y)) }
                 try expect(worst < 1e-5, "MO \(mo): fast vs reference max diff \(worst)")
+            }
+        },
+        Check("analysis.quality.appGridTiming") {
+            // The path the app takes for an orbital surface (`WavefunctionSurfaces.orbitalGrid`) against the BLAS
+            // reference evaluator, per quality preset: same values, and the timing of both.
+            for file in ["io/orca/h2co_tddft.molden.input", "analysis/water_tzvp.molden"] {
+                guard let wf = try MoldenFile.read(url: testDataURL(file)).wavefunction else { throw CheckFailure(description: "no wavefunction in \(file)") }
+                let ev = OrbitalEvaluator(wavefunction: wf)
+                let homo = wf.homoIndex!
+                for q in OrbitalGridQuality.allCases {
+                    let g = GridSpec.adaptive(wf, quality: q)
+                    let c = Array(wf.alpha.orbital(homo))
+                    var t0 = DispatchTime.now()
+                    let ref = ev.evaluate(.orbital(c), on: g)!
+                    let tRef = secondsSince(t0)
+                    t0 = DispatchTime.now()
+                    let app = WavefunctionSurfaces.orbitalGrid(wf, mo: homo, grid: g, evaluator: ev)
+                    let tApp = secondsSince(t0)
+                    t0 = DispatchTime.now()
+                    let fast = ev.evaluateOrbitalFast(c, on: g)!
+                    let tFast = secondsSince(t0)
+                    var worst: Float = 0, worstFast: Float = 0
+                    for (x, y) in zip(ref.values, app.values) { worst = max(worst, abs(x - y)) }
+                    for (x, y) in zip(ref.values, fast.values) { worstFast = max(worstFast, abs(x - y)) }
+                    print(String(format: "    %@ %@ %d pts: reference %.1f ms, app path %.1f ms (max diff %.1e), fast %.1f ms (%.1e)",
+                                 (file as NSString).lastPathComponent, q.rawValue, g.pointCount, tRef * 1000, tApp * 1000, worst, tFast * 1000, worstFast))
+                    try expect(app.counts == ref.counts && worst < 1e-5, "\(file) \(q): max diff \(worst)")
+                }
             }
         },
         Check("analysis.quality.weld") {
@@ -175,6 +210,26 @@ extension Checks {
             var threw = false
             do { _ = try runAsync { try await svc.surfaces(OrbitalSurfaceRequest(orbital: 9999)) } } catch { threw = true }
             try expect(threw, "out-of-range orbital should throw")
+        },
+        Check("analysis.quality.serviceCacheByteBudget") {
+            // A byte budget smaller than two grids keeps only the newest one; the newest always stays.
+            let wf = try qualityWavefunction()
+            let svc = OrbitalSurfaceService(wavefunction: wf, cacheLimit: 8, byteBudget: 1)
+            let g = try runAsync { try await svc.grid(orbital: 0, spin: .alpha, quality: .draft) }
+            _ = try runAsync { try await svc.grid(orbital: 1, spin: .alpha, quality: .draft) }
+            let bytes = try runAsync { await svc.cachedBytes }
+            try expect(bytes == g.values.count * MemoryLayout<Float>.stride, "cache holds \(bytes) bytes")
+            // Cancelling a running evaluation returns promptly with CancellationError (runCancellableWork).
+            let big = OrbitalSurfaceService(wavefunction: wf)
+            var cancelled = false
+            do {
+                _ = try runAsync {
+                    let t = Task { try await big.grid(orbital: 0, spin: .alpha, quality: .ultra) }
+                    t.cancel()
+                    return try await t.value
+                }
+            } catch is CancellationError { cancelled = true }
+            try expect(cancelled, "cancelled evaluation should throw CancellationError")
         },
         Check("analysis.quality.homoLumoFlags") {
             let wf = try qualityWavefunction()

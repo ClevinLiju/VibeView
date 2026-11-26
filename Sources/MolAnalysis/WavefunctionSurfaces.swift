@@ -24,7 +24,10 @@ public enum WavefunctionSurfaces {
                                    evaluator: OrbitalEvaluator? = nil) -> VolumeGrid {
         let set = spin == .beta ? (wf.beta ?? wf.alpha) : wf.alpha
         let ev = evaluator ?? OrbitalEvaluator(wavefunction: wf)
-        return ev.moGrid(coefficients: Array(set.orbital(mo)), grid: grid ?? defaultGrid(wf))
+        let coefficients = Array(set.orbital(mo)), spec = grid ?? defaultGrid(wf)
+        // Single orbital: the shell-clipped evaluator (same values as the BLAS path, 4-10x faster; see
+        // analysis.quality.fastMatchesReference / appGridTiming). It only returns nil when cancelled.
+        return ev.evaluateOrbitalFast(coefficients, on: spec) ?? ev.moGrid(coefficients: coefficients, grid: spec)
     }
 
     /// Occupied orbitals with occupation weights for a density kind (from the MO coefficients).

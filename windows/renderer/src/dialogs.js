@@ -200,17 +200,39 @@ export function defaultXTBSettings(app) {
   return { method: 'gfn2', task: 'optimize', optLevel: 'normal', maxCycles: null, solvationModel: 'none', solvent: null, charge: null, uhf: null, electronicTemperature: null, accuracy: null, threads: 4, extraArguments: [], timeout: null, ...(app.settings.xtb || {}) };
 }
 
+// ---------- Questions (native message box; the smoke test answers them itself) ----------
+export const prompt = { ask: (opts) => api.messageBox(opts) };
+
+// ---------- Pre-run geometry check (engine calc.preflight) ----------
+/**
+ * Asks before a job runs on a structure with an isolated atom, an over-stretched bond or several fragments.
+ * Resolves true when the job should run (the geometry looks fine, the user chose Run Anyway, or the engine has no
+ * calc.preflight).
+ */
+export async function confirmGeometry(app, docId, program) {
+  let r;
+  try { r = await request('calc.preflight', { docId }); } catch { return true; }
+  if (!r?.text) return true;
+  const choice = await prompt.ask({
+    type: 'warning', title: 'Check the structure', message: `Check the structure before running ${program}`,
+    detail: `${r.text}\n\nSuch geometries often make the SCF fail to converge.`,
+    buttons: ['Run Anyway', 'Cancel'], defaultId: 1, cancelId: 1,
+  });
+  return choice === 0;
+}
+
 export async function runXTB(app, settings) {
   const d = app.active;
   if (!d || !d.molecule.atoms.length) { toast('Build or open a molecule first.', { kind: 'warn' }); return; }
   const label = settings.task === 'optimize' ? 'xtb optimization' : settings.task === 'hessian' ? 'xtb optimization + Hessian' : 'xtb single point';
+  if (!(await confirmGeometry(app, d.docId, 'xtb'))) { app.status('xtb run cancelled'); return; }
   app.setBusy('Starting xtb…');
   try {
     const r = await request('xtb.run', { docId: d.docId, settings });
     app.jobStarted(r.jobId, { title: `${label} · ${d.name}`, directory: r.directory, docId: d.docId }, `${label}…`);
   } catch (e) {
     app.setBusy(null);
-    if (e.code === 'not_installed') toast('xtb was not found. Install it (for example: conda install -c conda-forge xtb) and make sure xtb.exe is on PATH.', { kind: 'error', timeout: 0 });
+    if (e.code === 'not_installed') toast('xtb was not found on this computer.', { kind: 'error', timeout: 0, action: { label: 'Install xtb…', run: () => openInstallXtb(app) } });
     else app.error('xtb failed to start', e);
   }
 }
@@ -258,9 +280,74 @@ export function openXTBSettings(app) {
       field('Charge', charge, 'Empty: from the molecule'), field('Unpaired electrons (uhf)', uhf, 'Empty: multiplicity − 1'),
       field('Electronic temperature (K)', etemp), field('Accuracy', acc), field('Threads', threads), field('Extra arguments', extra)),
     h('div', { style: { fontWeight: 600, fontSize: '12px', marginTop: '6px' } }, 'Command'), previewEl, errs,
-    h('div', { style: { fontSize: '12px', color: found ? 'var(--text-2)' : 'var(--err)', marginTop: '6px' } }, found ? `xtb: ${found}` : 'xtb was not found on this computer. Install it and make sure xtb.exe is on PATH.'),
+    h('div.row', { style: { fontSize: '12px', color: found ? 'var(--text-2)' : 'var(--err)', marginTop: '6px', gap: '8px', alignItems: 'center' } },
+      h('span', {}, found ? `xtb: ${found}` : 'xtb was not found on this computer.'),
+      found ? null : h('button.btn.small.primary', { onclick: () => { dlg.close(); openInstallXtb(app); } }, 'Install xtb…')),
   ), { width: 600, footer: [h('button.btn', { onclick: () => dlg.close() }, 'Cancel'), runBtn] });
   upd();
+}
+
+// ---------- Install xtb (main/xtb-install.js) ----------
+/** Re-reads the program locations from the engine (it searches the folder Install xtb… writes to). */
+export async function refreshPrograms(app) {
+  try {
+    const programs = await request('calc.programs');
+    if (programs && app.engineInfo) { app.engineInfo.programs = { ...(app.engineInfo.programs || {}), ...programs }; app.emit('engine-info', app.engineInfo); }
+    return programs;
+  } catch { return null; }
+}
+
+export function openInstallXtb(app) {
+  if (!api.installXtb) { toast('This build cannot install xtb.', { kind: 'warn' }); return null; }
+  const info = h('div', { style: { fontSize: '13px', lineHeight: 1.5 } });
+  const bar = h('progress', { max: 1, style: { width: '100%', display: 'none' } });
+  const msg = h('div', { style: { fontSize: '12px', color: 'var(--text-2)', minHeight: '1.4em', marginTop: '4px', whiteSpace: 'pre-wrap' } });
+  const installBtn = h('button.btn.primary', { onclick: () => go() }, 'Download and install');
+  let st = null; let busy = false;
+  const removeBtn = h('button.btn', { hidden: true, onclick: async () => {
+    const c = await api.messageBox({ type: 'question', message: 'Remove the xtb that VibeView installed?', detail: st?.folder || '', buttons: ['Remove', 'Cancel'], defaultId: 1, cancelId: 1 });
+    if (c !== 0) return;
+    try { await api.uninstallXtb(); await refreshPrograms(app); await show(); msg.textContent = 'Removed.'; } catch (e) { msg.textContent = e.message; }
+  } }, 'Remove');
+  async function show() {
+    st = await api.xtbStatus().catch(() => null);
+    const used = app.engineInfo?.programs?.xtb || null;
+    clear(info).append(
+      h('p', { style: { margin: '0 0 8px' } }, 'xtb (GFN-xTB from the Grimme group, LGPL-3.0) runs the quick geometry optimizations and the xtb jobs. VibeView can download the official Windows build from github.com/grimme-lab/xtb (about 38 MB), check its SHA-256 checksum, test it, and keep it in its own folder. Nothing else on the computer is changed.'),
+      h('div', {}, h('b', {}, 'Used now: '), used || 'not found'),
+      h('div', {}, h('b', {}, 'Installed by VibeView: '), st?.installed ? `${st.version ? 'xtb ' + st.version : 'present, but it does not run'} in ${st.folder}` : 'no'));
+    installBtn.textContent = st?.installed ? 'Reinstall latest' : 'Download and install';
+    removeBtn.hidden = !st?.installed;
+  }
+  const off = api.onXtbInstallProgress((p) => {
+    if (p.message) msg.textContent = p.message;
+    if (p.phase === 'download' && p.total) {
+      bar.style.display = ''; bar.max = p.total; bar.value = p.received || 0;
+      msg.textContent = `Downloading… ${((p.received || 0) / 1048576).toFixed(1)} of ${(p.total / 1048576).toFixed(1)} MB`;
+    } else if (p.phase !== 'note' && p.phase !== 'download') bar.removeAttribute('value');
+  });
+  async function go() {
+    if (busy) return;
+    busy = true; installBtn.disabled = true; removeBtn.disabled = true; bar.style.display = ''; msg.style.color = '';
+    try {
+      const r = await api.installXtb();
+      bar.style.display = 'none';
+      if (!r?.ok) { msg.textContent = `Not installed: ${r?.error || 'unknown error'}`; msg.style.color = 'var(--err)'; return; }
+      msg.textContent = `Installed xtb ${r.version} in ${r.folder}.`;
+      const programs = await refreshPrograms(app);
+      await show();
+      toast(`xtb ${r.version} installed`, { kind: 'ok' });
+      if (programs?.xtb && programs.xtb.toLowerCase() !== String(r.path).toLowerCase()) {
+        msg.textContent += `\nThe engine still uses ${programs.xtb} (a path set in Program Locations or found first on PATH); clear that to use this copy.`;
+      }
+    } catch (e) {
+      msg.textContent = `Not installed: ${e.message}`; msg.style.color = 'var(--err)';
+    } finally { busy = false; installBtn.disabled = false; removeBtn.disabled = false; }
+  }
+  const dlg = modal('Install xtb', h('div', {}, info, bar, msg), { width: 580, onClose: () => off(),
+    footer: [removeBtn, h('span.grow'), h('button.btn', { onclick: () => dlg.close() }, 'Close'), installBtn] });
+  show();
+  return { dialog: dlg, install: go };
 }
 
 // ---------- Export image ----------
@@ -296,9 +383,64 @@ export function openExportImage(app) {
 }
 
 // ---------- Job log ----------
-export function openJobLog(app, focusJob) {
+const ROLE_LABEL = { input: 'Input', output: 'Output', error: 'Error output' };
+const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(0)} kB` : `${n} B`);
+
+/**
+ * Job log with viewers for the job's files (engine job.files / job.readFile): the live log, or the input as written, the
+ * main output (followed while the job runs), the error output, or another text file of the job folder.
+ * `opts.view`: 'log' | 'input' | 'output' | 'error' | a file name.
+ */
+export function openJobLog(app, focusJob, opts = {}) {
   const list = h('div.joblist');
   const pre = h('pre');
+  let view = opts.view || 'log';
+  let files = null;          // job.files of the current job
+  let fileText = null;       // job.readFile result shown
+  let pollT = null;
+  const viewSel = h('select', { title: 'Show the live log or one of the job\'s files', onchange: () => { view = viewSel.value; renderLog(true); } });
+  const fileFor = (role) => {
+    if (!files) return null;
+    const name = role === 'input' ? files.inputFile : role === 'output' ? files.outputFile : role === 'error' ? files.errorFile : role;
+    return files.files.find((f) => f.name === name) || null;
+  };
+  const currentFile = () => (view === 'log' ? null : fileFor(view));
+  const openOut = h('button.btn.small', { title: 'Open the output in VibeView (geometry, orbitals, spectra)', onclick: () => { const f = fileFor('output'); if (f) app.openPath(f.path); } }, 'Open output in VibeView');
+  const openExt = h('button.btn.small', { title: 'Open this file in its default program', onclick: () => { const f = currentFile(); if (f) api.openTextFile(f.path); } }, 'Open in editor');
+  async function loadFiles() {
+    const j = app.jobs.get(current);
+    files = null;
+    if (j) {
+      try { files = await request('job.files', { jobId: j.jobId, directory: j.directory || null }); } catch { files = null; }
+    }
+    fillViews();
+  }
+  function fillViews() {
+    const opt = (v, l, dis = false) => h('option', { value: v, disabled: dis }, l);
+    clear(viewSel).append(opt('log', 'Live log'));
+    if (files) {
+      const named = [['input', files.inputFile], ['output', files.outputFile], ['error', files.errorFile]];
+      for (const [role, name] of named) {
+        const f = name && files.files.find((x) => x.name === name);
+        viewSel.append(opt(role, `${ROLE_LABEL[role]}: ${name || 'none'}${f ? ` (${fmtSize(f.size)})` : name ? ' (not written yet)' : ''}`, !f));
+      }
+      const shown = new Set(named.map(([, n]) => n).filter(Boolean));
+      const rest = files.files.filter((f) => !shown.has(f.name) && f.role !== 'binary');
+      if (rest.length) {
+        const g = h('optgroup', { label: 'Other files in the job folder' });
+        for (const f of rest) g.append(opt(f.name, `${f.name} (${fmtSize(f.size)})`));
+        viewSel.append(g);
+      }
+    }
+    if (![...viewSel.options].some((o) => o.value === view && !o.disabled)) view = 'log';
+    viewSel.value = view;
+    openOut.disabled = !fileFor('output');
+  }
+  async function loadFile() {
+    const f = currentFile();
+    if (!f) { fileText = null; return; }
+    try { fileText = await request('job.readFile', { jobId: current, directory: files?.directory, name: f.name }); } catch (e) { fileText = { name: f.name, text: `(${e.message})`, truncated: false, size: 0 }; }
+  }
   const searchIn = h('input', { type: 'search', placeholder: 'Find in log', style: { width: '180px' } });
   const follow = h('input', { type: 'checkbox', checked: true });
   const streamSel = select([{ value: 'all', label: 'All output' }, { value: 'stdout', label: 'stdout' }, { value: 'stderr', label: 'stderr' }, { value: 'file', label: 'Output file' }], 'all', () => renderLog());
@@ -310,37 +452,63 @@ export function openJobLog(app, focusJob) {
     clear(list);
     if (!app.jobs.size) list.append(h('div.empty', {}, 'No jobs yet'));
     for (const j of [...app.jobs.values()].reverse()) {
-      list.append(h('button' + (j.jobId === current ? '.on' : ''), { onclick: () => { current = j.jobId; renderList(); renderLog(); } },
+      list.append(h('button' + (j.jobId === current ? '.on' : ''), { onclick: async () => { current = j.jobId; renderList(); await loadFiles(); renderLog(true); } },
         h('div', { style: { fontWeight: 600, fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, j.title),
         h('span.badge' + (j.done ? (j.ok ? '.ok' : '.err') : ''), {}, j.done ? (j.ok ? 'done' : 'failed') : 'running')));
     }
   };
-  const renderLog = () => {
+  const renderLog = async (reload = false) => {
     const j = app.jobs.get(current);
+    clearTimeout(pollT);
     if (!j) { pre.textContent = ''; info.textContent = ''; return; }
     const q = searchIn.value.trim().toLowerCase();
-    const want = streamSel.value;
-    const lines = j.lines.filter((l) => want === 'all' || l.stream === want);
+    const mark = (t) => t.replace(new RegExp(escapeHTML(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), (x) => `<mark>${x}</mark>`);
     let html = '';
     let hits = 0;
-    for (const l of lines.slice(-8000)) {
-      let t = escapeHTML(l.line);
-      if (q && l.line.toLowerCase().includes(q)) { hits++; t = t.replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), (x) => `<mark>${x}</mark>`); }
-      html += l.stream === 'stderr' ? `<span class="stderr">${t}</span>\n` : `${t}\n`;
+    streamSel.hidden = view !== 'log';
+    openExt.hidden = view === 'log';
+    searchIn.placeholder = view === 'log' ? 'Find in log' : 'Find in file';
+    if (view === 'log') {
+      const want = streamSel.value;
+      const lines = j.lines.filter((l) => want === 'all' || l.stream === want);
+      for (const l of lines.slice(-8000)) {
+        let t = escapeHTML(l.line);
+        if (q && l.line.toLowerCase().includes(q)) { hits++; t = mark(t); }
+        html += l.stream === 'stderr' ? `<span class="stderr">${t}</span>\n` : `${t}\n`;
+      }
+    } else {
+      if (reload || !fileText || fileText.name !== currentFile()?.name) await loadFile();
+      if (app.jobs.get(current) !== j) return;
+      const text = (fileText?.text ?? '').replace(/\r\n/g, '\n');
+      const lines = text.split('\n');
+      if (lines.length && lines[lines.length - 1] === '') lines.pop();
+      const w = String(lines.length).length;
+      lines.forEach((line, i) => {
+        let t = escapeHTML(line);
+        if (q && line.toLowerCase().includes(q)) { hits++; t = mark(t); }
+        html += `<span class="ln" style="color:var(--text-3);user-select:none">${String(i + 1).padStart(w)}</span>  ${t}\n`;
+      });
+      if (fileText?.truncated) html = `<span class="stderr">… only the last ${fmtSize(text.length)} of ${fmtSize(fileText.size)} are shown</span>\n` + html;
+      // Follow a growing file while the job runs.
+      if (!j.done && follow.checked) pollT = setTimeout(() => { if (app.jobs.get(current) === j && pre.isConnected) renderLog(true); }, 2000);
     }
     pre.innerHTML = html;
-    info.textContent = `${j.directory || ''}${q ? ` · ${hits} matching lines` : ''}${j.done ? ` · exit ${j.exitCode}` : ''}`;
+    const where = view === 'log' ? (j.directory || '') : (currentFile()?.path || '');
+    info.textContent = `${where}${q ? ` · ${hits} matching lines` : ''}${j.done ? ` · exit ${j.exitCode}` : ''}${files?.inputEdited ? ' · input edited by hand' : ''}`;
     cancel.disabled = j.done;
     if (follow.checked && !q) pre.scrollTop = pre.scrollHeight;
     else if (q) pre.querySelector('mark')?.scrollIntoView({ block: 'center' });
   };
-  searchIn.addEventListener('input', renderLog);
+  searchIn.addEventListener('input', () => renderLog());
   const offLog = app.on('job-log', (j) => { if (j.jobId === current) { clearTimeout(offLog.t); offLog.t = setTimeout(renderLog, 60); } });
-  const offJob = app.on('job', () => { renderList(); renderLog(); });
+  const offJob = app.on('job', async (j) => { renderList(); if (j?.jobId === current) await loadFiles(); renderLog(true); });
   const offJobs = app.on('jobs', () => { renderList(); });
-  modal('Job Log', h('div.joblog', {}, list, h('div.jobview', {}, h('div.tools', {}, searchIn, streamSel, h('label.check', {}, follow, 'Follow'), h('span', { style: { flex: 1 } }), reveal, cancel), pre, h('div', { style: { padding: '4px 10px', borderTop: '1px solid var(--border)' } }, info))),
-    { width: 980, onClose: () => { offLog(); offJob(); offJobs(); } });
-  renderList(); renderLog();
+  const dlg = modal('Job Log', h('div.joblog', {}, list, h('div.jobview', {}, h('div.tools', {}, viewSel, searchIn, streamSel, h('label.check', {}, follow, 'Follow'), h('span', { style: { flex: 1 } }), openExt, openOut, reveal, cancel), pre, h('div', { style: { padding: '4px 10px', borderTop: '1px solid var(--border)' } }, info))),
+    { width: 1060, onClose: () => { clearTimeout(pollT); offLog(); offJob(); offJobs(); } });
+  renderList(); fillViews(); renderLog();
+  loadFiles().then(() => renderLog(true));
+  // handle for the smoke test
+  return { dialog: dlg, setView: async (v) => { await loadFiles(); view = v; fillViews(); await renderLog(true); return view; }, text: () => pre.textContent, files: () => files };
 }
 
 // ---------- Program locations (calc.setProgramPath) ----------

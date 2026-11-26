@@ -146,6 +146,7 @@ function newDoc(molecule, extra = {}) {
   docs.set(id, d);
   return d;
 }
+const MOCK_JOBS = new Map();   // jobId -> job.files info (calc.run)
 function getDoc(p) { const d = docs.get(p.docId); if (!d) throw err('not_found', `no document ${p.docId}`); return d; }
 function summary(d) {
   const m = d.molecule;
@@ -371,14 +372,39 @@ function modesFor(d) {
     displacements: d.molecule.atoms.map((a, i) => { const s = (i + k) % 2 ? 1 : -1; const w = a.z === 1 ? 0.6 : 0.1; return [s * w * Math.cos(k), s * w * Math.sin(k + i), w * 0.3 * s]; }),
   })).slice(0, Math.max(0, 3 * n - 6) || freqs.length);
 }
-function broaden(sticks, xmin, xmax, fwhm) {
-  const xs = [], ys = []; const N = 800; const g = fwhm / 2;
+// Height-normalised line shapes for the spectrum stub (Voigt via a pseudo-Voigt stand-in: the mock only has to look right).
+function lineShape(p, fallbackFWHM) {
+  const kind = p.shape || 'lorentzian';
+  const fwhm = p.fwhm || fallbackFWHM;
+  const g = (d, w) => Math.exp(-4 * Math.LN2 * (d / w) ** 2);
+  const l = (d, w) => 1 / (1 + (2 * d / w) ** 2);
+  if (kind === 'sticks') return null;
+  if (kind === 'gaussian') return { f: (d) => g(d, fwhm), fwhm };
+  if (kind === 'pseudoVoigt') { const eta = p.eta ?? 0.5; return { f: (d) => eta * l(d, fwhm) + (1 - eta) * g(d, fwhm), fwhm }; }
+  if (kind === 'voigt') {
+    const fG = p.gaussianFWHM ?? fwhm / 2, fL = p.lorentzianFWHM ?? fwhm / 2;
+    const fV = 0.5346 * fL + Math.sqrt(0.2166 * fL * fL + fG * fG), r = fL / fV;
+    const eta = 1.36603 * r - 0.47719 * r * r + 0.11116 * r ** 3;
+    return { f: (d) => eta * l(d, fV) + (1 - eta) * g(d, fV), fwhm: fV };
+  }
+  return { f: (d) => l(d, fwhm), fwhm };
+}
+function broaden(sticks, xmin, xmax, shape) {
+  if (!shape) return { xB64: b64f([]), yB64: b64f([]), pointCount: 0 };
+  const xs = [], ys = []; const N = 800;
   for (let i = 0; i < N; i++) {
     const x = xmin + ((xmax - xmin) * i) / (N - 1); let y = 0;
-    for (const s of sticks) y += s.height * (g * g) / ((x - s.x) ** 2 + g * g);
+    for (const s of sticks) y += s.height * shape.f(x - s.x);
     xs.push(x); ys.push(y);
   }
-  return { xB64: b64f(xs), yB64: b64f(ys) };
+  return { xB64: b64f(xs), yB64: b64f(ys), pointCount: N, _ys: ys };
+}
+/** IR %T like the engine: T = 100·10^(−k·I), the strongest band at 15 %T. */
+function toTransmittance(out, sticks) {
+  const mx = Math.max(0, ...(out._ys || []), ...sticks.map((s) => s.height));
+  const k = mx > 0 ? -Math.log10(0.15) / mx : 0;
+  const t = (v) => Math.min(100, 100 * Math.pow(10, -k * Math.max(0, v)));
+  return { ...out, yB64: b64f((out._ys || []).map(t)), sticks: sticks.map((s) => ({ ...s, height: t(s.height) })), yLabel: 'Transmittance (%)', transmittance: true, baseline: 100 };
 }
 
 const COMMANDS = ['add', 'bond', 'center', 'cd', 'clean', 'color', 'delete', 'echo', 'fit', 'help', 'hydrogens', 'label', 'ls', 'measure', 'open', 'orbital', 'save', 'select', 'style', 'view'];
@@ -480,18 +506,75 @@ const handlers = {
   'analysis.modes': (p) => ({ modes: modesFor(getDoc(p)) }),
   'analysis.spectrum': (p) => {
     const d = getDoc(p); const modes = modesFor(d);
-    if (p.kind === 'uvvis') { const sticks = [{ x: 180, height: 0.12, label: 'S1', sourceIndex: 0 }, { x: 155, height: 0.4, label: 'S2', sourceIndex: 1 }]; return { xLabel: 'Wavelength (nm)', yLabel: 'Oscillator strength', xAxisReversed: false, sticks, ...broaden(sticks, 100, 400, p.fwhm || 20) }; }
+    const strip = ({ _ys, ...o }) => o;
+    if (p.kind === 'uvvis') {
+      const sticks = [{ x: 180, height: 0.12, label: 'S1', sourceIndex: 0 }, { x: 155, height: 0.4, label: 'S2', sourceIndex: 1 }];
+      const shape = lineShape(p, 0.3); const w = shape ? { ...shape, f: (dx) => shape.f(dx * 0.01) } : null; // eV widths → ~100 nm per eV
+      return strip({ xLabel: 'Wavelength (nm)', yLabel: 'Oscillator strength', xAxisReversed: false, sticks, shape: p.shape || 'gaussian', fwhm: shape ? shape.fwhm : 0, normalization: 'area', transmittance: false, ...broaden(sticks, 100, 400, w) });
+    }
     const sticks = modes.map((m) => ({ x: m.frequency * (p.scale || 1), height: p.kind === 'raman' ? m.ramanActivity : m.irIntensity, label: null, sourceIndex: m.index }));
-    return { xLabel: 'Wavenumber (cm⁻¹)', yLabel: p.kind === 'raman' ? 'Raman activity' : 'IR intensity (km/mol)', xAxisReversed: true, sticks, ...broaden(sticks, 400, 4000, p.fwhm || 20) };
+    const shape = lineShape(p, 10);
+    let out = { xLabel: 'Wavenumber (cm⁻¹)', yLabel: p.kind === 'raman' ? 'Raman activity' : 'IR intensity (km/mol)', xAxisReversed: true, sticks, shape: p.shape || 'lorentzian', fwhm: shape ? shape.fwhm : 0, normalization: 'height', transmittance: false, ...broaden(sticks, 400, 4000, shape) };
+    if (p.kind === 'ir' && p.transmittance) out = toTransmittance(out, sticks);
+    return strip(out);
   },
   'analysis.thermo': () => ({ rows: [{ label: 'Zero-point energy', hartree: 0.0213, kcal: 13.37 }, { label: 'Gibbs free energy', hartree: -76.3, kcal: null }] }),
   'calc.programs': () => ({ xtb: null, orca: null, gaussian: null, qchem: null, formchk: null }),
-  'calc.preview': (p) => { const m = getDoc(p).molecule; const s = p.spec; return { input: `! ${s.method} ${s.basis} ${s.task}\n\n* xyz ${m.charge} ${m.multiplicity}\n` + m.atoms.map((a) => `  ${a.symbol} ${a.pos.map((v) => v.toFixed(6)).join(' ')}`).join('\n') + '\n*\n', errors: [], files: ['job.inp'], commandLine: `${s.program} job.inp` }; },
+  'calc.preview': (p) => {
+    const m = getDoc(p).molecule; const s = p.spec;
+    const xyz = `${m.atoms.length}\n${m.title || 'mock'}\n` + m.atoms.map((a) => `${a.symbol} ${a.pos.map((v) => v.toFixed(6)).join(' ')}`).join('\n') + '\n';
+    if (s.program === 'xtb') {   // like the engine: "# xtb job.xyz …" command line, then the XYZ file
+      const args = ['job.xyz', ...(s.task === 'energy' ? [] : ['--opt']), '--chrg', String(s.charge ?? 0), '--uhf', String((s.multiplicity ?? 1) - 1), '-P', String(s.nprocs || 1)];
+      return { input: `# xtb ${args.join(' ')}\n# job.xyz:\n\n${xyz}`, inputFile: 'job.xyz', errors: [], files: ['job.xyz'], commandLine: `xtb ${args.join(' ')} > job.out` };
+    }
+    const ext = { orca: 'inp', gaussian: 'gjf', qchem: 'in' }[s.program] || 'inp';
+    return { input: `! ${s.method} ${s.basis} ${s.task}\n\n* xyz ${m.charge} ${m.multiplicity}\n` + m.atoms.map((a) => `  ${a.symbol} ${a.pos.map((v) => v.toFixed(6)).join(' ')}`).join('\n') + '\n*\n',
+      inputFile: `job.${ext}`, errors: [], files: [`job.${ext}`], commandLine: `${s.program} job.${ext}` };
+  },
+  'calc.checkInput': (p) => {
+    if (p.program === 'xtb' && !/^\s*#\s*\S*xtb(\.exe)?\b/i.test(p.text || '')) return { issues: [{ severity: 'error', line: 1, message: 'The first line must be the xtb command, e.g. “# xtb job.xyz --opt”.', fixable: false }], repaired: null, fixes: [], gaussian: null };
+    return { issues: [], repaired: null, fixes: [], gaussian: null };
+  },
+  // Pre-run geometry check: atoms with no neighbour within 3 Å (the engine also reports stretched bonds and fragments).
+  'calc.preflight': (p) => {
+    const at = getDoc(p).molecule.atoms; const warnings = [];
+    if (at.length > 1) at.forEach((a, i) => {
+      let best = Infinity;
+      at.forEach((b, j) => { if (j !== i) best = Math.min(best, Math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1], a.pos[2] - b.pos[2])); });
+      if (best > 3) warnings.push({ kind: 'isolatedAtom', atoms: [i], distance: best, message: `Atom ${a.symbol}${i + 1} is ${best.toFixed(1)} Å from its nearest neighbour.` });
+    });
+    return { warnings, text: warnings.length ? warnings.slice(0, 5).map((w) => w.message).join('\n') + '\nRun anyway?' : null };
+  },
+  'job.files': (p) => {
+    const j = MOCK_JOBS.get(p.jobId); const dir = j?.directory || p.directory;
+    if (!dir || !fs.existsSync(dir)) throw err('not_found', `no job '${p.jobId}'`);
+    const files = fs.readdirSync(dir).filter((n) => fs.statSync(path.join(dir, n)).isFile()).sort().map((n) => {
+      const st = fs.statSync(path.join(dir, n));
+      const role = n === j?.inputFile ? 'input' : n === j?.outputFile ? 'output' : n === j?.errorFile ? 'error' : /\.chk$/i.test(n) ? 'binary' : 'other';
+      return { name: n, size: st.size, modified: st.mtimeMs, role, path: path.join(dir, n) };
+    });
+    return { directory: dir, files, inputFile: j?.inputFile || null, outputFile: j?.outputFile || null, errorFile: j?.errorFile || null, moldenFile: null,
+      commandLine: j?.commandLine || null, status: j?.status || null, program: j?.program || null, inputEdited: !!j?.inputEdited };
+  },
+  'job.readFile': (p) => {
+    const j = MOCK_JOBS.get(p.jobId); const dir = j?.directory || p.directory;
+    if (!dir || !p.name || /[\\/:]/.test(p.name)) throw err('bad_request', 'name must be a file name in the job folder');
+    const f = path.join(dir, p.name);
+    if (!fs.existsSync(f)) throw err('not_found', `${p.name} does not exist (yet)`);
+    const text = fs.readFileSync(f, 'utf8');
+    return { name: p.name, path: f, size: Buffer.byteLength(text), truncated: false, text };
+  },
   'calc.run': (p) => {
     if (p.inputText != null && (typeof p.inputText !== 'string' || !p.inputText.trim())) throw err('bad_request', 'inputText is empty');
     if (p.spec?.program !== 'gaussian') throw err('not_installed', 'The mock engine cannot run calculations.');
     // Gaussian: a fake job that ends like a real one whose automatic formchk failed (job.finished fchk / formchkError).
-    const src = getDoc(p); const jobId = `job${Date.now()}`; const dir = p.directory || path.join(require('os').tmpdir(), 'vibeview-mock');
+    const src = getDoc(p); const jobId = `job${Date.now()}`; const dir = p.directory || path.join(require('os').tmpdir(), 'vibeview-mock', jobId);
+    // Job files as the engine writes them (job.files / job.readFile).
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'job.gjf'), p.inputText || '');
+    fs.writeFileSync(path.join(dir, 'job.log'), ' Entering Gaussian System (mock)\n' + (p.inputText || '').split('\n').slice(0, 6).map((l) => ' ' + l).join('\n') + '\n Normal termination of Gaussian (mock).\n');
+    fs.writeFileSync(path.join(dir, 'job.stderr.txt'), 'mock: nothing went wrong\n');
+    MOCK_JOBS.set(jobId, { directory: dir, inputFile: 'job.gjf', outputFile: 'job.log', errorFile: 'job.stderr.txt', commandLine: 'g16 job.gjf job.log', status: 'finished', program: 'gaussian', inputEdited: !!p.inputEdited });
     setTimeout(() => {
       send({ event: 'job.started', params: { jobId, directory: dir, commandLine: 'g16 job.gjf' } });
       for (const line of (p.inputText || '').split('\n').slice(0, 6)) send({ event: 'job.log', params: { jobId, stream: 'file', file: 'job.log', line } });
@@ -526,6 +609,12 @@ const handlers = {
     if (cmd === 'fit') return { results: [{ command: line, success: true, messages: [] }], molecule: null, view: { style: null, labels: null, fit: true, view: null, orbital: null, background: null } };
     if (cmd === 'help') return { results: [{ command: line, success: true, messages: [{ level: 'info', text: 'Commands: ' + COMMANDS.join(', ') }] }], molecule: null, view: null };
     return { results: [{ command: line, success: COMMANDS.includes(cmd), messages: [{ level: COMMANDS.includes(cmd) ? 'info' : 'error', text: COMMANDS.includes(cmd) ? `(mock) ${cmd} accepted` : `unknown command '${cmd}'` }] }], molecule: null, view: null };
+  },
+  // Console exports (engine Methods+ConsoleExport.swift): the mock accepts the bytes and writes nothing.
+  'command.writeExport': (p) => {
+    if (!p.token) throw err('bad_request', "missing string parameter 'token'");
+    const n = p.base64 ? Buffer.from(p.base64, 'base64').length : Buffer.byteLength(p.text || '');
+    return { path: '(mock)', bytes: n, kind: 'image' };
   },
   'command.complete': (p) => {
     const before = p.line.slice(0, p.cursor); const m = before.match(/(\S*)$/); const word = m ? m[1] : '';
