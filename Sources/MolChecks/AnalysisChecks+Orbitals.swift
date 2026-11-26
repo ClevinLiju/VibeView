@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 import MolIO
 import MolAnalysis

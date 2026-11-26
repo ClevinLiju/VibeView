@@ -58,7 +58,7 @@ public enum CommandCompleter {
     }
 
     private static func paths(_ partial: String, _ cwd: URL, dirsOnly: Bool = false) -> [String] {
-        let slash = partial.lastIndex(of: "/")
+        let slash = partial.lastIndex(where: CommandPaths.isSeparator)
         let dirText = slash.map { String(partial[...$0]) } ?? ""
         let namePrefix = slash.map { String(partial[partial.index(after: $0)...]) } ?? partial
         let dirURL = dirText.isEmpty ? cwd : CommandPaths.resolve(dirText, cwd: cwd)

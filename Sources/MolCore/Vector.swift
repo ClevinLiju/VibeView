@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // Owned by Lead 1. Small vector / linear-algebra helpers shared by all MolCore files.
 // Angles in the public API are in DEGREES unless a name says otherwise.

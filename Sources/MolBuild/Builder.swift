@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // Attach / place operations (Worker A, Lead 4).

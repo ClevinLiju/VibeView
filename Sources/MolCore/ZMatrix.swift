@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // Owned by Lead 1 (Core). Z-matrix model, parser (public Gaussian input conventions), builder and writer.
 
@@ -342,6 +342,44 @@ public struct ZMatrix: Sendable, Hashable, Codable {
             rows.append(row)
         }
         if useVariables { convertToVariables() }
+    }
+
+    /// Atom order for a connectivity-following Z-matrix (Molden style): a breadth-first walk over the heavy atoms
+    /// of each fragment, each atom's hydrogens right after it, so every row's bond (and usually angle and dihedral)
+    /// reference is a bonded neighbour. Each fragment starts at its lowest-index heavy atom; the root's hydrogens
+    /// follow its first heavy neighbour so rows 1 and 2 are the backbone. Iterative (no recursion).
+    /// `ZMatrix(molecule:)` of the molecule reordered this way gives the connectivity Z-matrix.
+    public static func connectivityOrder(_ molecule: Molecule) -> [Int] {
+        let n = molecule.atoms.count
+        guard n > 0 else { return [] }
+        let adj = molecule.adjacency().map { $0.sorted() }
+        let isH = molecule.atoms.map { $0.atomicNumber == 1 }
+        var placed = [Bool](repeating: false, count: n)
+        var order: [Int] = []
+        order.reserveCapacity(n)
+        func emit(_ i: Int) { placed[i] = true; order.append(i) }
+        func emitHydrogens(of i: Int) {
+            for j in adj[i] where !placed[j] && isH[j] && adj[j].count <= 1 { emit(j) }
+        }
+        var seeds = (0..<n).filter { !isH[$0] } + (0..<n).filter { isH[$0] }
+        seeds.reverse()
+        while let root = seeds.popLast() {
+            if placed[root] { continue }
+            emit(root)
+            var queue = [root], head = 0
+            var rootHydrogensPending = true
+            while head < queue.count {
+                let i = queue[head]; head += 1
+                if i != root { emitHydrogens(of: i) }
+                for j in adj[i] where !placed[j] && !(isH[j] && adj[j].count <= 1) {
+                    emit(j)
+                    queue.append(j)
+                    if rootHydrogensPending { rootHydrogensPending = false; emitHydrogens(of: root) }
+                }
+                if i == root && rootHydrogensPending { rootHydrogensPending = false; emitHydrogens(of: root) }
+            }
+        }
+        return order
     }
 
     private mutating func convertToVariables() {

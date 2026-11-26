@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-import simd
+import MolSIMD
 import MolIO
 
 // Q-Chem checks. Q-Chem is not installed: the fixtures in TestData/io/qchem/ are hand-written from the
@@ -180,6 +180,8 @@ extension Checks {
             for m in r.normalModes { try expect(m.displacements.count == 3, "one displacement per atom") }
             try expect(r.normalModes[0].displacements[1] == Vec3(0, 0.43, -0.56), "mode 1 H displacement")
             try expect(r.normalModes[2].displacements[1] == Vec3(0, 0.56, -0.43), "mode 3 H displacement (3rd column group)")
+            try expect(r.normalModes.map(\.forceConstant) == [1.7, 7.9, 8.5], "Force Cnst: \(r.normalModes.map(\.forceConstant))")
+            try expect(r.normalModes.map(\.reducedMass) == [1.09, 1.04, 1.05], "Red. Mass: \(r.normalModes.map(\.reducedMass))")
         },
         Check("io.qchem.output.orbitals_charges_dipole") {
             let r = try QChemOutput.parse(try qcFixture("water_optfreq.out")).result
@@ -187,7 +189,8 @@ extension Checks {
             try expect(r.orbitals.allSatisfy { $0.spin == .restricted } && r.orbitals[0].index == 1, "spin/index")
             try expectClose(r.orbitals[4].energy, -0.36, tol: 1e-9)
             try expectClose(r.extras?.homoLumoGapEV ?? 0, 0.41 * 27.211386, tol: 1e-4)
-            try expect(r.mullikenCharges == [-0.452, 0.226, 0.226] && r.extras?.charges["mulliken"] == r.mullikenCharges, "Mulliken")
+            try expect(r.mullikenCharges == [-0.452, 0.226, 0.226] && r.extras?.charges["Mulliken"] == r.mullikenCharges && r.extras?.spinDensities["mulliken"] == nil && !r.chargesByScheme.keys.contains("mulliken"),
+                       "Mulliken key (one spelling across parsers): \(r.chargesByScheme.keys.sorted())")
             try expect(r.dipole == Vec3(0, 0, 2.05), "dipole")
         },
         Check("io.qchem.output.thermochemistry") {

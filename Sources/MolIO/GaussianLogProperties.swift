@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-import simd
+import MolSIMD
 
 // Thermochemistry, orbital energies, population analyses, dipole and excited states.
 

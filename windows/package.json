@@ -1,0 +1,80 @@
+{
+  "name": "vibeview-windows",
+  "productName": "VibeView",
+  "version": "0.3.0",
+  "description": "VibeView molecular builder and viewer for Windows",
+  "license": "MIT",
+  "author": "VibeView contributors",
+  "private": true,
+  "main": "main/main.js",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "dev": "node scripts/build.js && electron . --dev",
+    "dev:mock": "node scripts/build.js && electron . --dev --mock-engine",
+    "start": "electron .",
+    "icon": "node build/make-icon.js",
+    "smoke": "node scripts/build.js && electron . --smoke-test ../Sources/MolChecks/TestData/io/orca/water_optfreq.out --screenshot dist/smoke.png",
+    "dist": "node scripts/build.js && electron-builder --win nsis zip",
+    "dist:dir": "node scripts/build.js && electron-builder --win dir"
+  },
+  "allowScripts": { "electron@33.2.1": true, "esbuild@0.24.0": true },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8",
+    "esbuild": "0.24.0",
+    "three": "0.170.0"
+  },
+  "build": {
+    "appId": "io.github.vibeview.windows",
+    "productName": "VibeView",
+    "copyright": "Copyright (c) VibeView contributors",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": [
+      "main/**",
+      "renderer/index.html",
+      "renderer/styles.css",
+      "renderer/dist/**",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "engine", "to": "engine", "filter": ["**/*"] }
+    ],
+    "asar": true,
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ],
+      "artifactName": "VibeView-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "VibeView",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "VibeView-Setup-${version}.${ext}"
+    },
+    "fileAssociations": [
+      { "ext": "xyz", "name": "XYZ coordinates", "description": "XYZ molecule", "role": "Editor" },
+      { "ext": "pdb", "name": "PDB structure", "description": "Protein Data Bank file", "role": "Editor" },
+      { "ext": "mol", "name": "MDL Molfile", "description": "MDL Molfile", "role": "Editor" },
+      { "ext": "sdf", "name": "SD file", "description": "Structure-data file", "role": "Editor" },
+      { "ext": "cml", "name": "Chemical Markup Language", "description": "CML molecule", "role": "Editor" },
+      { "ext": "gjf", "name": "Gaussian input", "description": "Gaussian input file", "role": "Editor" },
+      { "ext": "com", "name": "Gaussian input", "description": "Gaussian input file", "role": "Editor" },
+      { "ext": "log", "name": "Calculation output", "description": "Quantum chemistry output", "role": "Viewer" },
+      { "ext": "out", "name": "Calculation output", "description": "Quantum chemistry output", "role": "Viewer" },
+      { "ext": "fchk", "name": "Formatted checkpoint", "description": "Formatted checkpoint file", "role": "Viewer" },
+      { "ext": "cube", "name": "Gaussian cube", "description": "Volumetric cube file", "role": "Viewer" },
+      { "ext": "molden", "name": "Molden file", "description": "Molden wavefunction file", "role": "Viewer" },
+      { "ext": "vibeview", "name": "VibeView session", "description": "VibeView session", "role": "Editor" }
+    ]
+  }
+}

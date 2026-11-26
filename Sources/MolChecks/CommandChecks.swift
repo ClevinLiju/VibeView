@@ -92,6 +92,23 @@ extension Checks {
             catch let e as TokenizerError { try expect(e.column == 9, "column \(e.column)") }
         },
         Check("command.paths.resolve") {
+            #if os(Windows)
+            // Same cases with drive-letter paths; expectations are built with URL APIs so separators match.
+            let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).standardizedFileURL
+            let cwd = root.appendingPathComponent("a/b", isDirectory: true)
+            func p(_ rel: String) -> String { root.appendingPathComponent(rel).standardizedFileURL.path }
+            try expect(CommandPaths.resolve("c.xyz", cwd: cwd).path == p("a/b/c.xyz"), CommandPaths.resolve("c.xyz", cwd: cwd).path)
+            try expect(CommandPaths.resolve("../c.xyz", cwd: cwd).path == p("a/c.xyz"), CommandPaths.resolve("../c.xyz", cwd: cwd).path)
+            let abs = URL(fileURLWithPath: "C:\\etc\\x").standardizedFileURL.path
+            try expect(CommandPaths.resolve("C:\\etc\\x", cwd: cwd).path == abs, CommandPaths.resolve("C:\\etc\\x", cwd: cwd).path)
+            try expect(CommandPaths.resolve("C:/etc/x", cwd: cwd).path == abs, CommandPaths.resolve("C:/etc/x", cwd: cwd).path)
+            let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
+            try expect(CommandPaths.resolve("~/foo", cwd: cwd).path == home.appendingPathComponent("foo").standardizedFileURL.path,
+                       CommandPaths.resolve("~/foo", cwd: cwd).path)
+            try expect(CommandPaths.resolve("~", cwd: cwd).path == home.path, CommandPaths.resolve("~", cwd: cwd).path)
+            try expect(CommandPaths.resolve("./x/../y", cwd: cwd).path == p("a/b/y"), CommandPaths.resolve("./x/../y", cwd: cwd).path)
+            try expect(CommandPaths.resolve(".\\x\\..\\y", cwd: cwd).path == p("a/b/y"), CommandPaths.resolve(".\\x\\..\\y", cwd: cwd).path)
+            #else
             let cwd = URL(fileURLWithPath: "/tmp/a/b")
             try expect(CommandPaths.resolve("c.xyz", cwd: cwd).path == "/tmp/a/b/c.xyz")
             try expect(CommandPaths.resolve("../c.xyz", cwd: cwd).path == "/tmp/a/c.xyz")
@@ -99,6 +116,7 @@ extension Checks {
             try expect(CommandPaths.resolve("~/foo", cwd: cwd).path == NSHomeDirectory() + "/foo")
             try expect(CommandPaths.resolve("~", cwd: cwd).path == URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL.path)
             try expect(CommandPaths.resolve("./x/../y", cwd: cwd).path == "/tmp/a/b/y")
+            #endif
         },
         Check("command.paths.glob") {
             let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("molcmd-\(UUID().uuidString)")

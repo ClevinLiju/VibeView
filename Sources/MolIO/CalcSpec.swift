@@ -145,7 +145,19 @@ public struct CalcSpec: Sendable, Codable, Equatable {
     /// Methods that carry their own basis (semiempirical, xtb, composite).
     public static func isBasisFree(_ method: String) -> Bool {
         let m = method.uppercased()
-        return m.contains("XTB") || m.hasPrefix("GFN") || ["PM6", "PM7", "AM1", "PM3", "HF-3C", "PBEH-3C", "R2SCAN-3C", "B97-3C", "CBS-QB3", "G4", "UFF"].contains(m)
+        return m.contains("XTB") || m.hasPrefix("GFN") || semiEmpirical.contains(m) || isComposite(m) || m == "UFF"
+    }
+
+    /// Semiempirical methods (no basis set; Gaussian and ORCA keywords).
+    static let semiEmpirical: Set<String> = ["PM6", "PM7", "AM1", "PM3", "PM3MM", "PDDG", "RM1", "MNDO", "MNDOD", "ZINDO", "INDO", "CNDO",
+                                             "PM6D3", "PM6-D3", "DFTB", "DFTB3"]
+
+    /// Composite models with their own basis sets: ORCA's "-3c" methods and Gaussian's CBS-n / Gn / Wn thermochemistry.
+    public static func isComposite(_ method: String) -> Bool {
+        let m = method.uppercased()
+        if m.hasSuffix("-3C") { return true }   // HF-3c, PBEh-3c, B97-3c, r2SCAN-3c, wB97X-3c, B3LYP-3c
+        return ["CBS-QB3", "CBS-4M", "CBS-APNO", "ROCBS-QB3", "G1", "G2", "G2MP2", "G3", "G3MP2", "G3B3", "G3MP2B3", "G4", "G4MP2",
+                "W1U", "W1BD", "W1RO"].contains(m)
     }
 }
 
@@ -172,9 +184,11 @@ extension GaussianJob {
         var route = GaussianRoute()
         route.printLevel = "#P"
         let m = spec.method
-        let prefix = (spec.unrestricted == true && !m.uppercased().hasPrefix("U")) ? "U" : ""
+        // Composite models (CBS-QB3, G4, …) pick the open-shell treatment themselves; "RO…" is already a choice.
+        let mu = m.uppercased()
+        let prefix = (spec.unrestricted == true && !mu.hasPrefix("U") && !mu.hasPrefix("RO") && !CalcSpec.isComposite(m)) ? "U" : ""
         route.method = prefix + m
-        route.basis = spec.basis.isEmpty ? nil : spec.basis
+        route.basis = spec.basis.isEmpty || CalcSpec.isBasisFree(m) ? nil : spec.basis   // composites/semiempirical bring their own
         var jobs: [String] = []
         let tight = spec.tightOptimization ? ",Tight" : ""
         switch spec.task {

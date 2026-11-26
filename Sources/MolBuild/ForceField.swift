@@ -1,6 +1,5 @@
 import Foundation
-import simd
-import Accelerate
+import MolSIMD
 import MolCore
 
 // UFF-style force field + optimizer (Worker A, Lead 4). Parameters from Rappe et al., JACS 114, 10024 (1992).
@@ -328,11 +327,11 @@ public enum Cleanup {
         var g = [Double](repeating: 0, count: dim)
         func eval(_ xx: [Double], _ gg: inout [Double]) -> Double {
             let e = sys.evaluate(xx, &gg)
-            vDSP.multiply(gg, mask, result: &gg)
+            VecOps.multiply(gg, mask, result: &gg)
             return e
         }
-        func rms(_ gg: [Double]) -> Double { (vDSP.sumOfSquares(gg) / Double(3 * nFree)).squareRoot() }
-        func maxAbs(_ v: [Double]) -> Double { vDSP.maximumMagnitude(v) }
+        func rms(_ gg: [Double]) -> Double { (VecOps.sumOfSquares(gg) / Double(3 * nFree)).squareRoot() }
+        func maxAbs(_ v: [Double]) -> Double { VecOps.maximumMagnitude(v) }
 
         var e = eval(x, &g)
         let e0 = e
@@ -348,39 +347,39 @@ public enum Cleanup {
             // direction
             var d: [Double]
             if sList.isEmpty || step <= 5 && false {
-                d = vDSP.multiply(-1, g)
+                d = VecOps.multiply(-1, g)
                 let mg = maxAbs(g)
-                if mg > 0 { d = vDSP.multiply(min(1.0, 0.05 / mg), d) }   // cautious first move
+                if mg > 0 { d = VecOps.multiply(min(1.0, 0.05 / mg), d) }   // cautious first move
             } else {
                 var q = g
                 var alphas = [Double](repeating: 0, count: sList.count)
                 for i in stride(from: sList.count - 1, through: 0, by: -1) {
-                    let rho = 1 / vDSP.dot(yList[i], sList[i])
-                    alphas[i] = rho * vDSP.dot(sList[i], q)
-                    q = vDSP.add(q, vDSP.multiply(-alphas[i], yList[i]))
+                    let rho = 1 / VecOps.dot(yList[i], sList[i])
+                    alphas[i] = rho * VecOps.dot(sList[i], q)
+                    q = VecOps.add(q, VecOps.multiply(-alphas[i], yList[i]))
                 }
                 let last = sList.count - 1
-                let gamma = vDSP.dot(sList[last], yList[last]) / vDSP.dot(yList[last], yList[last])
-                q = vDSP.multiply(gamma, q)
+                let gamma = VecOps.dot(sList[last], yList[last]) / VecOps.dot(yList[last], yList[last])
+                q = VecOps.multiply(gamma, q)
                 for i in 0..<sList.count {
-                    let rho = 1 / vDSP.dot(yList[i], sList[i])
-                    let beta = rho * vDSP.dot(yList[i], q)
-                    q = vDSP.add(q, vDSP.multiply(alphas[i] - beta, sList[i]))
+                    let rho = 1 / VecOps.dot(yList[i], sList[i])
+                    let beta = rho * VecOps.dot(yList[i], q)
+                    q = VecOps.add(q, VecOps.multiply(alphas[i] - beta, sList[i]))
                 }
-                d = vDSP.multiply(-1, q)
-                if vDSP.dot(d, g) >= 0 { d = vDSP.multiply(-1, g); sList = []; yList = [] }
+                d = VecOps.multiply(-1, q)
+                if VecOps.dot(d, g) >= 0 { d = VecOps.multiply(-1, g); sList = []; yList = [] }
             }
             // limit step length
             let md = maxAbs(d)
             var t = md > maxDisp ? maxDisp / md : 1.0
-            let slope = vDSP.dot(g, d)
+            let slope = VecOps.dot(g, d)
             var accepted = false
             for _ in 0..<30 {
-                xNew = vDSP.add(x, vDSP.multiply(t, d))
+                xNew = VecOps.add(x, VecOps.multiply(t, d))
                 let en = eval(xNew, &gNew)
                 if en.isFinite && en <= e + 1e-4 * t * slope { 
-                    let s = vDSP.subtract(xNew, x), y = vDSP.subtract(gNew, g)
-                    if vDSP.dot(s, y) > 1e-12 {
+                    let s = VecOps.subtract(xNew, x), y = VecOps.subtract(gNew, g)
+                    if VecOps.dot(s, y) > 1e-12 {
                         sList.append(s); yList.append(y)
                         if sList.count > mem { sList.removeFirst(); yList.removeFirst() }
                     }

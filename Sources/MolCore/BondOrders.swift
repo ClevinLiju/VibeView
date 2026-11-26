@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // Bond-order perception, aromaticity, Kekulé structures and formal charges (heuristic, valence based).
 

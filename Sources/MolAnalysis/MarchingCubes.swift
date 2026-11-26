@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // Marching cubes (Lorensen & Cline 1987) over a `VolumeGrid` with arbitrary (non-orthogonal) step vectors.

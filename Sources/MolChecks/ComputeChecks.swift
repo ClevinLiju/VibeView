@@ -2,7 +2,7 @@ import Foundation
 import MolCore
 import MolIO
 import MolCompute
-import simd
+import MolSIMD
 
 /// Thread-safe result slot for async work driven from synchronous checks.
 final class ComputeResultBox<T>: @unchecked Sendable {
@@ -110,37 +110,39 @@ extension Checks {
 
     static let computeCore: [Check] = [
         Check("compute.locator") {
-            try expect(ProgramLocator.find("sh") != nil, "sh not found")
-            try expect(ProgramLocator.find("ls") != nil, "ls not found")
+            for prog in CheckTool.locatorPrograms {  // sh, ls (cmd, where on Windows)
+                try expect(ProgramLocator.find(prog) != nil, "\(prog) not found")
+            }
             try expect(ProgramLocator.find("definitely-not-a-program-xyz") == nil, "bogus found")
             try expect(!ProgramLocator.searchDirectories(for: "x").isEmpty)
         },
         Check("compute.runner.echo") {
-            let echo = URL(fileURLWithPath: "/bin/echo")
-            let o = try runAsync { try await ProgramRunner.run(executable: echo, arguments: ["hello", "world"]) }
+            let echo = CheckTool.echo  // /bin/echo; the check binary itself on Windows (CheckTools.swift)
+            let o = try runAsync { try await ProgramRunner.run(executable: echo.executable, arguments: echo.args(["hello", "world"])) }
             try expect(o.stdout == "hello world\n" && o.exitCode == 0, "stdout=\(o.stdout)")
-            let f = URL(fileURLWithPath: "/usr/bin/false")
-            let e = asyncError { _ = try await ProgramRunner.run(executable: f, arguments: []) }
+            let f = CheckTool.falseTool
+            let e = asyncError { _ = try await ProgramRunner.run(executable: f.executable, arguments: f.args([])) }
             guard case .processFailed(let code, _)? = e as? ComputeError else { throw CheckFailure(description: "expected processFailed, got \(String(describing: e))") }
             try expect(code == 1)
-            let o2 = try runAsync { try await ProgramRunner.run(executable: f, arguments: [], throwOnFailure: false) }
+            let o2 = try runAsync { try await ProgramRunner.run(executable: f.executable, arguments: f.args([]), throwOnFailure: false) }
             try expect(o2.exitCode == 1)
-            let cat = URL(fileURLWithPath: "/bin/cat")
+            let cat = CheckTool.cat
             let big = String(repeating: "abcdefghij\n", count: 50_000)
-            let o3 = try runAsync { try await ProgramRunner.run(executable: cat, arguments: [], stdin: big) }
+            let o3 = try runAsync { try await ProgramRunner.run(executable: cat.executable, arguments: cat.args([]), stdin: big) }
             try expect(o3.stdout == big, "stdin passthrough (large) mismatch \(o3.stdout.count)")
             // cancellation
-            let sleep = URL(fileURLWithPath: "/bin/sleep")
+            let sleepTool = CheckTool.sleep
+            let sleep = sleepTool.executable, sleep30 = sleepTool.args(["30"])
             let t0 = Date()
             let ce = asyncError {
-                let t = Task { _ = try await ProgramRunner.run(executable: sleep, arguments: ["30"]) }
+                let t = Task { _ = try await ProgramRunner.run(executable: sleep, arguments: sleep30) }
                 try await Task.sleep(nanoseconds: 300_000_000)
                 t.cancel()
                 try await t.value
             }
             try expect((ce as? ComputeError) == .cancelled, "expected cancelled, got \(String(describing: ce))")
             try expect(Date().timeIntervalSince(t0) < 5, "cancel too slow")
-            let te = asyncError { _ = try await ProgramRunner.run(executable: sleep, arguments: ["30"], timeout: 0.3) }
+            let te = asyncError { _ = try await ProgramRunner.run(executable: sleep, arguments: sleep30, timeout: 0.3) }
             try expect((te as? ComputeError) == .timeout, "expected timeout, got \(String(describing: te))")
         },
         Check("compute.xtb.notInstalled") {

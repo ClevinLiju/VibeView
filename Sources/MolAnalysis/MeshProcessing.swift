@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 /// Post-processing for `IsoSurfaceMesh`: welding, Taubin smoothing, vertex-clustering decimation and normals.

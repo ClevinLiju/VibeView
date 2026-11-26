@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // Owned by Lead 1. Basic connectivity queries on Molecule.
 // INVARIANT used across MolCore: atoms[i].id == i (editing ops renumber ids).

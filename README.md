@@ -79,6 +79,17 @@ scripts/make-app.sh         # dist/VibeView.app
 scripts/make-dmg.sh         # dist/VibeView-<version>.dmg
 ```
 
+## Windows
+
+VibeView also builds on 64-bit Windows 10 and 11. It has the same Swift core, run as a headless engine (`vibeview-engine.exe`), with an Electron + three.js front end and an NSIS installer (`VibeView-Setup-<version>.exe`). Quick Look and the other macOS-only parts are not included. To build it from source in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\install-prereqs.ps1   # VS Build Tools, Swift, Node, Git (winget)
+powershell -ExecutionPolicy Bypass -File scripts\windows\build.ps1             # engine + installer
+```
+
+See [docs/WINDOWS.md](docs/WINDOWS.md) for prerequisites, checks, packaging and known limitations.
+
 ## Optional external programs
 
 VibeView can run calculations if the programs are installed; viewing and building work without them.

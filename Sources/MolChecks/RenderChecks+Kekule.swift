@@ -1,5 +1,6 @@
+#if canImport(MolRender)  // SceneKit/AppKit/Metal render checks: macOS only
 import Foundation
-import simd
+import MolSIMD
 import SceneKit
 import MolCore
 import MolRender
@@ -213,3 +214,5 @@ extension Checks {
         },
     ]
 }
+
+#endif  // canImport(MolRender)

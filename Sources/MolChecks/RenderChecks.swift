@@ -1,5 +1,6 @@
+#if canImport(MolRender)  // SceneKit/AppKit/Metal render checks: macOS only
 import Foundation
-import simd
+import MolSIMD
 import SceneKit
 import MolCore
 import MolAnalysis
@@ -202,3 +203,5 @@ enum RenderFixtures {
         return Molecule(atoms: atoms, bonds: bonds, title: "lattice")
     }
 }
+
+#endif  // canImport(MolRender)

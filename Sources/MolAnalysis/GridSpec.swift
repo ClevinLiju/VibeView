@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 /// Geometry of a regular (possibly skewed) sampling grid, in Ångström. Point (i, j, k) is

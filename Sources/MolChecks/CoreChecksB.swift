@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // Core team checks, owned by Lead 1 Worker B. Names must start with "core.".
@@ -525,6 +525,42 @@ extension Checks {
             let zm = ZMatrix(molecule: m)
             try expect(zm.rows.count == 1200)
             try expectT { try zm.molecule().alignedRMSD(to: m) < 1e-4 }
+        },
+        Check("core.zmatrix.connectivityOrder") {
+            func reordered(_ m: Molecule, _ order: [Int]) -> Molecule {
+                var inv = [Int](repeating: -1, count: order.count)
+                for (k, i) in order.enumerated() { inv[i] = k }
+                var r = Molecule()
+                for i in order { r.addAtom(atomicNumber: m.atoms[i].atomicNumber, position: m.atoms[i].position) }
+                for b in m.bonds { r.addBond(inv[b.a], inv[b.b], order: b.order) }
+                return r
+            }
+            // ethane with the hydrogens listed first: backbone rows come first, every bond reference is a bond
+            let e = reordered(ethane(), [2, 3, 4, 5, 6, 7, 0, 1])
+            let order = ZMatrix.connectivityOrder(e)
+            try expect(order.sorted() == Array(0..<e.atoms.count), "\(order)")
+            try expect(e.atoms[order[0]].atomicNumber == 6 && e.atoms[order[1]].atomicNumber == 6, "\(order)")
+            let re = reordered(e, order)
+            let zm = ZMatrix(molecule: re)
+            for (r, row) in zm.rows.enumerated() where r > 0 {
+                try expect(re.areBonded(r, row.bondAtom!), "row \(r) bond ref \(row.bondAtom!) not bonded")
+            }
+            try expectT { try zm.molecule().alignedRMSD(to: re) < 1e-6 }
+            // benzene, a chain and disconnected fragments (water + free atom) keep every atom exactly once
+            var frag = water()
+            let w2 = water()
+            for a in w2.atoms { frag.addAtom(atomicNumber: a.atomicNumber, position: a.position + Vec3(5, 0, 0)) }
+            frag.addBond(3, 4); frag.addBond(3, 5)
+            frag.addAtom(atomicNumber: 18, position: Vec3(0, 5, 0))
+            for m in [benzene(), chain(80, seed: 9), frag] {
+                let o = ZMatrix.connectivityOrder(m)
+                try expect(o.sorted() == Array(0..<m.atoms.count))
+                let rm = reordered(m, o)
+                try expectT { try ZMatrix(molecule: rm).molecule().alignedRMSD(to: rm) < 1e-6 }
+            }
+            try expect(ZMatrix.connectivityOrder(Molecule()).isEmpty)
+            var h2 = Molecule(); h2.addAtom(atomicNumber: 1, position: .zero); h2.addAtom(atomicNumber: 1, position: Vec3(0, 0, 0.74)); h2.addBond(0, 1)
+            try expect(ZMatrix.connectivityOrder(h2) == [0, 1])
         },
     ]
 }

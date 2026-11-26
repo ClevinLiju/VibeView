@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // Shared MolBuild support (owned by Lead 4). Self-contained element data so MolBuild

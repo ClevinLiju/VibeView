@@ -309,7 +309,7 @@ public enum XTBG98Frequencies {
     public static func parse(_ text: String, atomCount: Int? = nil) throws -> [NormalMode] {
         var L = splitLines(text)
         // An unterminated last line is a partial write; trailing blanks cannot close a block in a cut file.
-        if !(text.hasSuffix("\n") || text.hasSuffix("\r")), !L.isEmpty { L.removeLast() }
+        if !(text.hasSuffix("\n") || text.hasSuffix("\r") || text.hasSuffix("\r\n")), !L.isEmpty { L.removeLast() }
         while let l = L.last, tokens(l).isEmpty { L.removeLast() }
         var modes: [NormalMode] = []
         var i = 0

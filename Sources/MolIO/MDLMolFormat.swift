@@ -256,7 +256,7 @@ public enum MDLMolFormat {
             out += molBlock(r.molecule)
             for p in r.properties {
                 out += "> <\(p.name)>\n"
-                let vals = p.value.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" })
+                let vals = p.value.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" })
                 for v in vals { out += v + "\n" }
                 out += "\n"
             }

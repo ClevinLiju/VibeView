@@ -77,7 +77,7 @@ public struct CalculationInfo: Sendable, Codable, Equatable {
     public var solvationLabel: String {
         guard let model = solvationModel else { return "Gas phase" }
         if let s = solvent { return "\(model) (\(s))" }
-        if let e = dielectric { return String(format: "%@ (ε = %.2f)", model, e) }
+        if let e = dielectric { return "\(model) (ε = \(String(format: "%.2f", e)))" }
         return model
     }
 }

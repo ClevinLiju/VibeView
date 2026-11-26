@@ -1,0 +1,34 @@
+# Line-ending policy (see docs/WINDOWS.md). Keeps checkouts identical on macOS and Windows,
+# whatever core.autocrlf is set to.
+
+# Default: let git detect text vs binary; text is stored and checked out with LF.
+* text=auto eol=lf
+
+# Sources, docs, scripts, web front end, manifests: always LF.
+*.swift        text eol=lf
+*.md           text eol=lf
+*.sh           text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.js           text eol=lf
+*.json         text eol=lf
+*.html         text eol=lf
+*.css          text eol=lf
+*.plist        text eol=lf
+*.entitlements text eol=lf
+
+# PowerShell scripts: CRLF (Windows PowerShell 5.1 is happiest with it).
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+
+# Binary assets.
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.dmg   binary
+*.exe   binary
+*.dll   binary
+
+# Check fixtures are compared byte for byte (ORCA/Gaussian/Q-Chem outputs, cube files, ...):
+# never convert line endings or treat them as text diffs. Must stay last so it wins over the rules above.
+Sources/MolChecks/TestData/** -text

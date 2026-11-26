@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // Owned by Lead 1. SMILES writer and parser (OpenSMILES subset: organic subset, bracket atoms
 // with H count / charge / isotope / class, bonds - = # $ :, branches, ring closures incl. %nn,
@@ -351,23 +351,33 @@ public enum SMILES {
             return s + "]"
         }
 
+        // Iterative pre-order walk of the spanning tree (an explicit stack instead of recursion, so long
+        // chains can't overflow the thread stack: 1 MB on Windows' main thread, less on worker threads).
+        enum Step { case atom(Int), text(String) }
         var out = ""
-        func emit(_ u: Int) {
-            out += atomString(u)
-            for (partner, d) in closeEvents[u] ?? [] { out += bondSymbol(u, partner) + digitString(d) }
-            for (partner, d) in openAt[u] { out += bondSymbol(u, partner) + digitString(d) }
-            let kids = children[u]
-            for (k, v) in kids.enumerated() {
-                let last = k == kids.count - 1
-                if !last { out += "(" }
-                out += bondSymbol(u, v)
-                emit(v)
-                if !last { out += ")" }
-            }
-        }
+        var steps: [Step] = []
         for (k, r) in roots.enumerated() {
             if k > 0 { out += "." }
-            emit(r)
+            steps.append(.atom(r))
+            while let step = steps.popLast() {
+                switch step {
+                case .text(let s):
+                    out += s
+                case .atom(let u):
+                    out += atomString(u)
+                    for (partner, d) in closeEvents[u] ?? [] { out += bondSymbol(u, partner) + digitString(d) }
+                    for (partner, d) in openAt[u] { out += bondSymbol(u, partner) + digitString(d) }
+                    // Pushed in reverse, so they pop as: "(" bond child … ")" for every child but the last.
+                    let kids = children[u]
+                    for (k, v) in kids.enumerated().reversed() {
+                        let last = k == kids.count - 1
+                        if !last { steps.append(.text(")")) }
+                        steps.append(.atom(v))
+                        steps.append(.text(bondSymbol(u, v)))
+                        if !last { steps.append(.text("(")) }
+                    }
+                }
+            }
         }
         return out
     }

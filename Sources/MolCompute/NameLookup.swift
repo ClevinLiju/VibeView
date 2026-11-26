@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import MolCore
 import MolIO
 
@@ -200,7 +203,7 @@ public actor NameLookup {
             req.httpBody = form.data(using: .utf8)
         }
         do {
-            let (data, resp) = try await session.data(for: req)
+            let (data, resp) = try await session.portableData(for: req)
             if let h = resp as? HTTPURLResponse, h.statusCode != 200 {
                 if h.statusCode == 503 && retry {
                     try await Task.sleep(nanoseconds: 1_000_000_000)

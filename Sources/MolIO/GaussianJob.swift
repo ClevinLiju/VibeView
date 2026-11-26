@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-import simd
+import MolSIMD
 
 // Model of a Gaussian-style input file ("job"). Public file-format knowledge only.
 

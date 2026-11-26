@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 /// Uniform-grid spatial index for fixed-radius neighbor queries.
 public struct NeighborGrid: Sendable {

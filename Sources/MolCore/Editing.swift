@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // Owned by Lead 1 (Core). Structural editing and internal-coordinate manipulation.
 

@@ -1,6 +1,5 @@
 import Foundation
-import Accelerate
-import simd
+import MolSIMD
 import MolCore
 import MolIO
 
@@ -156,14 +155,13 @@ extension OrbitalEvaluator {
                         rad.update(repeating: 0, count: m)
                         let hasS = sh.sRadial != nil && sh.sCoef != 0
                         if hasS { srad.update(repeating: 0, count: m) }
-                        var cnt = Int32(m)
                         for p in 0..<sh.exps.count {
-                            var na = -sh.exps[p]
-                            vDSP_vsmulD(r2, 1, &na, tmp, 1, vDSP_Length(m))
-                            vvexp(tmp, tmp, &cnt)
-                            var c = sh.radial[p]
-                            vDSP_vsmaD(tmp, 1, &c, rad, 1, rad, 1, vDSP_Length(m))
-                            if hasS { var cs = sh.sRadial![p]; vDSP_vsmaD(tmp, 1, &cs, srad, 1, srad, 1, vDSP_Length(m)) }
+                            if hasS {
+                                PortableLA.accumulateGaussian(r2: r2, alpha: sh.exps[p], count: m, tmp: tmp, c: sh.radial[p], rad: rad,
+                                                              cs: sh.sRadial![p], srad: srad)
+                            } else {
+                                PortableLA.accumulateGaussian(r2: r2, alpha: sh.exps[p], count: m, tmp: tmp, c: sh.radial[p], rad: rad)
+                            }
                         }
                         let nm = sh.ceff.count, L = sh.l
                         for t in 0..<m {
@@ -312,10 +310,12 @@ public actor OrbitalSurfaceService {
         let t0 = DispatchTime.now()
         let spec = GridSpec.adaptive(wavefunction, quality: quality)
         let coeffs = Array(set.orbital(orbital))
-        let ev = evaluator
         let flag = ManagedAtomicFlag()
+        // `spec` holds a SIMD3<Double>, so the inputs go in through `AsyncCapture` (Windows codegen bug).
+        let input = AsyncCapture((evaluator, coeffs, spec))
         let task = Task.detached(priority: .userInitiated) { () -> VolumeGrid? in
-            ev.evaluateOrbitalFast(coeffs, on: spec, isCancelled: { flag.value })
+            let (ev, coeffs, spec) = input.value
+            return ev.evaluateOrbitalFast(coeffs, on: spec, isCancelled: { flag.value })
         }
         let result = await withTaskCancellationHandler { await task.value } onCancel: { flag.set() }
         guard let g = result, !Task.isCancelled else { throw CancellationError() }
@@ -328,10 +328,10 @@ public actor OrbitalSurfaceService {
         let wf = wavefunction
         let set = orbitalSet(request.spin)
         let (grid, tGrid) = try await gridTimed(orbital: request.orbital, spin: request.spin, quality: request.quality)
-        let ev = evaluator
-        let coeffs = Array(set.orbital(request.orbital))
-        let req = request
+        // `grid` (VolumeGrid) holds a SIMD3<Double>, so it goes in through `AsyncCapture` (Windows codegen bug).
+        let input = AsyncCapture((grid, request))
         let task = Task.detached(priority: .userInitiated) { () -> ([IsoSurfaceMesh], Double, Double) in
+            let (grid, req) = input.value
             let t0 = DispatchTime.now()
             var meshes = MarchingCubes.orbitalLobes(grid: grid, isovalue: req.isovalue)
             let t1 = DispatchTime.now()
@@ -340,8 +340,6 @@ public actor OrbitalSurfaceService {
                 if req.smoothing > 0 { meshes[i] = MeshProcessing.taubinSmooth(meshes[i], iterations: req.smoothing) }
             }
             let t2 = DispatchTime.now()
-            _ = ev
-            _ = coeffs
             return (meshes, Double(t1.uptimeNanoseconds - t0.uptimeNanoseconds) / 1e9, Double(t2.uptimeNanoseconds - t1.uptimeNanoseconds) / 1e9)
         }
         let (meshes, tMesh, tPost) = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }

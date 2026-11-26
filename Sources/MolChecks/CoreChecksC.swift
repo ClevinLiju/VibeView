@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // Core team checks, owned by Lead 1 Worker C. Names must start with "core.".

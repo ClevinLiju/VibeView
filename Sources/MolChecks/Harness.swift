@@ -26,6 +26,11 @@ func testDataURL(_ name: String) -> URL {
 
 enum Checks {}
 
+#if !canImport(MolRender)
+// MolRender (SceneKit/AppKit/Metal) exists only on macOS; the RenderChecks*.swift files compile to nothing elsewhere.
+extension Checks { static let render: [Check] = [] }
+#endif
+
 let allChecks: [Check] = ([
     // TEAM REGISTRATION — add one line each, e.g.  Checks.core,
     Checks.core,
@@ -34,17 +39,22 @@ let allChecks: [Check] = ([
     Checks.analysis,
     Checks.render,
     Checks.compute,
-    Checks.buildCore + Checks.buildCalc + Checks.buildPlacement,
+    Checks.buildCore + Checks.buildCalc + Checks.buildPlacement + Checks.buildGroups,
 ] as [[Check]]).flatMap { $0 }  // each team registers an array (fix by Lead 5, see CONTRACTS change log)
 
 @main
 struct CheckRunner {
     static func main() {
+        #if os(Windows)
+        // `molscope-check --tool <name> ...`: stand-ins for /bin/echo, /bin/sh etc. (see CheckTools.swift).
+        if CommandLine.arguments.count > 2, CommandLine.arguments[1] == CheckTool.flag { CheckTool.runHelper(Array(CommandLine.arguments.dropFirst(2))) }
+        #endif
         let filter = CommandLine.arguments.dropFirst().first
         var failed = 0, ran = 0
         for c in allChecks where filter == nil || c.name.contains(filter!) {
             ran += 1
             do { try c.body(); print("PASS \(c.name)") } catch { failed += 1; print("FAIL \(c.name): \(error)") }
+            fflush(stdout)  // when output is piped, a crash would otherwise lose the buffered results
         }
         print("\(ran - failed)/\(ran) checks passed")
         exit(failed == 0 ? 0 : 1)

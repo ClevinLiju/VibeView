@@ -130,15 +130,16 @@ public struct XTBSettings: Codable, Sendable, Equatable {
 
     /// Shell-quoted preview, e.g. `xtb input.xyz --gfn 2 --opt tight --cycles 3 --chrg 0 --uhf 0 --alpb water -P 4`.
     public func commandLine(molecule: Molecule? = nil, executable: String = "xtb") -> String {
-        let env = "OMP_NUM_THREADS=\(max(1, threads)),1"
-        return env + " " + shellQuoted([executable] + arguments(molecule: molecule))
+        environmentPrefix("OMP_NUM_THREADS", "\(max(1, threads)),1") + shellQuoted([executable] + arguments(molecule: molecule))
     }
 
     public func environment(base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var env = base
-        env["OMP_NUM_THREADS"] = "\(max(1, threads)),1"
-        env["OMP_STACKSIZE"] = env["OMP_STACKSIZE"] ?? "512M"
-        env["OMP_MAX_ACTIVE_LEVELS"] = "1"
+        // Case-insensitive on Windows, so an inherited `Omp_Num_Threads` is replaced rather than duplicated.
+        ProgramLocator.setEnvironmentValue("\(max(1, threads)),1", forKey: "OMP_NUM_THREADS", in: &env)
+        ProgramLocator.setEnvironmentValue(ProgramLocator.environmentValue("OMP_STACKSIZE", in: env) ?? "512M",
+                                           forKey: "OMP_STACKSIZE", in: &env)
+        ProgramLocator.setEnvironmentValue("1", forKey: "OMP_MAX_ACTIVE_LEVELS", in: &env)
         return env
     }
 

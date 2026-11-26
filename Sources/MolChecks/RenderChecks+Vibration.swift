@@ -1,7 +1,8 @@
+#if canImport(MolRender)  // SceneKit/AppKit/Metal render checks: macOS only
 import Foundation
 import SceneKit
 import Metal
-import simd
+import MolSIMD
 import MolCore
 @testable import MolRender
 
@@ -231,3 +232,5 @@ struct VibBench { var animMean, animP95, frameMean, frameP95, setup: Double }
     let mean = { (v: [Double]) in v.reduce(0, +) / Double(max(v.count, 1)) }
     return VibBench(animMean: mean(anim), animP95: p95(anim), frameMean: mean(frame), frameP95: p95(frame), setup: setup)
 }
+
+#endif  // canImport(MolRender)

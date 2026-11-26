@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; worker-src 'self' blob:">
+  <title>VibeView</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header id="toolbar"></header>
+    <div id="main">
+      <aside id="library" class="side"></aside>
+      <div class="splitter v" data-target="library" data-side="left"></div>
+      <section id="center">
+        <div id="doc-tabs"></div>
+        <div id="viewport-wrap">
+          <div id="viewport"></div>
+          <canvas id="overlay"></canvas>
+          <div id="tooltip" class="tooltip" hidden></div>
+          <div id="empty-hint" hidden></div>
+          <div id="drop-hint" hidden><div>Drop files to open them</div></div>
+          <div id="busy" hidden><span class="spinner"></span><span id="busy-text"></span><button id="busy-cancel" class="link" hidden>Cancel</button></div>
+        </div>
+        <div class="splitter h" data-target="bottom"></div>
+        <div id="bottom">
+          <section id="results" class="panel" hidden></section>
+          <section id="console" class="panel" hidden></section>
+        </div>
+      </section>
+      <div class="splitter v" data-target="inspector" data-side="right"></div>
+      <aside id="inspector" class="side"></aside>
+    </div>
+    <footer id="statusbar"></footer>
+  </div>
+  <script src="dist/bundle.js"></script>
+</body>
+</html>

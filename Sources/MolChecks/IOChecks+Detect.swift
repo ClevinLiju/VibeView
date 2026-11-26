@@ -1,7 +1,7 @@
 import Foundation
 import MolCore
 import MolIO
-import simd
+import MolSIMD
 
 // Content sniffing for program outputs with generic extensions (.out/.log/.txt/none), and the
 // one-call loader on top of it (Lead A, round 2).
@@ -59,6 +59,33 @@ extension Checks {
         },
         Check("io.detect.prose_mentioning_programs_is_not_output") {
             try expect(MoleculeFileFormat.detect(contents: "notes: compare ORCA and Q-Chem and xtb results\n") == nil, "prose")
+        },
+        Check("io.detect.hash_comment_is_not_gaussian_route") {
+            // ORCA inputs may start with a '# comment' line; an ORCA .engrad starts with '#' too.
+            let smd = try detText("orca/water_td_smd.inp")
+            try expect(smd.hasPrefix("# "), "fixture starts with a comment")
+            for name in [nil, "job.inp", "job.txt"] as [String?] {
+                let f = MoleculeFileFormat.detect(contents: smd, fileName: name)
+                try expect(f == .orcaInput, "water_td_smd.inp as \(name ?? "-"): \(String(describing: f))")
+            }
+            try expect(MoleculeFileFormat.detect(contents: "# comment\n%maxcore 500\n*xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n") == .orcaInput, "* xyz block")
+            let l = try MolecularFileLoader.load(url: testDataURL("io/orca/water_td_smd.inp"))
+            try expect(l.format == .orcaInput && l.molecule.atoms.count == 3, "loader: \(l.format) \(l.molecule.atoms.count) atoms")
+            let engrad = try detText("orca/water_optfreq.engrad")
+            try expect(MoleculeFileFormat.detect(contents: engrad) == nil, "engrad: \(String(describing: MoleculeFileFormat.detect(contents: engrad)))")
+            do {
+                _ = try MolecularFileLoader.load(url: testDataURL("io/orca/water_optfreq.engrad"))
+                try expect(false, "engrad is not a molecule file")
+            } catch let e as MolIOError {
+                try expect(!"\(e)".localizedCaseInsensitiveContains("gaussian"), "engrad error mentions Gaussian: \(e)")
+            }
+            // genuine Gaussian routes are unchanged
+            for g in ["#p B3LYP/6-31G(d) opt freq\n\nwater\n\n0 1\nO 0 0 0\nH 0 0.76 0.59\nH 0 -0.76 0.59\n\n",
+                      "# HF/STO-3G\n\nt\n\n0 1\nH 0 0 0\nH 0 0 0.74\n\n",
+                      "#n B3LYP/gen\n\nt\n\n0 1\nH 0 0 0\n\nH 0\nS 1 1.0\n 1.0 1.0\n****\n\n"] {
+                try expect(MoleculeFileFormat.detect(contents: g) == .gaussianInput, "route: \(g.prefix(20))")
+                try expect(MoleculeFileFormat.detect(contents: g, fileName: "job.inp") == .gaussianInput, "route in .inp")
+            }
         },
         Check("io.job.plan_per_program") {
             let w = Molecule(atoms: [Atom(id: 0, atomicNumber: 8, position: Vec3(0, 0, 0.1173)),

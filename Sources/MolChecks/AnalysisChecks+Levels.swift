@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 import MolIO
 import MolAnalysis
@@ -66,8 +66,10 @@ extension Checks {
             let ev = OrbitalEvaluator(wavefunction: wf)
             let grid = GridSpec.automatic(around: WavefunctionSurfaces.atomPositions(wf), padding: 6, spacing: 0.04, maxPoints: 40_000_000)
             let coeffs = Array(wf.alpha.orbital(7))
+            // `grid` (GridSpec) holds a SIMD3<Double>, so it goes in through `AsyncCapture` (Windows codegen bug).
+            let input = AsyncCapture((ev, coeffs, grid))
             let r: (cancelled: Bool, secs: Double) = try computeRunAsync(timeout: 120) {
-                let t = Task { try await ev.evaluateAsync(.orbital(coeffs), on: grid) }
+                let t = Task { let (ev, coeffs, grid) = input.value; return try await ev.evaluateAsync(.orbital(coeffs), on: grid) }
                 try await Task.sleep(nanoseconds: 100_000_000)
                 let c0 = Date()
                 t.cancel()

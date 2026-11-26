@@ -1,8 +1,11 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import MolCore
 import MolIO
 import MolCompute
-import simd
+import MolSIMD
 
 // xtb jobs get a 120 s hard timeout; network work uses the 30 s default.
 private func runA<T: Sendable>(_ op: @escaping @Sendable () async throws -> T) throws -> T { try computeRunAsync(timeout: 120, op) }
@@ -11,6 +14,9 @@ private func errA(_ op: @escaping @Sendable () async throws -> Void) -> Error? {
 private func secs(_ t: Date) -> String { String(format: "%.2f s", Date().timeIntervalSince(t)) }
 
 private func xtbChildCount() -> Int {
+    #if os(Windows)
+    return CheckTool.processCount(matching: "molscope-xtb-")
+    #else
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
     p.arguments = ["-f", "molscope-xtb-"]
@@ -19,6 +25,7 @@ private func xtbChildCount() -> Int {
     let d = pipe.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
     return String(decoding: d, as: UTF8.self).split(whereSeparator: \.isNewline).count
+    #endif
 }
 
 extension Checks {

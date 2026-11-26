@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // STUB — Worker A replaces the data table with the full periodic table (Z = 0...118),
 // keeping every public signature below unchanged.

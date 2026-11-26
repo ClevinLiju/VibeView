@@ -1,7 +1,8 @@
+#if canImport(MolRender)  // SceneKit/AppKit/Metal render checks: macOS only
 import Foundation
 import AppKit
 import SceneKit
-import simd
+import MolSIMD
 import MolCore
 @testable import MolRender
 
@@ -267,3 +268,5 @@ extension Checks {
         }
 
 fileprivate func featVec(_ v: Vec3) -> SCNVector3 { SCNVector3(x: CGFloat(v.x), y: CGFloat(v.y), z: CGFloat(v.z)) }
+
+#endif  // canImport(MolRender)

@@ -117,7 +117,8 @@ echo "==> Building Quick Look preview extension"
 QLSRC="$TMP/qlsrc"; mkdir -p "$QLSRC"
 for f in "$ROOT"/Sources/MolCore/*.swift "$ROOT"/Sources/MolIO/*.swift; do
   d="$(basename "$(dirname "$f")")"
-  sed -E '/^(@_exported )?import (MolCore|MolIO)$/d' "$f" > "$QLSRC/${d}_$(basename "$f")"
+  # MolSIMD only re-exports `simd` on Darwin, so the single-module extension build imports simd directly.
+  sed -E -e '/^(@_exported )?import (MolCore|MolIO)$/d' -e 's/^import MolSIMD$/import simd/' "$f" > "$QLSRC/${d}_$(basename "$f")"
 done
 cp "$ROOT"/Extensions/QuickLook/*.swift "$QLSRC/"
 APPEX="$APP/Contents/PlugIns/VibeViewQuickLook.appex"

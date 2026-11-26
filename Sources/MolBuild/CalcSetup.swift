@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-import simd
+import MolSIMD
 
 // CalcSetup: pure, testable description of a quantum-chemistry calculation (Gaussian, ORCA, Q-Chem, xtb)
 // and the generators for their input files. The Gaussian format below is the stable, documented one;
@@ -184,21 +184,46 @@ public struct CalcSetup: Sendable, Codable, Equatable {
         }
     }
 
+    /// Methods offered per program, spelled as that program's keyword (written verbatim into the input).
+    /// Same choices as the Windows front end's catalog (windows/renderer/src/calc-catalog.js).
     public static func methods(for program: QCProgram) -> [String] {
         switch program {
-        case .gaussian: ["B3LYP", "HF", "MP2", "M06-2X", "wB97X-D", "PBE0", "CAM-B3LYP"]
-        case .orca: ["B3LYP", "PBE0", "wB97X-D3", "M06-2X", "TPSS", "CAM-B3LYP", "B2PLYP", "HF", "MP2", "DLPNO-CCSD(T)", "r2SCAN-3c", "B97-3c", "HF-3c", "PBEh-3c"]
-        case .qchem: ["B3LYP", "PBE0", "PBE", "wB97X-D", "wB97M-V", "M06-2X", "CAM-B3LYP", "HF", "MP2"]
+        case .gaussian: ["B3LYP", "HF", "PBEPBE", "BP86", "BLYP", "B97D3", "TPSSTPSS", "M06L", "PBE1PBE", "B3PW91", "APFD", "TPSSh",
+                         "M06", "M062X", "MN15", "CAM-B3LYP", "LC-wHPBE", "wB97X", "wB97XD", "B2PLYP", "mPW2PLYP", "DSDPBEP86",
+                         "CBS-QB3", "G4", "PM7", "PM6", "PM3", "AM1", "MP2", "MP4", "CCSD", "CCSD(T)",
+                         // kept for existing settings
+                         "M06-2X", "wB97X-D", "PBE0"]
+        case .orca: ["B3LYP", "HF", "PBE", "BP86", "BLYP", "revPBE", "B97-D3", "TPSS", "M06L", "r2SCAN", "B97M-V", "PBE0", "B3PW91",
+                     "r2SCAN0", "PW6B95", "TPSSh", "M06", "M062X", "MN15", "CAM-B3LYP", "LC-PBE", "wB97X", "wB97X-D3", "wB97X-D3BJ",
+                     "wB97X-V", "wB97M-V", "B2PLYP", "mPW2PLYP", "revDSD-PBEP86-D4", "DSD-PBEP86", "r2SCAN-3c", "B97-3c", "PBEh-3c",
+                     "HF-3c", "PM3", "AM1", "MP2", "RI-MP2", "RI-SCS-MP2", "CCSD", "CCSD(T)", "DLPNO-CCSD(T)", "DLPNO-CCSD(T1)",
+                     // kept for existing settings
+                     "M06-2X"]
+        case .qchem: ["B3LYP", "HF", "PBE", "BP86", "BLYP", "revPBE", "B97-D3(0)", "TPSS", "M06-L", "r2SCAN", "B97M-V", "PBE0", "B3PW91",
+                      "r2SCAN0", "PW6B95", "TPSSh", "M06", "M06-2X", "MN15", "CAM-B3LYP", "LRC-wPBE", "wB97X", "wB97X-D", "wB97X-V",
+                      "wB97M-V", "B2PLYP", "DSD-PBEP86-D3", "MP2", "CCSD", "CCSD(T)"]
         case .xtb: XTBMethod.allCases.map(\.title)
         }
     }
 
     public static func bases(for program: QCProgram) -> [String] {
+        let pople = ["3-21G", "6-31G", "6-31G(d)", "6-31G(d,p)", "6-31+G(d,p)", "6-31++G(d,p)", "6-31G(2df,p)", "6-311G(d,p)",
+                     "6-311+G(d,p)", "6-311+G(2d,p)", "6-311++G(d,p)", "6-311++G(2d,2p)", "6-311++G(3df,3pd)"]
+        let dunning = ["cc-pVDZ", "cc-pVTZ", "cc-pVQZ", "cc-pV5Z", "aug-cc-pVDZ", "aug-cc-pVTZ", "aug-cc-pVQZ"]
+        let jensen = ["pcseg-1", "aug-pcseg-1", "pcseg-2", "aug-pcseg-2", "pcseg-3"]
         switch program {
-        case .gaussian: ["STO-3G", "6-31G(d)", "6-31+G(d,p)", "6-311+G(d,p)", "def2-SVP", "def2-TZVP", "cc-pVDZ", "aug-cc-pVTZ", "LANL2DZ"]
-        case .orca: ["STO-3G", "6-31G(d)", "6-31+G(d,p)", "def2-SVP", "def2-TZVP", "def2-TZVPP", "def2-QZVP", "ma-def2-SVP", "cc-pVDZ", "cc-pVTZ", "aug-cc-pVDZ"]
-        case .qchem: ["STO-3G", "6-31G*", "6-31+G*", "6-311+G(d,p)", "def2-SVP", "def2-TZVP", "cc-pVDZ", "cc-pVTZ", "aug-cc-pVTZ"]
-        case .xtb: []
+        case .gaussian:
+            return ["STO-3G"] + pople + ["Def2SVP", "Def2TZVP", "Def2TZVPP", "Def2QZVP", "Def2QZVPP"] + dunning + ["jun-cc-pVTZ", "LANL2DZ", "SDD",
+                    "def2-SVP", "def2-TZVP"]   // kept for existing settings (Gaussian accepts both spellings)
+        case .orca:
+            return ["STO-3G"] + pople + ["def2-SVP", "def2-SV(P)", "def2-SVPD", "def2-TZVP", "def2-TZVP(-f)", "def2-TZVPP", "def2-TZVPD",
+                    "def2-QZVP", "def2-QZVPP", "ma-def2-SVP", "ma-def2-TZVP"] + dunning + jensen + ["LANL2DZ"]
+        case .qchem:
+            let qpople = ["3-21G", "6-31G", "6-31G*", "6-31G**", "6-31+G**", "6-31++G**", "6-31G(2df,p)", "6-311G**", "6-311+G**",
+                          "6-311+G(2d,p)", "6-311++G**", "6-311++G(2d,2p)", "6-311++G(3df,3pd)", "6-31+G*", "6-311+G(d,p)"]
+            return ["STO-3G"] + qpople + ["def2-SVP", "def2-SV(P)", "def2-SVPD", "def2-TZVP", "def2-TZVPP", "def2-TZVPD", "def2-QZVP",
+                    "def2-QZVPP"] + dunning + jensen + ["LANL2DZ"]
+        case .xtb: return []
         }
     }
 
@@ -261,7 +286,7 @@ public struct CalcSetup: Sendable, Codable, Equatable {
 
     public func routeLine() -> String {
         var parts: [String] = []
-        let level = basis.isEmpty ? method : "\(method)/\(basis)"
+        let level = basis.isEmpty || Self.basisOptional(method) ? method : "\(method)/\(basis)"
         parts.append(level)
         switch jobType {
         case .energy: parts.append("SP")
@@ -402,6 +427,7 @@ public struct CalcSetup: Sendable, Codable, Equatable {
 
     static func basisOptional(_ method: String) -> Bool {
         let m = method.uppercased()
-        return ["AM1", "PM3", "PM6", "PM7", "PM3MM", "RM1", "INDO", "CNDO", "R2SCAN-3C", "B97-3C", "HF-3C", "PBEH-3C"].contains(m)
+        return ["AM1", "PM3", "PM6", "PM7", "PM3MM", "RM1", "INDO", "CNDO", "MNDO", "ZINDO", "CBS-QB3", "CBS-4M", "CBS-APNO",
+                "G3", "G3MP2", "G3B3", "G4", "G4MP2", "W1U", "W1BD"].contains(m) || m.hasSuffix("-3C")
     }
 }

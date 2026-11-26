@@ -76,8 +76,15 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         if let h = try? FileHandle(forReadingFrom: url) {
             defer { try? h.close() }
             if let d = try? h.read(upToCount: 4096) {
-                head = String(decoding: d, as: UTF8.self)
-                // a UTF-8 sequence cut at the 4 KB boundary decodes to a replacement char: harmless
+                let b = [UInt8](d.prefix(2))
+                if b.count == 2, (b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF),
+                   let s = String(data: d.prefix(d.count & ~1), encoding: .utf16) {
+                    head = s   // UTF-16 with BOM (Windows Notepad "Unicode")
+                } else {
+                    head = String(decoding: d, as: UTF8.self)
+                    // a UTF-8 sequence cut at the 4 KB boundary decodes to a replacement char: harmless
+                }
+                if head.hasPrefix("\u{FEFF}") { head.removeFirst() }   // UTF-8 / UTF-16 byte-order mark
             }
         }
         if let f = detect(contents: head) { return f }
@@ -96,7 +103,7 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
     private static func isFloat(_ s: Substring) -> Bool { parseFortranDouble(s) != nil }
 
     private static func sniff(_ contents: String) -> MoleculeFileFormat? {
-        let head = String(contents.prefix(4096))
+        let head = String((contents.hasPrefix("\u{FEFF}") ? contents.dropFirst() : Substring(contents)).prefix(4096))
         let lines = splitLines(head)
         if head.contains("Entering Gaussian System") || head.contains("Gaussian, Inc.") { return .gaussianOutput }
         if head.contains("* O   R   C   A *") || head.contains("O   R   C   A") { return .orcaOutput }
@@ -119,7 +126,19 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         if lower.contains("$molecule") && lower.contains("$rem") { return .qchemInput }
         if first.hasPrefix("!") { return .orcaInput }
         if first.hasPrefix("%"), lower.contains("* xyz") || lower.contains("*xyz") || lower.contains("* int") || lower.contains("* gzmt") { return .orcaInput }
-        if first.hasPrefix("%") || first.hasPrefix("#") || first.hasPrefix("--Link1--") { return .gaussianInput }
+        if first.hasPrefix("#") {
+            // ORCA uses '#' for comments, so a leading '#' line is a Gaussian route only when nothing marks the
+            // file as ORCA: an ORCA .engrad ("#" / "# Number of atoms" ...) is no molecule format, and an ORCA input
+            // has a "!" keyword line or a "* xyz" style coordinate block once the '#' comment lines are skipped.
+            let trimmed = lines[firstIdx...].map { $0.trimmingCharacters(in: .whitespaces) }
+            if trimmed.prefix(4).contains(where: { $0.hasPrefix("#") && $0.contains("Number of atoms") }) { return nil }
+            let body = trimmed.filter { !$0.hasPrefix("#") }
+            if let b = body.first(where: { !$0.isEmpty }), b.hasPrefix("!") { return .orcaInput }
+            let coordStarts = ["* xyz", "*xyz", "* int", "*int", "* gzmt", "*gzmt"]
+            if body.contains(where: { l in let x = l.lowercased(); return coordStarts.contains { x.hasPrefix($0) } }) { return .orcaInput }
+            return .gaussianInput
+        }
+        if first.hasPrefix("%") || first.hasPrefix("--Link1--") { return .gaussianInput }
         if lines.count >= 4 {
             if lines[3].contains("V2000") || lines[3].contains("V3000") {
                 return head.contains("$$$$") ? .sdf : .mol

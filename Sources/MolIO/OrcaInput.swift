@@ -14,13 +14,18 @@ public enum OrcaInput {
         var kw: [String] = []
         let m = spec.method
         let mu = m.uppercased()
-        let wavefunctionOnly = mu == "HF" || mu.hasPrefix("MP2") || mu.hasPrefix("CC") || mu.hasPrefix("DLPNO") || mu.hasPrefix("RI-MP2")
+        // Wavefunction methods run on an HF reference (UHF when unrestricted); DFT gets UKS.
+        let wavefunctionOnly = mu == "HF" || mu.hasPrefix("MP2") || mu.hasPrefix("CC") || mu.hasPrefix("DLPNO") || mu.hasPrefix("RI-")
+            || mu.hasPrefix("SCS-") || mu.hasPrefix("MP3") || mu.hasPrefix("MP4") || mu.hasPrefix("QCISD") || mu.hasPrefix("LPNO")
+            || mu.hasPrefix("CIS") || mu.hasPrefix("CASSCF") || mu.hasPrefix("NEVPT")
         if mu == "HF" && spec.isUnrestricted { kw.append("UHF") }
         else {
             kw.append(m)
-            if spec.unrestricted == true, !wavefunctionOnly, !mu.hasPrefix("U"), !CalcSpec.isBasisFree(m) { kw.append("UKS") }
+            if spec.unrestricted == true, !mu.hasPrefix("U"), !mu.hasPrefix("RO"), !CalcSpec.isBasisFree(m) {
+                kw.append(wavefunctionOnly ? "UHF" : "UKS")
+            }
         }
-        if !spec.basis.isEmpty { kw.append(spec.basis) }
+        if !spec.basis.isEmpty && !CalcSpec.isBasisFree(m) { kw.append(spec.basis) }   // "-3c" composites bring their own
         switch spec.dispersion {
         case .d3zero?: kw.append("D3ZERO")
         case .d3bj?: kw.append("D3BJ")
@@ -198,7 +203,16 @@ public struct OrcaInputFile: Sendable, Codable, Equatable {
                 case "xyzfile":
                     guard t.count >= 4 else { throw fail(i, "missing xyz file name") }
                     guard let base = baseDirectory else { throw MolIOError.unsupported("* xyzfile needs a base directory") }
-                    let frames = try XYZFormat.read(url: base.appendingPathComponent(String(t[3])))
+                    #if os(Windows)
+                    // Windows inputs may name the geometry with an absolute drive / UNC path.
+                    let name = String(t[3]), c = Array(name)
+                    let xyzURL = name.hasPrefix("\\\\") || (c.count >= 3 && c[1] == ":" && (c[2] == "\\" || c[2] == "/"))
+                        ? URL(fileURLWithPath: name)
+                        : base.appendingPathComponent(name.replacingOccurrences(of: "\\", with: "/"))
+                    #else
+                    let xyzURL = base.appendingPathComponent(String(t[3]))
+                    #endif
+                    let frames = try XYZFormat.read(url: xyzURL)
                     guard let f0 = frames.first else { throw fail(i, "empty xyz file") }
                     mol = f0
                 case "xyz", "int":

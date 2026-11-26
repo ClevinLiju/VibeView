@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // Owned by Lead 1 (Core). Geometry utilities: centroid, inertia, alignment (Kabsch via Horn quaternion).
 

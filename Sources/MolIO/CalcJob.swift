@@ -102,12 +102,36 @@ public enum CalcJobResults {
     /// - Gaussian: `<base>.fchk` (from `formchk`) supplies the wavefunction.
     /// - xtb: the geometry comes from `xtbopt.xyz` (or the input), normal modes from `g98.out`, scan frames from `xtbscan.log`.
     /// Throws when the main log is missing or unreadable; a truncated log parses as far as it is complete.
+    /// Names the main output may have. Gaussian writes `<base>.log` on Unix but `<base>.out` with the Windows builds
+    /// (G09W/G16W), so both are accepted there.
+    public static func outputFileCandidates(_ plan: CalcJobPlan) -> [String] {
+        guard plan.program == .gaussian else { return [plan.outputFileName] }
+        let stem = CompanionFiles.baseName(of: plan.outputFileName)
+        return [plan.outputFileName] + [stem + ".log", stem + ".out"].filter { $0 != plan.outputFileName }
+    }
+
+    /// The output file the job actually wrote: of the existing candidates the newest one (ties: the planned name),
+    /// or nil when none exists.
+    public static func resolvedOutputFileName(_ plan: CalcJobPlan, directory: URL) -> String? {
+        let fm = FileManager.default
+        var best: (String, Date)?
+        for n in outputFileCandidates(plan) {
+            let path = directory.appendingPathComponent(n).path
+            guard fm.fileExists(atPath: path) else { continue }
+            let t = ((try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date) ?? .distantPast
+            if best == nil || t > best!.1 { best = (n, t) }
+        }
+        return best?.0
+    }
+
     public static func collect(_ plan: CalcJobPlan, directory: URL) throws -> LoadedMolecularFile {
         let dir = directory
         func url(_ n: String) -> URL { dir.appendingPathComponent(n) }
         func exists(_ n: String) -> Bool { FileManager.default.fileExists(atPath: url(n).path) }
-        let logURL = url(plan.outputFileName)
-        guard exists(plan.outputFileName) else { throw MolIOError.unsupported("job output \(plan.outputFileName) not found") }
+        guard let outputName = resolvedOutputFileName(plan, directory: dir) else {
+            throw MolIOError.unsupported("job output \(outputFileCandidates(plan).joined(separator: " or ")) not found")
+        }
+        let logURL = url(outputName)
         let text = try readText(logURL)
         let format: MoleculeFileFormat
         switch plan.program {
@@ -116,13 +140,13 @@ public enum CalcJobResults {
         case .gaussian: format = .gaussianOutput
         case .xtb: format = .xtbOutput
         }
-        var out = try MolecularFileLoader.load(text: text, format: format, fileName: plan.outputFileName)
+        var out = try MolecularFileLoader.load(text: text, format: format, fileName: outputName)
         out.program = plan.program
         switch plan.program {
         case .orca, .gaussian:
             // same-stem companions (.hess, .molden.input, .engrad, _trj.xyz, .fchk, cubes); gaps only
             out.companions = CompanionFiles.merge(into: &out, primaryURL: logURL)
-            if plan.baseName != CompanionFiles.baseName(of: plan.outputFileName) {
+            if plan.baseName != CompanionFiles.baseName(of: outputName) {
                 // ORCA %base differs from the input stem: look next to a virtual "<base>.out" too
                 out.companions += CompanionFiles.merge(into: &out, primaryURL: url(plan.baseName + ".out"))
             }

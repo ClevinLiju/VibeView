@@ -94,7 +94,14 @@ public enum CompanionFiles {
         let base = baseName(of: name)
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
         var out: [(URL, CompanionFile.Role)] = []
-        for e in entries.sorted() where e != name && !e.hasPrefix(".") {
+        #if os(Windows)
+        // NTFS is case-insensitive: "JOB.OUT" typed by the user is the same file as "job.out" on disk.
+        let lowerName = name.lowercased()
+        func isPrimary(_ e: String) -> Bool { e.lowercased() == lowerName }
+        #else
+        func isPrimary(_ e: String) -> Bool { e == name }
+        #endif
+        for e in entries.sorted() where !isPrimary(e) && !e.hasPrefix(".") {
             if let r = role(of: e, base: base) { out.append((dir.appendingPathComponent(e), r)) }
         }
         let wfRank = [".molden.input", ".molden", ".fchk", ".fch"]
@@ -211,7 +218,9 @@ public enum CompanionFiles {
                 } catch { add(false, "unreadable: \(error)") }
             case .volume:
                 guard cubes < maxCubes else { add(false, "skipped: more than \(maxCubes) cube files"); continue }
-                let size = (try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int) ?? 0
+                let attr = try? FileManager.default.attributesOfItem(atPath: u.path)[.size]
+                // corelibs Foundation (Windows/Linux) stores the size as NSNumber(UInt64); read it via NSNumber
+                let size = (attr as? Int) ?? (attr as? NSNumber)?.intValue ?? 0
                 guard size <= maxCubeBytes else { add(false, "skipped: larger than \(maxCubeBytes / 1_048_576) MB (open it directly)"); continue }
                 do {
                     let c = try CubeFile.read(url: u)

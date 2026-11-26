@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // MolAnalysis shared types — owned by Lead 5 (Analysis). Signatures posted in docs/CONTRACTS.md.

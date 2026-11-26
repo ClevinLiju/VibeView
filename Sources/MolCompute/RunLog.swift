@@ -124,14 +124,9 @@ extension RunHandle {
     }
 }
 
-/// Shell-style quoting for command-line previews.
+/// Shell-style quoting for command-line previews (POSIX `'...'` on macOS/Linux, cmd-style `"..."` on Windows).
 public func shellQuoted(_ args: [String]) -> String {
-    args.map { a -> String in
-        if a.isEmpty { return "''" }
-        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./=:,+@%")
-        if a.unicodeScalars.allSatisfy({ safe.contains($0) }) { return a }
-        return "'" + a.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }.joined(separator: " ")
+    args.map(quoteArgument).joined(separator: " ")
 }
 
 extension ProgramRunner {

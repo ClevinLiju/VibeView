@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // Point-group detection, symmetrization and standard orientation.
 // Clean-room: generic algorithm (inertia tensor + candidate axes + atom-permutation test).
@@ -140,6 +140,12 @@ private struct SymCtx {
     let groups: [[Int]]
     let order: [Int]
     let t2: Double
+    let tol: Double
+    /// Per group: member indices sorted by distance from the origin, and those distances. Every operation tested by
+    /// `maps` is orthogonal (it preserves |p|), and |p_j - q| <= tol implies ||p_j| - |q|| <= tol, so only the members
+    /// whose norm lies in [|q| - tol, |q| + tol] can match. Same answer as scanning the whole group, far fewer tests.
+    let sortedGroups: [[Int]]
+    let sortedNorms: [[Double]]
 
     init(p: [Vec3], z: [Int], tol: Double) {
         self.p = p
@@ -157,13 +163,28 @@ private struct SymCtx {
             return simd_length_squared(p[$0]) > simd_length_squared(p[$1])
         }
         t2 = tol * tol
+        self.tol = tol
+        let norms = p.map { simd_length($0) }
+        let sg = gs.map { $0.sorted { norms[$0] < norms[$1] } }
+        sortedGroups = sg
+        sortedNorms = sg.map { $0.map { norms[$0] } }
     }
 
     func maps(_ R: simd_double3x3) -> Bool {
+        let slack = tol * (1 + 1e-9) + 1e-12  // a hair wider than tol, so rounding never excludes a true match
         for i in order {
             let q = R * p[i]
+            let r = simd_length(q)
+            let members = sortedGroups[grp[i]], ns = sortedNorms[grp[i]]
+            // first member with norm >= r - slack
+            var lo = 0, hi = ns.count
+            while lo < hi { let mid = (lo + hi) / 2; if ns[mid] < r - slack { lo = mid + 1 } else { hi = mid } }
             var found = false
-            for j in groups[grp[i]] where simd_length_squared(p[j] - q) <= t2 { found = true; break }
+            var k = lo
+            while k < ns.count, ns[k] <= r + slack {
+                if simd_length_squared(p[members[k]] - q) <= t2 { found = true; break }
+                k += 1
+            }
             if !found { return false }
         }
         return true

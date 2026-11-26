@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import MolCore
 import MolIO
 import MolBuild
@@ -65,7 +68,7 @@ public struct PubChemClient: Sendable {
         }
         req.timeoutInterval = timeout
         do {
-            let (data, resp) = try await session.data(for: req)
+            let (data, resp) = try await session.portableData(for: req)
             if let h = resp as? HTTPURLResponse, h.statusCode != 200 { throw ComputeError.httpStatus(h.statusCode) }
             return String(decoding: data, as: UTF8.self)
         } catch let e as ComputeError { throw e

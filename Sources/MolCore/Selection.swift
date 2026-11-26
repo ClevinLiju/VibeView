@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 /// A set of selected atom indices (value type). Indices refer to `Molecule.atoms`.
 public struct AtomSelection: Sendable, Hashable, Codable {

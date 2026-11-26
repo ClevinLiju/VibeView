@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-import simd
+import MolSIMD
 import MolIO
 
 // Molden checks. Real fixtures: ORCA 6.1.1 orca_2mkl files in TestData/io/orca/.

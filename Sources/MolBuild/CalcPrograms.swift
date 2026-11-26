@@ -60,7 +60,7 @@ extension CalcSetup {
 
     public func orcaInputText(molecule: Molecule) -> String {
         var simple: [String] = [method]
-        if !basis.isEmpty { simple.append(basis) }
+        if !basis.isEmpty && !Self.basisOptional(method) { simple.append(basis) }   // composites/semiempirical bring their own
         var blocks: [String] = []
         switch jobType {
         case .energy: simple.append("SP")
@@ -218,6 +218,12 @@ extension CalcSetup {
 
     /// Human-readable command line for previews.
     public func commandLine(program exe: String, inputFileName: String) -> String {
-        ([exe] + commandArguments(inputFileName: inputFileName)).joined(separator: " ")
+        #if os(Windows)
+        // Windows paths often contain spaces (C:\Program Files\...): quote those for a copy-pasteable preview.
+        return ([exe] + commandArguments(inputFileName: inputFileName))
+            .map { $0.contains(" ") && !$0.hasPrefix("\"") ? "\"\($0)\"" : $0 }.joined(separator: " ")
+        #else
+        return ([exe] + commandArguments(inputFileName: inputFileName)).joined(separator: " ")
+        #endif
     }
 }

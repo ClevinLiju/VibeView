@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // Internal-coordinate edits (Worker A, Lead 4).

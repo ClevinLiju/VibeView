@@ -110,7 +110,7 @@ fileprivate func fmtTime<T>(_ body: () throws -> T) rethrows -> (T, Double) {
     return (r, Date().timeIntervalSince(t0))
 }
 
-import simd
+import MolSIMD
 
 extension Checks {
     static let ioFormats: [Check] = ioFormatsCube + ioFormatsXYZ + ioFormatsPDB + ioFormatsMDL + ioFormatsCML + ioFormatsRegistry

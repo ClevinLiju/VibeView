@@ -2,6 +2,11 @@ import Foundation
 
 public enum ProgramLocator {
     public static func searchDirectories(for name: String = "") -> [String] {
+        #if os(Windows)
+        var seenWin = Set<String>()
+        return windowsSearchDirectories(for: name, env: ProcessInfo.processInfo.environment)
+            .filter { !$0.isEmpty && seenWin.insert($0.lowercased()).inserted }
+        #else
         let fm = FileManager.default
         let home = NSHomeDirectory()
         var dirs: [String] = (ProcessInfo.processInfo.environment["PATH"] ?? "")
@@ -16,9 +21,18 @@ public enum ProgramLocator {
         dirs += ["/opt/homebrew/bin", "/usr/local/bin"]
         var seen = Set<String>()
         return dirs.filter { !$0.isEmpty && seen.insert($0).inserted }
+        #endif
     }
 
     public static func find(_ name: String, extraDirectories: [String] = []) -> URL? {
+        #if os(Windows)
+        // A path (absolute or relative): accept it as given, or with a PATHEXT extension appended.
+        if name.contains("\\") || name.contains("/") || name.contains(":") {
+            for c in candidateFileNames(name) where isExecutable(atPath: c) { return URL(fileURLWithPath: c) }
+            return isExecutable(atPath: name) ? URL(fileURLWithPath: name) : nil
+        }
+        return find(name, inDirectories: extraDirectories + searchDirectories(for: name))
+        #else
         let fm = FileManager.default
         if name.contains("/") { return fm.isExecutableFile(atPath: name) ? URL(fileURLWithPath: name) : nil }
         for d in extraDirectories + searchDirectories(for: name) {
@@ -29,8 +43,26 @@ public enum ProgramLocator {
             }
         }
         return nil
+        #endif
     }
 }
+
+#if os(Windows)
+/// `taskkill /PID <pid> /T /F`: terminates a process and all its descendants. Waits at most 5 s.
+func killProcessTreeWindows(pid: Int32) {
+    let root = ProgramLocator.environmentValue("SystemRoot") ?? "C:\\Windows"
+    let tk = Process()
+    tk.executableURL = URL(fileURLWithPath: root + "\\System32\\taskkill.exe")
+    tk.arguments = ["/PID", String(pid), "/T", "/F"]
+    tk.standardInput = FileHandle.nullDevice
+    tk.standardOutput = FileHandle.nullDevice
+    tk.standardError = FileHandle.nullDevice
+    let done = DispatchSemaphore(value: 0)
+    tk.terminationHandler = { _ in done.signal() }
+    do { try tk.run() } catch { return }
+    _ = done.wait(timeout: .now() + 5)
+}
+#endif
 
 public struct ProcessOutput: Sendable, Equatable {
     public var exitCode: Int32
@@ -74,7 +106,7 @@ public enum ProgramRunner {
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = workingDirectory
-        if let environment { process.environment = environment }
+        if let environment { process.environment = ProgramLocator.normalizedEnvironment(environment) }
         let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
@@ -83,11 +115,21 @@ public enum ProgramRunner {
 
         func kill(_ p: Process) {
             guard p.isRunning else { return }
+            #if os(Windows)
+            // terminate() is TerminateProcess on the child only; MPI ranks / helper processes it started would
+            // survive (and keep our pipes open). Kill the whole tree with taskkill first, then fall back.
+            let pid = p.processIdentifier
+            DispatchQueue.global().async {
+                killProcessTreeWindows(pid: pid)
+                if p.isRunning { p.terminate() }
+            }
+            #else
             p.terminate()
             let pid = p.processIdentifier
             DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
                 if p.isRunning { Foundation.kill(pid, SIGKILL) }
             }
+            #endif
         }
 
         let output: ProcessOutput = try await withTaskCancellationHandler {

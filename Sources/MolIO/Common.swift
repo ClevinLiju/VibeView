@@ -81,10 +81,27 @@ public func parseFortranDouble<S: StringProtocol>(_ s: S) -> Double? {
     return Double(fixed)
 }
 
-/// Read a text file as UTF-8, falling back to Latin-1.
+/// Read a text file as UTF-8, falling back to Latin-1. A leading byte-order mark is removed; files with a
+/// UTF-16 BOM (Windows Notepad "Unicode") are decoded as UTF-16. Line endings are left as they are
+/// (`splitLines` accepts \n, \r\n and \r).
 public func readText(_ url: URL) throws -> String {
     guard let data = try? Data(contentsOf: url) else { throw MolIOError.unreadable(url.path) }
-    if let s = String(data: data, encoding: .utf8) { return s }
-    if let s = String(data: data, encoding: .isoLatin1) { return s }
-    throw MolIOError.unreadable(url.path)
+    return try decodeText(data, path: url.path)
+}
+
+/// Decode file bytes as `readText` does (exposed for callers that already hold the data).
+public func decodeText(_ data: Data, path: String = "data") throws -> String {
+    let b = [UInt8](data.prefix(3))
+    if b.count >= 2, (b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF) {
+        if let s = String(data: data, encoding: .utf16) { return stripBOM(s) }
+    }
+    var body = data
+    if b.count == 3, b[0] == 0xEF, b[1] == 0xBB, b[2] == 0xBF { body = data.dropFirst(3) }
+    if let s = String(data: body, encoding: .utf8) { return stripBOM(s) }
+    if let s = String(data: body, encoding: .isoLatin1) { return s }
+    throw MolIOError.unreadable(path)
+}
+
+@inline(__always) private func stripBOM(_ s: String) -> String {
+    s.hasPrefix("\u{FEFF}") ? String(s.dropFirst()) : s
 }

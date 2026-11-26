@@ -1,4 +1,4 @@
-import simd
+import MolSIMD
 import Foundation
 import MolCore
 import MolIO

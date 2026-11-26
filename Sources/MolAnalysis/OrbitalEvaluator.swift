@@ -1,11 +1,12 @@
 import Foundation
-import Accelerate
 import MolCore
 import MolIO
+import MolSIMD
 
 /// Evaluates basis functions, molecular orbitals and densities on points or grids.
 /// Basis functions are computed in batches along grid lines (vectorized `vvexp`), orbitals are formed
-/// with BLAS (`cblas_dgemm`), and grid slabs run concurrently via `DispatchQueue.concurrentPerform`.
+/// with BLAS (`cblas_dgemm`; a blocked, zero-skipping Swift kernel where Accelerate is unavailable, see
+/// `PortableLA`), and grid slabs run concurrently via `DispatchQueue.concurrentPerform`.
 public struct OrbitalEvaluator: Sendable {
     public let basis: AnalysisBasis
     let shells: [PreparedShell]
@@ -33,7 +34,6 @@ public struct OrbitalEvaluator: Sendable {
         out.update(repeating: 0, count: n * nbf)
         let r2 = scratch, tmp = scratch + n, rad = scratch + 2 * n, srad = scratch + 3 * n
         let dx = scratch + 4 * n, dy = scratch + 5 * n, dz = scratch + 6 * n
-        var cnt = Int32(n)
         let pw = UnsafeMutablePointer<Double>.allocate(capacity: 24)
         defer { pw.deallocate() }
         for (si, sh) in shells.enumerated() {
@@ -49,14 +49,11 @@ public struct OrbitalEvaluator: Sendable {
             rad.update(repeating: 0, count: n)
             if sh.sRadial != nil { srad.update(repeating: 0, count: n) }
             for (pi, a) in sh.exponents.enumerated() {
-                var na = -a
-                vDSP_vsmulD(r2, 1, &na, tmp, 1, vDSP_Length(n))
-                vvexp(tmp, tmp, &cnt)
-                var c = sh.radial[pi]
-                vDSP_vsmaD(tmp, 1, &c, rad, 1, rad, 1, vDSP_Length(n))
                 if let s = sh.sRadial {
-                    var cs = s[pi]
-                    vDSP_vsmaD(tmp, 1, &cs, srad, 1, srad, 1, vDSP_Length(n))
+                    PortableLA.accumulateGaussian(r2: r2, alpha: a, count: n, tmp: tmp, c: sh.radial[pi], rad: rad,
+                                                  cs: s[pi], srad: srad)
+                } else {
+                    PortableLA.accumulateGaussian(r2: r2, alpha: a, count: n, tmp: tmp, c: sh.radial[pi], rad: rad)
                 }
             }
             let base = offsets[si]
@@ -171,8 +168,7 @@ public struct OrbitalEvaluator: Sendable {
                     let rowBase = vptr + (i * ny + j) * nz
                     let mat = isPmat ? pmat : cmat
                     // prod (n × ncol) = B (n × nbf) · M (nbf × ncol)
-                    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, Int32(n), Int32(ncol), Int32(nbf),
-                                1, bvals, Int32(nbf), mat, Int32(ncol), 0, &prod, Int32(ncol))
+                    PortableLA.gemm(m: n, n: ncol, k: nbf, bvals, mat, &prod)
                     if isOrbital {
                         for k in 0..<n { rowBase[k] = Float(prod[k]) }
                     } else if isPmat {
@@ -196,13 +192,22 @@ public struct OrbitalEvaluator: Sendable {
     }
 
     /// Async wrapper that honours Swift task cancellation.
-    public func evaluateAsync(_ field: Field, on grid: GridSpec) async throws -> VolumeGrid {
+    ///
+    /// `grid` is an autoclosure so that no SIMD vector is an argument of this async function: on Windows x64,
+    /// Swift 6.4.3 lowers an async function's inline `SIMD3<Double>` parameter (here `GridSpec.origin`)
+    /// differently in caller and callee, and the callee dereferences garbage at entry. Callers still write
+    /// `evaluateAsync(field, on: grid)`.
+    public func evaluateAsync(_ field: Field, on grid: @autoclosure () -> GridSpec) async throws -> VolumeGrid {
+        let grid = grid()
         let me = self
         // `Task.isCancelled` is always false on the concurrentPerform worker threads (no current task), so
         // cancellation is carried by a shared flag set from the cancellation handler.
         let flag = EvaluatorCancelFlag()
+        // `grid` (GridSpec) holds a SIMD3<Double>, so it goes in through `AsyncCapture` (Windows codegen bug).
+        let input = AsyncCapture((me, field, grid))
         let task = Task.detached(priority: .userInitiated) { () -> VolumeGrid? in
-            me.evaluate(field, on: grid, isCancelled: { flag.isSet })
+            let (me, field, grid) = input.value
+            return me.evaluate(field, on: grid, isCancelled: { flag.isSet })
         }
         let result = await withTaskCancellationHandler { await task.value } onCancel: { flag.set(); task.cancel() }
         guard let result else { throw CancellationError() }

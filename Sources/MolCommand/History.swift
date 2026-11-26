@@ -49,7 +49,7 @@ public struct CommandHistory: Sendable, Equatable {
     public mutating func load(from url: URL) throws {
         let text = try String(contentsOf: url, encoding: .utf8)
         entries = []
-        for l in text.split(separator: "\n", omittingEmptySubsequences: true) { add(String(l)) }
+        for l in text.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }) { add(String(l)) }
         cursor = entries.count
     }
 }

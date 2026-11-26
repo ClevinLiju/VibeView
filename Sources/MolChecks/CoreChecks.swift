@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // Core team (Lead 1) checks. Worker files CoreChecksA/B/C.swift add coreA/coreB/coreC.

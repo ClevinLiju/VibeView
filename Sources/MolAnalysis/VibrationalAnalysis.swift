@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 /// Characterizes a normal mode by its internal-coordinate content (Wilson B-matrix projection of the

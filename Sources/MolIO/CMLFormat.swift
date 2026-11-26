@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML   // XMLParser lives here in swift-corelibs-foundation (Windows / Linux)
+#endif
 import MolCore
 
 /// Chemical Markup Language (CML) reader/writer for `<molecule>` with `<atomArray>`/`<bondArray>`.
@@ -54,7 +57,7 @@ public enum CMLFormat {
 
         func parser(_ p: XMLParser, parseErrorOccurred e: Error) { if error == nil { fatal = true } }
 
-        func nums(_ s: String?) -> [String] { (s ?? "").split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "\r" }).map(String.init) }
+        func nums(_ s: String?) -> [String] { (s ?? "").split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "\r" || $0 == "\r\n" }).map(String.init) }
 
         func order(_ s: String) -> BondOrder? {
             switch s.trimmingCharacters(in: .whitespaces).uppercased() {

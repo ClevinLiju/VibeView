@@ -56,7 +56,7 @@ extension CommandRegistry {
             return CommandOutput("saved \(url.path)")
         }
         add("cd", [], "cd [path]", "Change the working directory (no argument: home).") { inv in
-            let u = inv.arguments.isEmpty ? URL(fileURLWithPath: NSHomeDirectory()) : inv.url(inv.arguments[0])
+            let u = inv.arguments.isEmpty ? URL(fileURLWithPath: CommandPaths.homeDirectory) : inv.url(inv.arguments[0])
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: u.path, isDirectory: &isDir), isDir.boolValue else {
                 throw CommandError("not a directory: \(u.path)")

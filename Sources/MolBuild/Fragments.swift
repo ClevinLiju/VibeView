@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 import MolCore
 
 // Fragment library (Worker A, Lead 4). All geometry is generated programmatically.

@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 extension Molecule {
     /// Distance-based bond perception: bond if 0.4 < d < rCov(a) + rCov(b) + tolerance.

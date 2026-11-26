@@ -1,6 +1,6 @@
 # Installing VibeView
 
-Requires macOS 14 or later.
+The macOS app requires macOS 14 or later. For Windows, see [Windows](#windows) below.
 
 ## From a DMG
 
@@ -40,8 +40,18 @@ scripts/make-app.sh      # dist/VibeView.app (version from VERSION)
 scripts/make-dmg.sh      # dist/VibeView-<version>.dmg; add --no-build to reuse dist/VibeView.app
 ```
 
+## Windows
+
+Requires 64-bit Windows 10 or 11.
+
+1. Download `VibeView-Setup-<version>.exe` from the GitHub Releases page and run it. It installs per user, so no administrator rights are needed. The installer is not code-signed, so SmartScreen may warn: choose More info ▸ Run anyway.
+2. Start VibeView from the Start menu or the desktop shortcut.
+3. To uninstall, use Settings ▸ Apps ▸ Installed apps ▸ VibeView ▸ Uninstall.
+
+The installer bundles the Swift runtime and the Visual C++ runtime DLLs, so nothing else needs to be installed. External programs (xtb, ORCA, Gaussian) are installed separately. To build from source, run `scripts\windows\install-prereqs.ps1` and then `scripts\windows\build.ps1`. See [WINDOWS.md](WINDOWS.md) for details.
+
 ## Releasing
 
 1. Bump the number in `VERSION`.
 2. Commit, then tag: `git tag vX.Y.Z && git push --tags`.
-3. The GitHub Actions workflow (`.github/workflows/build.yml`) builds, runs the self-checks, builds the DMG and attaches it to a new GitHub Release.
+3. The GitHub Actions workflow (`.github/workflows/build.yml`) builds, runs the self-checks, builds the DMG and attaches it to a new GitHub Release. Its `windows` job does the same on Windows and attaches `VibeView-Setup-<version>.exe`. The installer takes its version from the tag; `VERSION` is used only on macOS.

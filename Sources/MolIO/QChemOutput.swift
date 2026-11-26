@@ -1,6 +1,6 @@
 import Foundation
 import MolCore
-import simd
+import MolSIMD
 
 // Q-Chem output parser, written from the public Q-Chem output layout (no program output was
 // available to calibrate against; fixtures are hand-written to the documented format).
@@ -238,7 +238,7 @@ public struct QChemOutput: Sendable {
     private static func parseVibBlock(_ lines: [Substring], _ j: inout Int, natoms: Int?) -> [NormalMode] {
         let count = tokens(lines[j]).dropFirst().filter { Int($0) != nil }.count
         j += 1
-        var freqs: [Double] = [], ir: [Double] = [], raman: [Double] = []
+        var freqs: [Double] = [], ir: [Double] = [], raman: [Double] = [], force: [Double] = [], redMass: [Double] = []
         while j < lines.count {
             let s = lines[j].trimmingCharacters(in: .whitespaces)
             let tk = tokens(s)
@@ -247,6 +247,8 @@ public struct QChemOutput: Sendable {
             if s.hasPrefix("Frequency:") { freqs = vals() }
             else if s.hasPrefix("IR Intens:") { ir = vals() }
             else if s.hasPrefix("Raman Intens:") || s.hasPrefix("Raman Activ:") { raman = vals() }
+            else if s.hasPrefix("Force Cnst:") { force = vals() }
+            else if s.hasPrefix("Red. Mass:") { redMass = vals() }
             j += 1
         }
         guard j < lines.count, tokens(lines[j]).first == "X" else { return [] }
@@ -264,8 +266,11 @@ public struct QChemOutput: Sendable {
         }
         if let na = natoms, disp.contains(where: { $0.count != na }) { return [] }
         return (0..<n).map { m in
-            NormalMode(frequency: freqs[m], irIntensity: m < ir.count ? ir[m] : 0,
-                       ramanActivity: m < raman.count ? raman[m] : nil, displacements: disp[m])
+            var mode = NormalMode(frequency: freqs[m], irIntensity: m < ir.count ? ir[m] : 0,
+                                  ramanActivity: m < raman.count ? raman[m] : nil, displacements: disp[m])
+            mode.forceConstant = m < force.count ? force[m] : nil   // mDyne/Å
+            mode.reducedMass = m < redMass.count ? redMass[m] : nil  // amu
+            return mode
         }
     }
 
@@ -300,8 +305,8 @@ public struct QChemOutput: Sendable {
         if let j = lastWith({ !$0.excitedStates.isEmpty }) { r.excitedStates = j.excitedStates }
         if let j = lastWith({ !$0.mullikenCharges.isEmpty }) {
             r.mullikenCharges = j.mullikenCharges
-            ex.charges["mulliken"] = j.mullikenCharges
-            if !j.mullikenSpins.isEmpty { ex.spinDensities["mulliken"] = j.mullikenSpins }
+            ex.charges["Mulliken"] = j.mullikenCharges
+            if !j.mullikenSpins.isEmpty { ex.spinDensities["Mulliken"] = j.mullikenSpins }
         }
         r.dipole = jobs.last(where: { $0.dipoleDebye != nil })?.dipoleDebye
         ex.finalEnergy = jobs.last(where: { $0.finalEnergy != nil })?.finalEnergy

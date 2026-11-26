@@ -3,7 +3,7 @@ import MolCore
 import MolIO
 import MolBuild
 import MolCompute
-import simd
+import MolSIMD
 
 // Round 3 (Lead D): XTBSettings, live log streaming, run directories, generic ProgramRunner streaming.
 
@@ -44,7 +44,12 @@ extension Checks {
             s = XTBSettings(method: .gfn0, task: .hessian, optLevel: .vtight)
             try expect(s.commandLine().contains("--gfn 0") && s.commandLine().contains("--ohess vtight"))
             s.extraArguments = ["--name", "a b"]
-            try expect(s.commandLine().contains("'a b'"), "quoting")
+            #if os(Windows)
+            let quoted = "\"a b\""   // the preview is a cmd.exe command line there (see quoteArgument)
+            #else
+            let quoted = "'a b'"
+            #endif
+            try expect(s.commandLine().contains(quoted), "quoting: \(s.commandLine())")
         },
         Check("compute.xtbsettings.validation+codable") {
             try expect(XTBSettings().validationErrors(molecule: water()).isEmpty)
@@ -77,11 +82,12 @@ extension Checks {
             let dir = scratchDir("stream")
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: dir) }
-            let script = "for i in 1 2 3; do echo line$i; echo err$i >&2; echo file$i >> job.out; sleep 0.4; done"
+            // sh -c "for i in 1 2 3; do echo line$i; echo err$i >&2; echo file$i >> job.out; sleep 0.4; done"
+            let script = CheckTool.streamScript
             let log = EventLog()
             let t0 = Date()
             let out = try computeRunAsync(timeout: 20) {
-                try await ProgramRunner.runLogged(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script],
+                try await ProgramRunner.runLogged(executable: script.executable, arguments: script.args([]),
                                                   workingDirectory: dir, tailFiles: ["job.out"], stdoutFile: "tee.out",
                                                   onEvent: { log.add($0) })
             }
@@ -93,7 +99,7 @@ extension Checks {
             try expect(stdoutLines == ["line1", "line2", "line3"], "\(stdoutLines)")
             try expect(errLines == ["err1", "err2", "err3"], "\(errLines)")
             try expect(fileLines == ["file1", "file2", "file3"], "\(fileLines)")
-            if case .started(let d, let c)? = ev.first?.1 { try expect(d == dir && c.contains("/bin/sh")) } else { throw CheckFailure(description: "no .started first") }
+            if case .started(let d, let c)? = ev.first?.1 { try expect(d == dir && c.contains(CheckTool.shellName), "\(d.path) \(c)") } else { throw CheckFailure(description: "no .started first") }
             if case .finished(0)? = ev.last?.1 {} else { throw CheckFailure(description: "no .finished last") }
             let firstLine = ev.first { if case .stdout = $0.1 { return true }; return false }!.0
             try expect(end.timeIntervalSince(firstLine) > 0.6, "first line arrived only \(end.timeIntervalSince(firstLine)) s before exit")
@@ -105,8 +111,8 @@ extension Checks {
                          end.timeIntervalSince(t0), firstLine.timeIntervalSince(t0), firstFile.timeIntervalSince(t0)))
         },
         Check("compute.runner.streamHandleCancel+timeout") {
-            let h = ProgramRunner.stream(executable: URL(fileURLWithPath: "/bin/sh"),
-                                         arguments: ["-c", "echo begin; sleep 30; echo never"])
+            let bs = CheckTool.beginSleep  // sh -c "echo begin; sleep 30; echo never"
+            let h = ProgramRunner.stream(executable: bs.executable, arguments: bs.args([]))
             let r: (lines: [String], err: Error?, secs: Double) = try computeRunAsync(timeout: 20) {
                 let t = Date()
                 var lines: [String] = []
@@ -121,14 +127,14 @@ extension Checks {
             try expect((r.err as? ComputeError) == .cancelled, "\(String(describing: r.err))")
             try expect(r.secs < 5, "cancel took \(r.secs)")
             let e = computeAsyncError(timeout: 20) {
-                _ = try await ProgramRunner.runLogged(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["20"],
+                _ = try await ProgramRunner.runLogged(executable: CheckTool.sleep.executable, arguments: CheckTool.sleep.args(["20"]),
                                                       timeout: 0.5, onEvent: { _ in })
             }
             try expect((e as? ComputeError) == .timeout, "\(String(describing: e))")
             // Never on the main thread: callback thread check.
             let onMain = UncheckedFlag()
             _ = try computeRunAsync(timeout: 10) {
-                try await ProgramRunner.runLogged(executable: URL(fileURLWithPath: "/bin/echo"), arguments: ["x"],
+                try await ProgramRunner.runLogged(executable: CheckTool.echo.executable, arguments: CheckTool.echo.args(["x"]),
                                                   onEvent: { _ in if Thread.isMainThread { onMain.set() } })
             }
             try expect(!onMain.value, "event delivered on the main thread")

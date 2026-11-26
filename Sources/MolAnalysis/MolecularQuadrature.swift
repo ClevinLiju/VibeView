@@ -1,6 +1,5 @@
 import Foundation
-import Accelerate
-import simd
+import MolSIMD
 import MolCore
 import MolIO
 
@@ -106,9 +105,7 @@ public struct MolecularQuadrature: Sendable {
     /// Σ w_i f_i.
     public func integrate(_ values: [Double]) -> Double {
         precondition(values.count == weights.count)
-        var s = 0.0
-        vDSP_dotprD(values, 1, weights, 1, &s, vDSP_Length(values.count))
-        return s
+        return PortableLA.dot(values, weights)
     }
 
     /// Per-atom (fuzzy-cell) integrals.
@@ -172,8 +169,7 @@ extension OrbitalEvaluator {
                 b.withUnsafeMutableBufferPointer { bb in scratch.withUnsafeMutableBufferPointer { sb in
                     basisValues(xs, ys, zs, n: n, out: bb.baseAddress!, scratch: sb.baseAddress!)
                 } }
-                cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, Int32(n), Int32(ncol), Int32(nbf),
-                            1, b, Int32(nbf), cmat, Int32(ncol), 0, &prod, Int32(ncol))
+                PortableLA.gemm(m: n, n: ncol, k: nbf, b, cmat, &prod)
                 for k in 0..<n {
                     var s = 0.0
                     switch mode {

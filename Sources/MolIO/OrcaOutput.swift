@@ -151,7 +151,7 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
         guard text.contains("O   R   C   A") || text.contains("Program Version") else {
             throw MolIOError.parse(format: "orca", line: nil, message: "not an ORCA output")
         }
-        let lastTerminated = text.hasSuffix("\n") || text.hasSuffix("\r")
+        let lastTerminated = text.hasSuffix("\n") || text.hasSuffix("\r") || text.hasSuffix("\r\n")
         let tailLine = lines.last.map(String.init) ?? ""
         if !lastTerminated, !lines.isEmpty { lines.removeLast() }
         // Trailing blank lines cannot close a table: in a cut (still running) file the block is incomplete.

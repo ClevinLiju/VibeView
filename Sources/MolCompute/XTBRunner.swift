@@ -48,18 +48,11 @@ public struct XTBRunner: Sendable {
 
     public static func locate(searchDirectories: [String]? = nil) -> URL? {
         if let dirs = searchDirectories {
-            let fm = FileManager.default
-            for d in dirs {
-                let p = (d as NSString).appendingPathComponent("xtb")
-                var isDir: ObjCBool = false
-                if fm.fileExists(atPath: p, isDirectory: &isDir), !isDir.boolValue, fm.isExecutableFile(atPath: p) {
-                    return URL(fileURLWithPath: p)
-                }
-            }
-            return nil
+            // On Windows this also tries xtb.exe etc. (PATHEXT).
+            return ProgramLocator.find("xtb", inDirectories: dirs)
         }
-        if let o = ProcessInfo.processInfo.environment["MOLSCOPE_XTB"], !o.isEmpty,
-           FileManager.default.isExecutableFile(atPath: o) { return URL(fileURLWithPath: o) }
+        if let o = ProgramLocator.environmentValue("MOLSCOPE_XTB"), !o.isEmpty,
+           ProgramLocator.isExecutable(atPath: o) { return URL(fileURLWithPath: o) }
         return ProgramLocator.find("xtb")
     }
 
@@ -73,9 +66,7 @@ public struct XTBRunner: Sendable {
 
     func resolveExecutable() throws -> URL {
         if let given = executable {
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: given.path, isDirectory: &isDir), !isDir.boolValue,
-                  FileManager.default.isExecutableFile(atPath: given.path) else {
+            guard ProgramLocator.isExecutable(atPath: given.path) else {
                 throw ComputeError.notInstalled(program: "xtb", searched: [given.path])
             }
             return given

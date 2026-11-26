@@ -1,5 +1,6 @@
+#if canImport(MolRender)  // SceneKit/AppKit/Metal render checks: macOS only
 import Foundation
-import simd
+import MolSIMD
 import SceneKit
 import AppKit
 import ImageIO
@@ -344,3 +345,5 @@ extension Checks {
         return { x, y in let i = (y * w + x) * 4; return Array(data[i..<i + 4]) }
     }
 }
+
+#endif  // canImport(MolRender)

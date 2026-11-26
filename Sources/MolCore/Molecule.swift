@@ -1,5 +1,5 @@
 import Foundation
-import simd
+import MolSIMD
 
 // SHARED CONTRACT — owned by Lead 1 (Core). Other teams may ADD extensions in their own
 // modules but must not change these signatures without coordinating via docs/CONTRACTS.md.
