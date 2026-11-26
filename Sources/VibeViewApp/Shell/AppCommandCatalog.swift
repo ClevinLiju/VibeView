@@ -25,7 +25,6 @@ enum AppCommandCatalog {
             c("delete", "Delete Selected Atoms", "trash", "Edit", "⌘⌫", enabled: !e.selection.isEmpty) { e.deleteSelection() },
             c("addh", "Add Hydrogens", "h.circle", "Structure", "⇧⌘H", kw: ["valence", "protonate"], enabled: has) { e.addHydrogens() },
             c("removeh", "Remove Hydrogens", "h.circle.fill", "Structure", "⌥⇧⌘H", enabled: has) { e.removeHydrogens() },
-            c("clean", "Clean Up Geometry", "wand.and.stars", "Structure", "⇧⌘K", kw: ["force field", "minimize", "relax", "uff"], enabled: has) { e.cleanGeometry() },
             c("xtb", "Optimize with xtb", "bolt", "Structure", "⌥⌘K", kw: ["gfn2", "semiempirical", "tight binding"], enabled: has) { e.optimizeWithXTB() },
             c("invert", "Invert Through Center", "arrow.triangle.swap", "Structure", enabled: has) { e.invertStructure() },
             c("mirror", "Mirror Through XY Plane", "arrow.left.and.right.righttriangle.left.righttriangle.right", "Structure", enabled: has) { e.mirrorStructure() },

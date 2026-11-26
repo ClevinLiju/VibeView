@@ -355,14 +355,14 @@ Atom numbers in command TEXT are 1-based; every index crossing the Swift API (`s
   bond/unbond/element), `setHydrogensVisible(_:)`, `setHidden(_:hidden:)`, `setStyle(DisplayStyleName)` (.ball .stick
   .spacefill .wire), `setColor(CommandColor, atoms:)` (rgba 0…1), `setLabels(LabelKind?)` (.atoms .charges, nil = off),
   `addMeasurement(atoms:)`, `rotate(axis: Axis, degrees:)`, `fitView()`, `viewAlong(Axis)`, `addHydrogens()`,
-  `cleanGeometry()`, `runXTBOptimization(options:)` (synchronous entry; start your own Task), `showOrbital(OrbitalSelector)`
+  `runXTBOptimization(options:)` (synchronous entry; start your own Task), `showOrbital(OrbitalSelector)`
   (`.homo(k)` `.lumo(k)` relative, `.index(n)` 1-based), `showVibration(Int?)` (1-based mode; nil = stop),
   `exportImage(to:width:height:)`, `undo() -> Bool`, `redo() -> Bool`. Throw `CommandError("msg")` to report failures.
 - Commands (`CommandRegistry.standard`; unique prefixes and aliases resolve, typos get "Did you mean"):
   `open <path…>` (globs), `save <path> [format]`, `cd [path]`, `pwd`, `ls [path|glob]`, `close`, `select [spec]`,
   `hide|show [hydrogens|spec]`, `style ball|stick|spacefill|wire`, `color <spec> <name|#hex>`, `label on|off [atoms|charges]`,
   `measure distance i j | angle i j k | dihedral i j k l`, `turn x|y|z <deg>`, `view [x|y|z]`, `bond i j [order]`,
-  `unbond i j`, `element i Sym`, `addh`, `clean`, `info`, `xtb opt [opts…]`, `orbital homo|lumo|homo-N|lumo+N|N`,
+  `unbond i j`, `element i Sym`, `addh`, `info`, `xtb opt [opts…]`, `orbital homo|lumo|homo-N|lumo+N|N`,
   `vibration N|off`, `export image <path> [w h]`, `undo`, `redo`, `help [command]`.
 - Syntax: whitespace words, `'…'`/`"…"` quoting with backslash escapes, `;` or newline separates commands, `#` starts a
   comment (except colour literals like `#ff8800`). Atom spec (`AtomSpec.parse`): `all none sel fragment N within R of X`,
@@ -419,3 +419,11 @@ Existing members are unchanged. New `RenderOptions` keys decode leniently (old s
   - Transparent mode draws back faces, then front faces.
   - `fitToView`/`boundingSphere` now include visible isosurfaces, so lobes are no longer clipped.
   - Grid recommendation for Lead D: 0.15–0.18 Å spacing for small molecules (0.15 Å was smooth for H2CO), keeping the `maxPoints` cap.
+
+## Jobs, inputs and geometry cleanup (round 3, additive)
+- **No user-facing force-field cleanup.** The Clean Up Geometry toolbar button, menu item (⇧⌘K), viewport context-menu item, command-palette entry and console `clean` command are gone (`CommandContext.cleanGeometry()` removed). Geometry optimization is xtb's job; when xtb is missing the UI points to the installer or `conda install -c conda-forge xtb` (`XTBAvailability.installHint`). MolBuild's `Cleanup` force field stays for internal use only: PubChem 2D→3D embedding (`PubChemClient.embed2D`) and relieving clashes of newly placed fragment atoms (`Builder.relaxClashes`, only when atoms end up < 0.9 Å apart; existing atoms are frozen).
+- MolBuild `CalcInputDraft` (`generated`, `edited`, `text`, `isEdited`, `formChangedSinceEdit`, `updateGenerated(_:)`, `setText(_:)`, `revert()`): the calc setup's editable preview. `XTBInputPreview.compose(arguments:inputFileName:xyz:)` / `parse(_:inputFileName:) -> (arguments, xyz)` / `shellSplit` / `shellJoin`: the xtb "input" is `# xtb job.xyz ...`, `# job.xyz:`, blank line, XYZ.
+- MolBuild `GeometryPreflight.check(_:isolationDistance: 3.0, bondStretchRatio: 1.6) -> [GeometryWarning]` (`.isolatedAtom`, `.stretchedBond`, `.fragments`, each with a message such as "Atom O2 is 5.2 Å from its nearest neighbour."), `confirmationText(_:)`. The app asks Run Anyway / Cancel before every job (`GeometryPreflightPrompt`).
+- MolCompute `OrcaMoldenConversion.locateTool(nextTo: orca)`, `hasWavefunction(baseName:in:)`, `convert(baseName:in:orca:tool:timeout:) async throws -> Outcome` (`orca_2mkl <base> -molden` → `<base>.molden.input`). The job queue runs it after ORCA jobs that wrote a `.gbw` (preference `AppSettings.orcaAutoMoldenKey`, default on) before opening the results.
+- App `JobRun` keeps `directory`, `inputURL`, `outputURL` for every program, plus `xtbArguments`, `commandLine`, `inputEdited`, `postSteps`, `moldenURL`. `JobQueue.submit(..., inputOverride:, xtbArguments:)` writes an edited input exactly. `JobQueue.showInput/showOutput` open `FileViewerWindow` (read-only, search, line numbers, Reveal in Finder).
+- xtb temp run directories are now `vibeview-xtb-<uuid>`. Self-test hook: `VIBEVIEW_ORCA_SELFTEST=1` (with `VIBEVIEW_SNAPSHOT_DIR`).

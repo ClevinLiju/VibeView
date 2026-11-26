@@ -66,16 +66,21 @@ extension Checks {
             let ev = OrbitalEvaluator(wavefunction: wf)
             let grid = GridSpec.automatic(around: WavefunctionSurfaces.atomPositions(wf), padding: 6, spacing: 0.04, maxPoints: 40_000_000)
             let coeffs = Array(wf.alpha.orbital(7))
-            let r: (cancelled: Bool, secs: Double) = try computeRunAsync(timeout: 120) {
-                let t = Task { try await ev.evaluateAsync(.orbital(coeffs), on: grid) }
-                try await Task.sleep(nanoseconds: 100_000_000)
-                let c0 = Date()
-                t.cancel()
-                do { _ = try await t.value; return (false, Date().timeIntervalSince(c0)) } catch { return (error is CancellationError, Date().timeIntervalSince(c0)) }
+            // Kept deliberately simple (no tuple results, no do/catch returns inside awaited closures):
+            // CI's Swift 6.2/6.3 toolchains aborted on the earlier shape of this check with
+            // "freed pointer was not the last allocation"; Swift 6.4 ran it fine.
+            let task = Task.detached { () async -> Bool in
+                let grid2 = try? await ev.evaluateAsync(.orbital(coeffs), on: grid)
+                return grid2 == nil                       // nil: the evaluation was cancelled
             }
-            print(String(format: "    %d points, cancel honoured in %.3f s", grid.pointCount, r.secs))
-            try expect(r.cancelled, "evaluation finished instead of cancelling")
-            try expect(r.secs < 2, "cancel took \(r.secs) s")
+            Thread.sleep(forTimeInterval: 0.1)
+            let c0 = Date()
+            task.cancel()
+            let cancelled: Bool = try computeRunAsync(timeout: 120) { await task.value }
+            let secs = Date().timeIntervalSince(c0)
+            print(String(format: "    %d points, cancel honoured in %.3f s", grid.pointCount, secs))
+            try expect(cancelled, "evaluation finished instead of cancelling")
+            try expect(secs < 2, "cancel took \(secs) s")
         },
         Check("analysis.vib.waterSynthetic") {
             let O = Vec3(0, 0, 0.1173), H1 = Vec3(0, 0.7572, -0.4692), H2 = Vec3(0, -0.7572, -0.4692)

@@ -69,7 +69,6 @@ enum ViewportContextMenu {
         m.addItem(clear)
         m.addItem(.separator())
         m.addItem(ClosureMenuItem("Add Hydrogens") { ed.addHydrogens() })
-        m.addItem(ClosureMenuItem("Clean Up Geometry") { ed.cleanGeometry() })
         m.addItem(ClosureMenuItem("Fit to Window") { ed.fitView() })
         return m
     }

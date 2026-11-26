@@ -339,23 +339,21 @@ extension Checks {
             Editing.perceiveBonds(&e)
             try expect(e.bonds.count == 7)
         },
-        Check("build.workflow.sketchEthanolThenClean") {
-            // place C, grow C, grow O on the second carbon -> ethanol C2H6O; cleanup lowers the energy
+        Check("build.workflow.sketchEthanol") {
+            // place C, grow C, grow O on the second carbon -> ethanol C2H6O with sane geometry and
+            // no force-field pass (sketching never optimizes; geometry optimization is xtb's job)
             var m = Builder.placeElement(6, in: Molecule(), at: .zero, addHydrogens: true)
             try expect(m.formula == "CH4", "place: \(m.formula)")
             m = Builder.bondElement(6, to: m, atom: 0, addHydrogens: true)!
             try expect(m.formula == "C2H6", "grow C: \(m.formula)")
             let c2 = m.atoms.indices.last { m.atoms[$0].atomicNumber == 6 }!
+            let before = m.atoms.prefix(1).map(\.position)
             m = Builder.bondElement(8, to: m, atom: c2, addHydrogens: true)!
             try expect(m.formula == "C2H6O", "grow O: \(m.formula)")
-            // distort, then relax
-            var bad = m
-            for i in bad.atoms.indices { bad.atoms[i].position += Vec3(Double(i % 3) * 0.15, Double(i % 2) * -0.12, 0.1) }
-            let r = Cleanup.minimize(bad)
-            try expect(r.energy < r.initialEnergy - 1e-3, "energy \(r.initialEnergy) -> \(r.energy)")
-            try expect(bcMinPair(r.molecule) > 0.85, "min pair \(bcMinPair(r.molecule))")
-            let co = r.molecule.bonds.first { Set([r.molecule.atoms[$0.a].atomicNumber, r.molecule.atoms[$0.b].atomicNumber]) == Set([6, 8]) }!
-            let d = GeometryEdit.distance(r.molecule, co.a, co.b)
+            try expect(simd_distance(m.atoms[0].position, before[0]) < 1e-9, "existing atoms are not moved by sketching")
+            try expect(bcMinPair(m) > 0.85, "min pair \(bcMinPair(m))")
+            let co = m.bonds.first { Set([m.atoms[$0.a].atomicNumber, m.atoms[$0.b].atomicNumber]) == Set([6, 8]) }!
+            let d = GeometryEdit.distance(m, co.a, co.b)
             try expect(d > 1.33 && d < 1.50, "C-O \(d)")
         },
         Check("build.workflow.tolueneFromPhenylMethyl") {

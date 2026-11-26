@@ -116,6 +116,7 @@ private struct ProgramRow: View {
 
 private struct ProgramsPrefs: View {
     @AppStorage(AppSettings.scratchDirKey) private var scratch = ""
+    @AppStorage(AppSettings.orcaAutoMoldenKey) private var orcaMolden = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -130,6 +131,8 @@ private struct ProgramsPrefs: View {
                     if panel.runModal() == .OK, let u = panel.url { scratch = u.path }
                 }
             }
+            Toggle("After ORCA jobs, convert orbitals to Molden (orca_2mkl) so they can be shown", isOn: $orcaMolden)
+                .help("Runs “orca_2mkl <job> -molden” in the job folder when a .gbw was written; orca_2mkl is taken from the ORCA folder.")
             Text("Detect looks in your settings, environment variables, PATH and the usual install folders.")
                 .font(.caption).foregroundStyle(.secondary)
         }

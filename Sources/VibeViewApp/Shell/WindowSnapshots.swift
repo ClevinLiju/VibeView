@@ -136,8 +136,6 @@ enum SelfTest {
             say("O→N: \(ed.molecule.formula)")
         }
         ed.addHydrogens(); say("add H: \(ed.molecule.formula)")
-        let e0 = Cleanup.energyFacade(ed.molecule)
-        ed.cleanGeometry(); say(String(format: "clean: E %.2f → %.2f", e0, Cleanup.energyFacade(ed.molecule)))
         let n = ed.molecule.atoms.count
         ed.undo(); say("undo: atoms \(ed.molecule.atoms.count) (was \(n)), canRedo=\(ed.canRedo)")
         ed.redo(); say("redo: atoms \(ed.molecule.atoms.count)")

@@ -106,7 +106,7 @@ private func formula(_ m: Molecule) -> [Int: Int] {
 }
 
 extension Checks {
-    static let compute: [Check] = computeCore + computeLive + computeXTBSettings + computeLookup
+    static let compute: [Check] = computeCore + computeLive + computeXTBSettings + computeLookup + computeOrcaMolden
 
     static let computeCore: [Check] = [
         Check("compute.locator") {

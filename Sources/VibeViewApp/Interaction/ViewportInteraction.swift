@@ -134,12 +134,6 @@ extension EditorModel {
         let sel = selection.isEmpty ? nil : selection
         apply("Add Hydrogens") { BuildOps.addHydrogens(&$0, atoms: sel) }
     }
-    func cleanGeometry() {
-        if let r = BuildOps.clean(molecule) {
-            apply("Clean Geometry") { $0 = r }
-            statusMessage = "Geometry cleaned"
-        } else { statusMessage = "Geometry cleanup unavailable" }
-    }
     func centerAtOrigin() {
         apply("Center at Origin") { m in let c = m.centroid; for i in m.atoms.indices { m.atoms[i].position -= c } }
     }

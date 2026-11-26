@@ -26,7 +26,6 @@ public protocol CommandContext: AnyObject {
     func fitView()
     func viewAlong(_ axis: Axis)
     func addHydrogens() throws
-    func cleanGeometry() throws
     /// Synchronous entry point; the app may start its own Task.
     func runXTBOptimization(options: [String]) throws
     func showOrbital(_ which: OrbitalSelector) throws
@@ -54,7 +53,6 @@ public extension CommandContext {
     func fitView() {}
     func viewAlong(_ axis: Axis) {}
     func addHydrogens() throws { throw CommandError("addh is not supported here") }
-    func cleanGeometry() throws { throw CommandError("clean is not supported here") }
     func runXTBOptimization(options: [String]) throws { throw CommandError("xtb is not supported here") }
     func showOrbital(_ which: OrbitalSelector) throws { throw CommandError("orbital display is not supported here") }
     func showVibration(_ mode: Int?) throws { throw CommandError("vibration display is not supported here") }

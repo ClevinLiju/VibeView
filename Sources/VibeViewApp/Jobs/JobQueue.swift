@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 import MolCore
 import MolBuild
+import MolCompute
 
 struct JobRunResult {
     var status: JobStatus
@@ -16,10 +17,24 @@ struct JobRun: Identifiable, Equatable {
     let id: UUID
     var program: QCProgram
     var name: String
+    /// The run directory (every file the program writes lands here).
     var directory: URL
+    /// The input file as written (Gaussian .gjf, ORCA .inp, Q-Chem .in, xtb .xyz).
     var inputURL: URL
+    /// The main output file (Gaussian .log, ORCA/Q-Chem .out, xtb stdout).
     var outputURL: URL
     var setup: CalcSetup
+    /// xtb: the arguments the job is started with (from the edited command line when the input was edited).
+    var xtbArguments: [String]? = nil
+    /// The command line, for display (xtb; ORCA/Gaussian/Q-Chem read the input file).
+    var commandLine: String? = nil
+    /// True when the input was edited by hand in Calculation Setup.
+    var inputEdited = false
+    /// Post-processing steps after the program finished (e.g. the ORCA orbital conversion), shown in the job log.
+    var postSteps: [String] = []
+    var isPostProcessing = false
+    /// ORCA: the Molden file written by `orca_2mkl` after the run.
+    var moldenURL: URL? = nil
     var status: JobStatus = .queued
     var startDate: Date? = nil
     var endDate: Date? = nil
@@ -101,6 +116,7 @@ final class JobQueue: ObservableObject {
     @discardableResult
     func submit(setup: CalcSetup, molecule: Molecule, name: String, documentURL: URL?, autoOpen: Bool = true,
                 iterations: CalcIterations = CalcIterations(),
+                inputOverride: String? = nil, xtbArguments: [String]? = nil,
                 completion: ((JobRunResult) -> Void)? = nil) throws -> UUID {
         let program = setup.program
         guard let exe = resolveExecutable(program) else { throw JobSubmitError.programMissing(program) }
@@ -126,13 +142,21 @@ final class JobQueue: ObservableObject {
         let output = dir.appendingPathComponent("job." + program.outputExtension)
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            try iterations.apply(to: effective.inputText(molecule: molecule), program: program, jobType: effective.jobType).write(to: input, atomically: true, encoding: .utf8)
+            // A hand-edited input is written exactly as typed.
+            let text = inputOverride ?? iterations.apply(to: effective.inputText(molecule: molecule), program: program, jobType: effective.jobType)
+            try text.write(to: input, atomically: true, encoding: .utf8)
         } catch {
             throw JobSubmitError.io("Could not write the job files: \(error.localizedDescription)")
         }
         var run = JobRun(id: UUID(), program: program, name: safe, directory: dir, inputURL: input, outputURL: output, setup: effective)
         run.message = note
         run.autoOpen = autoOpen
+        run.inputEdited = inputOverride != nil
+        if program == .xtb {
+            let args = xtbArguments ?? effective.commandArguments(inputFileName: input.lastPathComponent)
+            run.xtbArguments = args
+            run.commandLine = XTBInputPreview.shellJoin(["xtb"] + args)
+        }
         jobs.append(run)
         if let completion { completions[run.id] = completion }
         refreshAvailability()
@@ -157,9 +181,10 @@ final class JobQueue: ObservableObject {
     /// Lists a job that something else is running (it shows in the queue window with its log) and returns its id.
     @discardableResult
     func registerExternal(program: QCProgram, name: String, directory: URL, outputURL: URL, setup: CalcSetup,
-                          message: String? = nil, cancel: @escaping () -> Void) -> UUID {
+                          commandLine: String? = nil, message: String? = nil, cancel: @escaping () -> Void) -> UUID {
         var run = JobRun(id: UUID(), program: program, name: Self.safeName(name), directory: directory,
                          inputURL: directory.appendingPathComponent("input.xyz"), outputURL: outputURL, setup: setup)
+        run.commandLine = commandLine
         run.status = .running
         run.startDate = Date()
         run.autoOpen = false
@@ -229,6 +254,22 @@ final class JobQueue: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
+    func job(_ id: UUID) -> JobRun? { jobs.first { $0.id == id } }
+
+    /// Read-only viewer (search, line numbers) for the job's input file.
+    func showInput(_ id: UUID) {
+        guard let j = job(id) else { return }
+        FileViewerWindow.show(url: j.inputURL, title: "\(j.name) \u{2014} input (\(j.inputURL.lastPathComponent))",
+                              note: j.commandLine.map { "Command: " + $0 }, live: false, jobID: id)
+    }
+
+    /// Read-only viewer for the job's main output; follows the file while the job runs.
+    func showOutput(_ id: UUID) {
+        guard let j = job(id) else { return }
+        FileViewerWindow.show(url: j.outputURL, title: "\(j.name) \u{2014} output (\(j.outputURL.lastPathComponent))",
+                              note: nil, live: j.status.isActive, jobID: id)
+    }
+
     func openResult(_ id: UUID) {
         guard let j = jobs.first(where: { $0.id == id }) else { return }
         open(j.result)
@@ -281,7 +322,7 @@ final class JobQueue: ObservableObject {
             env["OMP_NUM_THREADS"] = String(max(1, s.nprocs))
             env["OMP_STACKSIZE"] = "1G"
             env["MKL_NUM_THREADS"] = String(max(1, s.nprocs))
-            return JobLaunch(program: .xtb, executable: exe, arguments: s.commandArguments(inputFileName: job.inputURL.lastPathComponent),
+            return JobLaunch(program: .xtb, executable: exe, arguments: job.xtbArguments ?? s.commandArguments(inputFileName: job.inputURL.lastPathComponent),
                              outputFile: job.outputURL, workingDirectory: dir, environment: env)
         }
     }
@@ -329,10 +370,65 @@ final class JobQueue: ObservableObject {
             case .cancelled: jobs[i].status = .cancelled
             }
             let job = jobs[i]
-            if job.autoOpen, case .finished = job.status { open(job.result) }
-            complete(job)
+            if job.program == .orca, job.status != .cancelled, Self.orcaMoldenEnabled,
+               OrcaMoldenConversion.hasWavefunction(baseName: job.inputURL.deletingPathExtension().lastPathComponent, in: job.directory) {
+                // The next job may start meanwhile; this one is opened once its orbitals are converted.
+                jobs[i].isPostProcessing = true
+                Task { @MainActor in
+                    await self.convertOrbitals(id)
+                    self.finalize(id)
+                }
+            } else {
+                finalize(id)
+            }
         }
         if runningID == id { runner = nil; runningID = nil }
         startNextIfIdle()
+    }
+
+    private func finalize(_ id: UUID) {
+        guard let i = index(id) else { return }
+        jobs[i].isPostProcessing = false
+        let job = jobs[i]
+        if job.autoOpen, case .finished = job.status { open(job.result) }
+        complete(job)
+    }
+
+    // MARK: ORCA orbitals → Molden
+
+    /// Preference (on by default): run `orca_2mkl <base> -molden` after every ORCA job that wrote a .gbw.
+    static var orcaMoldenEnabled: Bool {
+        UserDefaults.standard.object(forKey: AppSettings.orcaAutoMoldenKey) as? Bool ?? true
+    }
+
+    /// Converts the job's .gbw to `<base>.molden.input` in the run directory, logging each step. Never throws:
+    /// a failure is recorded in the job log and the results open without orbitals.
+    func convertOrbitals(_ id: UUID) async {
+        guard let j = job(id) else { return }
+        let base = j.inputURL.deletingPathExtension().lastPathComponent
+        let orca = resolveExecutable(.orca)
+        let tool = orcaMoldenToolOverride ?? orca.flatMap(OrcaMoldenConversion.locateTool(nextTo:))
+        guard let tool else {
+            postStep(id, "Orbital conversion skipped: orca_2mkl not found next to \(orca?.path ?? "orca"). Run “orca_2mkl \(base) -molden” in the job folder to see orbitals.")
+            return
+        }
+        postStep(id, "Converting orbitals: \(tool.lastPathComponent) \(base) -molden \u{2026}")
+        do {
+            let r = try await OrcaMoldenConversion.convert(baseName: base, in: j.directory, tool: tool)
+            if let i = index(id) { jobs[i].moldenURL = r.moldenURL }
+            postStep(id, "Orbitals converted: \(r.moldenURL.lastPathComponent) (loaded with the results)")
+        } catch {
+            postStep(id, "Orbital conversion failed: \(error.localizedDescription). The results open without orbitals.")
+        }
+    }
+
+    /// Test hook: the orca_2mkl to use instead of the one next to the located orca.
+    var orcaMoldenToolOverride: URL?
+
+    private func postStep(_ id: UUID, _ line: String) {
+        guard let i = index(id) else { return }
+        jobs[i].postSteps.append(line)
+        jobs[i].liveLog += (jobs[i].liveLog.isEmpty ? "" : "\n") + "[VibeView] " + line
+        JobLogCenter.shared.existing(for: id)?.enqueue("[VibeView] " + line)
     }
 }

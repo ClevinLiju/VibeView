@@ -8,9 +8,12 @@ import MolCompute
 enum XTBAvailability {
     static var executable: URL? { ProgramLocator.locate(.xtb) ?? XTBRunner.locate() }
     static var helpText: String {
-        executable == nil ? "Optimize with GFN2-xTB — xtb was not found; set its path in Settings ▸ Programs"
+        executable == nil ? "Optimize with GFN2-xTB — xtb was not found: run the VibeView installer or “conda install -c conda-forge xtb”"
                           : "Optimize the structure with GFN2-xTB (⌥⌘K)"
     }
+    static let condaCommand = "conda install -c conda-forge xtb"
+    /// Shown wherever xtb is needed but missing. VibeView has no built-in geometry optimizer.
+    static let installHint = "VibeView optimizes geometries with the free xtb program (GFN2-xTB). Install it by re-running the VibeView installer (it offers to download xtb), or with “\(condaCommand)”, then restart VibeView or set its location in Settings ▸ Programs."
 }
 
 extension EditorModel {
@@ -20,12 +23,16 @@ extension EditorModel {
         guard let exe = XTBAvailability.executable else {
             let a = NSAlert()
             a.messageText = "xtb is not installed"
-            a.informativeText = "VibeView uses the free xtb program (GFN2-xTB) for fast optimizations. Install it (for example with “brew install xtb” or conda-forge) or set its location in Settings ▸ Programs. Meanwhile you can use Clean Up Geometry (⇧⌘K), which runs the built-in force field."
-            a.addButton(withTitle: "Clean Up Instead")
-            a.addButton(withTitle: "Cancel")
-            if a.runModal() == .alertFirstButtonReturn { cleanGeometry() }
+            a.informativeText = XTBAvailability.installHint
+            a.addButton(withTitle: "OK")
+            a.addButton(withTitle: "Copy Install Command")
+            if a.runModal() == .alertSecondButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(XTBAvailability.condaCommand, forType: .string)
+            }
             return
         }
+        guard GeometryPreflightPrompt.confirm(molecule, program: "xtb") else { return }
         let start = molecule
         busyMessage = "Optimizing with GFN2-xTB…"
         let threads = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount))

@@ -32,6 +32,7 @@ final class VibeViewAppDelegate: NSObject, NSApplicationDelegate {
             GalleryJobs.registerGallery()
             WindowSnapshots.scheduleIfRequested()
             GalleryJobs.runXTBSelfTestIfRequested()
+            GalleryJobs.runORCASelfTestIfRequested()
         }
         for u in argumentFiles {
             Task { @MainActor in
@@ -240,9 +241,6 @@ struct VibeViewCommands: Commands {
                 .disabled(!hasAtoms)
             Button("Remove Hydrogens") { editor?.removeHydrogens() }
                 .keyboardShortcut("h", modifiers: [.command, .option, .shift])
-                .disabled(!hasAtoms)
-            Button("Clean Up Geometry") { editor?.cleanGeometry() }
-                .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(!hasAtoms)
             Button("Optimize with xtb") { editor?.optimizeWithXTB() }
                 .keyboardShortcut("k", modifiers: [.command, .option])

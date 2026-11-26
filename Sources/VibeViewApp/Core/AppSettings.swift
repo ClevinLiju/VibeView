@@ -17,4 +17,5 @@ public enum AppSettings {
     public static let defaultBasisKey = "vibeview.defaultBasis"            // e.g. "6-31G(d)"
     public static let processorsKey = "vibeview.defaultProcessors"         // Int
     public static let memoryKey = "vibeview.defaultMemory"                 // e.g. "4GB"
+    public static let orcaAutoMoldenKey = "vibeview.orca.autoMolden"       // Bool, default true: orca_2mkl -molden after ORCA jobs
 }

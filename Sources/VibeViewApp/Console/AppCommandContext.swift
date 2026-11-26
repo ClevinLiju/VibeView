@@ -79,7 +79,6 @@ final class AppCommandContext: @preconcurrency CommandContext {
     }
 
     func addHydrogens() throws { try ed.addHydrogens() }
-    func cleanGeometry() throws { try ed.cleanGeometry() }
     func runXTBOptimization(options: [String]) throws {
         let e = try ed
         guard !e.molecule.atoms.isEmpty else { throw CommandError("nothing to optimize") }

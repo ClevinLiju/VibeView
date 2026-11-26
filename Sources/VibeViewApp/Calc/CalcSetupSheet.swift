@@ -13,8 +13,16 @@ struct CalcSetupSheet: View {
     @State private var setup: CalcSetup
     @State private var message = ""
     @State private var iterations = CalcIterations()
+    /// The preview text: follows the form until the user edits it (then Save/Copy/Run use the edit as typed).
+    @State private var draft: CalcInputDraft
 
-    init(editor: EditorModel) {
+    /// Self-test hook: the next sheet opens with its preview edited by this function (used once).
+    static var nextInitialEdit: ((String) -> String)?
+
+    /// `initialEdit` (gallery/self-test only) starts the sheet with the preview already edited.
+    init(editor: EditorModel, initialEdit: ((String) -> String)? = nil) {
+        let initialEdit = initialEdit ?? Self.nextInitialEdit
+        Self.nextInitialEdit = nil
         self.editor = editor
         let d = UserDefaults.standard
         let program = d.string(forKey: AppSettings.lastProgramKey).flatMap(QCProgram.init(rawValue:)) ?? .gaussian
@@ -24,6 +32,9 @@ struct CalcSetupSheet: View {
         s.checkpoint = base + ".chk"
         s.title = editor.molecule.title
         _setup = State(initialValue: s)
+        var dr = CalcInputDraft(generated: Self.previewText(s, molecule: editor.molecule, iterations: CalcIterations()))
+        if let f = initialEdit { dr.setText(f(dr.generated)) }
+        _draft = State(initialValue: dr)
     }
 
     private static func baseName(_ editor: EditorModel) -> String {
@@ -49,14 +60,35 @@ struct CalcSetupSheet: View {
     }
 
     private var problems: [String] { setup.validate(molecule: editor.molecule) }
-    private var inputText: String {
-        iterations.apply(to: setup.inputText(molecule: editor.molecule), program: setup.program, jobType: setup.jobType)
+    private static func inputName(_ p: QCProgram) -> String { "job." + p.inputExtension }
+    private var inputName: String { Self.inputName(setup.program) }
+
+    /// The preview generated from the form (for xtb: the command line, then the XYZ file).
+    private static func previewText(_ s: CalcSetup, molecule: Molecule, iterations: CalcIterations) -> String {
+        let input = iterations.apply(to: s.inputText(molecule: molecule), program: s.program, jobType: s.jobType)
+        guard s.program == .xtb else { return input }
+        let name = inputName(.xtb)
+        return XTBInputPreview.compose(arguments: s.commandArguments(inputFileName: name), inputFileName: name, xyz: input)
     }
-    private var inputName: String { "job." + setup.program.inputExtension }
-    private var preview: String {
-        guard setup.program == .xtb else { return inputText }
-        return "# " + setup.commandLine(program: "xtb", inputFileName: inputName) + "\n# \(inputName):\n\n" + inputText
+    private var preview: String { Self.previewText(setup, molecule: editor.molecule, iterations: iterations) }
+
+    /// What gets written and run: the input file text plus, for xtb, the arguments from the command line.
+    private struct EffectiveInput { var fileText: String; var xtbArguments: [String]? }
+    private var effectiveInput: Result<EffectiveInput, Error> {
+        let text = draft.isEdited ? draft.text : preview
+        guard setup.program == .xtb else { return .success(EffectiveInput(fileText: text, xtbArguments: nil)) }
+        do {
+            let p = try XTBInputPreview.parse(text, inputFileName: inputName)
+            return .success(EffectiveInput(fileText: p.xyz, xtbArguments: p.arguments))
+        } catch { return .failure(error) }
     }
+    private var editProblem: String? {
+        if case .failure(let e) = effectiveInput { return e.localizedDescription }
+        if draft.isEdited, draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "The input is empty." }
+        return nil
+    }
+    /// Form problems block Run only while the preview follows the form; an edited input is the user's call.
+    private var blockingProblems: [String] { draft.isEdited ? (editProblem.map { [$0] } ?? []) : problems + (editProblem.map { [$0] } ?? []) }
     private var programMissing: Bool { !queue.isAvailable(setup.program) }
 
     var body: some View {
@@ -78,7 +110,8 @@ struct CalcSetupSheet: View {
             footer
         }
         .frame(minWidth: 860, minHeight: 560)
-        .onAppear { queue.refreshAvailability() }
+        .onAppear { queue.refreshAvailability(); draft.updateGenerated(preview) }
+        .onChange(of: preview) { _, new in draft.updateGenerated(new) }
     }
 
     // MARK: Bindings
@@ -86,6 +119,16 @@ struct CalcSetupSheet: View {
     private var programBinding: Binding<QCProgram> {
         Binding(get: { setup.program }, set: { p in
             guard p != setup.program else { return }
+            if draft.isEdited {
+                // An edited input is written for one program; switching would leave a mismatched file.
+                let a = NSAlert()
+                a.messageText = "Discard your edits to the input?"
+                a.informativeText = "Switching to \(p.title) generates a new \(p.title) input from the form. Your hand edits to the \(setup.program.title) input are lost."
+                a.addButton(withTitle: "Switch and Discard Edits")
+                a.addButton(withTitle: "Cancel")
+                guard a.runModal() == .alertFirstButtonReturn else { return }
+                draft.revert()
+            }
             var s = setup
             s.setProgram(p)
             Self.applyStored(&s, defaults: .standard)
@@ -227,20 +270,47 @@ struct CalcSetupSheet: View {
 
     // MARK: Preview + footer
 
+    private var previewText: Binding<String> {
+        Binding(get: { draft.isEdited ? draft.text : preview },
+                set: { t in draft.updateGenerated(preview); draft.setText(t) })
+    }
+
     private var previewPane: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Input Preview").font(.headline)
-            ScrollView([.vertical, .horizontal]) {
-                Text(preview)
-                    .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(8)
+            HStack(spacing: 8) {
+                Text(setup.program == .xtb ? "Command Line + \(inputName)" : "Input: \(inputName)").font(.headline)
+                Spacer()
+                if draft.isEdited {
+                    Label("Edited", systemImage: "pencil.circle.fill")
+                        .font(.callout.weight(.semibold)).foregroundStyle(.orange)
+                    Button("Revert to Generated") { draft.revert() }
+                        .help("Discard your edits; the preview follows the form again")
+                } else {
+                    Text("Editable").font(.caption).foregroundStyle(.secondary)
+                        .help("Type in the preview to change the input by hand. Save and Run use exactly what is shown.")
+                }
             }
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            PlainTextEditor(text: previewText)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(draft.isEdited ? Color.orange.opacity(0.7) : Color.secondary.opacity(0.25)))
+            if draft.isEdited {
+                Label(draft.formChangedSinceEdit
+                      ? "The form changed after you edited the input. Those changes are NOT in this input; Revert to Generated applies them (and discards your edits)."
+                      : "Edited by hand: form changes no longer update this input. Save and Run use it exactly as shown.",
+                      systemImage: draft.formChangedSinceEdit ? "exclamationmark.triangle.fill" : "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(draft.formChangedSinceEdit ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let e = editProblem {
+                Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout)
+            }
             if !problems.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(problems, id: \.self) { Label($0, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout) }
+                    ForEach(problems, id: \.self) {
+                        Label($0, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(draft.isEdited ? Color.orange : Color.red).font(.callout)
+                    }
                 }
             }
         }
@@ -249,7 +319,8 @@ struct CalcSetupSheet: View {
 
     private var runHelp: String {
         if programMissing { return "\(setup.program.title) not found \u{2014} set its path in Settings" }
-        if !problems.isEmpty { return "Fix the problems listed below the preview first" }
+        if !blockingProblems.isEmpty { return "Fix the problems listed below the preview first" }
+        if draft.isEdited { return "Run \(setup.program.title) with the edited input" }
         return "Run \(setup.program.title) on this molecule"
     }
 
@@ -259,21 +330,24 @@ struct CalcSetupSheet: View {
             Spacer()
             Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
             Button("Copy Input") {
-                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(inputText, forType: .string)
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(previewText.wrappedValue, forType: .string)
                 message = "Input copied"
             }
             Button("Save Input\u{2026}") { _ = save() }
             Button("Run") { run() }
                 .keyboardShortcut(.defaultAction)
-                .disabled(programMissing || !problems.isEmpty)
+                .disabled(programMissing || !blockingProblems.isEmpty)
                 .help(runHelp)
         }
         .padding()
     }
 
     private func run() {
+        guard GeometryPreflightPrompt.confirm(editor.molecule, program: setup.program.title) else { message = "Run cancelled"; return }
         do {
-            try queue.submit(setup: setup, molecule: editor.molecule, name: Self.baseName(editor), documentURL: editor.fileURL, iterations: iterations)
+            let eff = try effectiveInput.get()
+            try queue.submit(setup: setup, molecule: editor.molecule, name: Self.baseName(editor), documentURL: editor.fileURL, iterations: iterations,
+                             inputOverride: draft.isEdited ? eff.fileText : nil, xtbArguments: draft.isEdited ? eff.xtbArguments : nil)
             editor.statusMessage = "Queued \(setup.program.title) job"
             openWindow(id: "job-queue")
             dismiss()
@@ -291,14 +365,82 @@ struct CalcSetupSheet: View {
         panel.title = "Save \(setup.program.title) Input"
         panel.nameFieldStringValue = Self.baseName(editor) + "." + ext
         if let dir = editor.fileURL?.deletingLastPathComponent() { panel.directoryURL = dir }
+        let eff: EffectiveInput
+        do { eff = try effectiveInput.get() } catch { message = error.localizedDescription; return nil }
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         do {
-            try inputText.write(to: url, atomically: true, encoding: .utf8)
-            message = "Saved \(url.lastPathComponent)"
+            try eff.fileText.write(to: url, atomically: true, encoding: .utf8)
+            if let a = eff.xtbArguments {
+                let args = a.map { $0 == inputName ? url.lastPathComponent : $0 }
+                message = "Saved \(url.lastPathComponent). Run it with: " + XTBInputPreview.shellJoin(["xtb"] + args)
+            } else {
+                message = "Saved \(url.lastPathComponent)"
+            }
             return url
         } catch {
             message = "Could not save: \(error.localizedDescription)"
             return nil
+        }
+    }
+}
+
+/// Monospaced, non-wrapping plain-text editor with every automatic substitution off (smart quotes or dashes
+/// would corrupt an input file).
+struct PlainTextEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        guard let tv = scroll.documentView as? NSTextView else { return scroll }
+        tv.isRichText = false
+        tv.importsGraphics = false
+        tv.allowsUndo = true
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.isContinuousSpellCheckingEnabled = false
+        tv.isGrammarCheckingEnabled = false
+        tv.isAutomaticLinkDetectionEnabled = false
+        tv.isAutomaticDataDetectionEnabled = false
+        tv.smartInsertDeleteEnabled = false
+        tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        tv.textColor = .textColor
+        tv.backgroundColor = .textBackgroundColor
+        tv.drawsBackground = true
+        tv.textContainerInset = NSSize(width: 6, height: 6)
+        tv.isHorizontallyResizable = true
+        tv.textContainer?.widthTracksTextView = false
+        tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.string = text
+        tv.delegate = context.coordinator
+        tv.setAccessibilityLabel("Input file text")
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let tv = scroll.documentView as? NSTextView, tv.string != text else { return }
+        let sel = tv.selectedRanges
+        tv.string = text
+        let len = (text as NSString).length
+        tv.selectedRanges = sel.map { r in
+            let v = r.rangeValue
+            return NSValue(range: NSRange(location: min(v.location, len), length: 0))
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: PlainTextEditor
+        init(_ p: PlainTextEditor) { parent = p }
+        func textDidChange(_ n: Notification) {
+            guard let tv = n.object as? NSTextView else { return }
+            parent.text = tv.string
         }
     }
 }

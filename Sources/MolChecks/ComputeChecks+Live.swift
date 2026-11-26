@@ -13,7 +13,7 @@ private func secs(_ t: Date) -> String { String(format: "%.2f s", Date().timeInt
 private func xtbChildCount() -> Int {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-    p.arguments = ["-f", "vibeview-xtb-"]
+    p.arguments = ["-f", "(vibeview|vibeview)-xtb-"]
     let pipe = Pipe(); p.standardOutput = pipe
     do { try p.run() } catch { return 0 }
     let d = pipe.fileHandleForReading.readDataToEndOfFile()

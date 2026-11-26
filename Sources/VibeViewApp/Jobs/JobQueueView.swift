@@ -24,7 +24,10 @@ struct JobQueueView: View {
             ProgramFooter(queue: queue)
         }
         .frame(minWidth: 820, minHeight: 520)
-        .onAppear { queue.refreshAvailability() }
+        .onAppear {
+            queue.refreshAvailability()
+            if selection == nil { selection = queue.jobs.last?.id }
+        }
         .onChange(of: queue.jobs.count) { _, _ in
             if selection == nil || !queue.jobs.contains(where: { $0.id == selection }) { selection = queue.jobs.last?.id }
         }
@@ -43,6 +46,11 @@ struct JobQueueView: View {
                             .simultaneousGesture(TapGesture(count: 2).onEnded { LogWindow.show(job: job) })
                             .contextMenu {
                                 Button("Show Log") { LogWindow.show(job: job) }
+                                Button("Show Input") { queue.showInput(job.id) }
+                                Button("Show Output") { queue.showOutput(job.id) }
+                                Button("Open Output in VibeView") { queue.openResult(job.id) }
+                                    .disabled(!FileManager.default.fileExists(atPath: job.outputURL.path))
+                                Divider()
                                 Button("Reveal in Finder") { queue.reveal(job.id) }
                                 if job.status.isActive { Button("Cancel") { queue.cancel(job.id) } }
                                 else { Button("Remove") { queue.remove(job.id) } }
@@ -115,8 +123,14 @@ private struct JobDetail: View {
                 }
                 Button { LogWindow.show(job: job) } label: { Label("Show Log", systemImage: "text.alignleft") }
                     .help("Open the streaming log viewer in its own window")
+                Button { queue.showInput(job.id) } label: { Label("Show Input", systemImage: "doc.plaintext") }
+                    .help("View the input file \(job.inputURL.lastPathComponent) (read-only, with search and line numbers)")
+                Button { queue.showOutput(job.id) } label: { Label("Show Output", systemImage: "doc.text") }
+                    .help("View the output file \(job.outputURL.lastPathComponent) (read-only, with search and line numbers)")
+                    .disabled(!FileManager.default.fileExists(atPath: job.outputURL.path))
                 Button { queue.reveal(job.id) } label: { Label("Reveal in Finder", systemImage: "folder") }
-                Button { queue.openResult(job.id) } label: { Label("Open Result", systemImage: "doc.text.magnifyingglass") }
+                Button { queue.openResult(job.id) } label: { Label("Open Output in VibeView", systemImage: "arrow.up.forward.app") }
+                    .help("Open the results as a VibeView document")
                     .disabled(!FileManager.default.fileExists(atPath: job.outputURL.path))
                 Button { queue.remove(job.id) } label: { Label("Remove", systemImage: "minus.circle") }
                     .disabled(job.status.isActive)
@@ -143,8 +157,26 @@ private struct JobDetail: View {
                     .font(.callout.monospacedDigit())
             }
             if let m = job.message { Label(m, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
+            if job.inputEdited { Label("Input edited by hand in Calculation Setup", systemImage: "pencil").font(.callout).foregroundStyle(.orange) }
+            if let c = job.commandLine { Text(c).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled) }
+            if job.isPostProcessing { Label("Post-processing\u{2026}", systemImage: "gearshape.2").font(.callout).foregroundStyle(.blue) }
+            ForEach(Array(job.postSteps.enumerated()), id: \.offset) { _, step in
+                Label(step, systemImage: step.contains("failed") || step.contains("skipped") ? "exclamationmark.triangle" : "checkmark.circle")
+                    .font(.callout).foregroundStyle(step.contains("failed") || step.contains("skipped") ? Color.orange : Color.secondary)
+            }
+            HStack(spacing: 10) {
+                fileLink("Input", job.inputURL) { queue.showInput(job.id) }
+                fileLink("Output", job.outputURL) { queue.showOutput(job.id) }
+                if let m = job.moldenURL { fileLink("Orbitals", m) { NSWorkspace.shared.activateFileViewerSelecting([m]) } }
+            }
             Text(job.directory.path).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
         }
+    }
+
+    private func fileLink(_ title: String, _ url: URL, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Text("\(title): \(url.lastPathComponent)") }
+            .buttonStyle(.link).font(.caption)
+            .help(url.path)
     }
 
     private var chart: some View {

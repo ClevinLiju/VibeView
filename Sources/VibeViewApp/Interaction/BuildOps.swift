@@ -49,7 +49,6 @@ enum BuildOps {
     static func deleteAtoms(_ m: inout Molecule, _ s: Set<Int>) { Editing.deleteAtoms(&m, s) }
     static func invert(_ m: inout Molecule) { Editing.invert(&m, center: nil) }
     static func mirror(_ m: inout Molecule) { Editing.mirror(&m, planeNormal: Vec3(0, 0, 1), through: nil) }
-    static func clean(_ m: Molecule) -> Molecule? { Cleanup.minimize(m, frozen: [], maxSteps: 500).molecule }
     static func hybridization(_ m: Molecule, atom: Int) -> String { Editing.hybridization(m, atom: atom).rawValue }
 }
 
@@ -59,6 +58,4 @@ extension BuildOps {
 extension BuildOps {
     static func removeHydrogens(_ m: inout Molecule, atoms: Set<Int>?) { Editing.removeHydrogens(&m, atoms: atoms.map { Array($0).sorted() }) }
 }
-extension Cleanup {
-    static func energyFacade(_ m: Molecule) -> Double { Cleanup.energy(m) }
-}
+

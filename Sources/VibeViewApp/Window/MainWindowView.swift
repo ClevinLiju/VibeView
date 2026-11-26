@@ -48,6 +48,7 @@ struct MainWindowView: View {
         .toolbar { toolbarContent }
         .focusedSceneValue(\.editor, editor)
         .sheet(isPresented: $editor.showCalcSetup) { CalcSetupSheet(editor: editor) }
+        .onReceive(NotificationCenter.default.publisher(for: .vibeviewShowJobQueue)) { _ in openWindow(id: "job-queue") }
         .sheet(isPresented: $editor.showPubChem) { NameLookupSheet(editor: editor) }
         .sheet(isPresented: $editor.showXTBSettings) { XTBSettingsSheet(editor: editor, isPresented: $editor.showXTBSettings) }
         .overlay(alignment: .top) {
@@ -108,8 +109,6 @@ struct MainWindowView: View {
 
             Button { editor.addHydrogens() } label: { Label("Add Hydrogens", systemImage: "h.circle") }
                 .help("Fill open valences with hydrogens (⌘⇧H)")
-            Button { editor.cleanGeometry() } label: { Label("Clean Up", systemImage: "wand.and.stars") }
-                .help("Relax the geometry with the built-in force field (⌘⇧K)")
             Button { editor.optimizeWithXTB() } label: { Label("Optimize with xtb", systemImage: "bolt.badge.automatic") }
                 .help(XTBAvailability.helpText)
                 .disabled(editor.molecule.atoms.isEmpty || editor.busyMessage != nil)

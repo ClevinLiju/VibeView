@@ -182,7 +182,6 @@ public extension Notification.Name {
     static let vibeviewShowCalcSetup = Notification.Name("vibeview.showCalcSetup")
     static let vibeviewShowJobQueue = Notification.Name("vibeview.showJobQueue")
     static let vibeviewShowResults = Notification.Name("vibeview.showResults")
-    static let vibeviewCleanGeometry = Notification.Name("vibeview.cleanGeometry")
 }
 
 /// UserDefaults keys for viewport defaults (Lead C; AppSettings belongs to the calc/jobs worker).

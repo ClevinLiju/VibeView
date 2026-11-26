@@ -203,7 +203,6 @@ extension CommandRegistry {
             return CommandOutput("atom \(i + 1) is now \(Elements.symbol(z))")
         }
         add("addh", ["addhydrogens"], "addh", "Add hydrogens.") { inv in try inv.context.addHydrogens(); return CommandOutput("hydrogens added") }
-        add("clean", [], "clean", "Clean up the geometry.") { inv in try inv.context.cleanGeometry(); return CommandOutput("geometry cleaned") }
         add("info", [], "info", "Formula, atom count, weight, charge, multiplicity.") { inv in
             let m = inv.context.molecule
             let lines = ["formula: \(m.formula)", "atoms: \(m.atoms.count)", "bonds: \(m.bonds.count)",

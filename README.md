@@ -21,13 +21,18 @@ Licensed under the MIT License (see `LICENSE`).
 - **Deleting atoms:** Delete/Backspace, ⌘⌫, the right-click menu, or `delete` in the console.
 - **Name lookup:** search by name, CAS number, SMILES or CID through PubChem. You see candidates with a picture, formula and synonyms, then sketch with the result, insert it, or open it. SciFinder has no public API, so it isn't searched.
 - **Command line:** a built-in console (⌘⇧C) with history, Tab completion, colored output, and `open`/`cd`/`ls` relative to the document's folder.
+  - `export image fig.png` saves the current view; the extension picks PNG, JPEG, TIFF or HEIC. Options include `width`/`height`, `scale`, `dpi`, `transparent`, `fit`, `look whitepaper`, `quality`, and the `4k` and `publication` presets.
 - **Calculations:** job setup for xtb, ORCA, Gaussian and Q-Chem.
+  - The generated input file is editable before you save or run it, and "Revert to Generated" undoes your edits.
   - An xtb settings sheet covers GFN level, optimization level, max cycles, solvent, charge/UHF, electronic temperature, threads and extra arguments, with a command preview.
   - Max-iteration fields for ORCA and Gaussian.
-  - A live log viewer with search, follow mode, Reveal in Finder and Open in Console.
+  - A live log viewer with search, follow mode, Reveal in Finder and Open in Console. Every job's input and output files open in a viewer, and the output opens in VibeView.
+  - After an ORCA job, the orbitals are converted to Molden format automatically (`orca_2mkl`), so they show up straight away.
+  - Before a job runs, VibeView warns about atoms that have drifted away from the rest of the structure.
 - **Reading files:** Gaussian, ORCA, Q-Chem, xtb, Molden, fchk, cube, XYZ, PDB, MOL, SDF and CML. Same-named companion files (`.molden.input`, `.hess`, `.fchk`…) load automatically.
 - **Orbitals:** occupied and virtual color schemes, which you can change. Solid, transparent, wireframe or points display, and a grid-quality slider.
-- **Analysis:** vibrations and spectra, point group detection and Symmetrize, hydrogen bonds and a clipping slab.
+- **Spectra:** IR and Raman (IR as %transmittance or absorbance) and UV-Vis, with Gaussian, Lorentzian, Voigt or pseudo-Voigt line shapes, or sticks only.
+- **Analysis:** vibrations, point group detection and Symmetrize, hydrogen bonds and a clipping slab.
 - **Sessions:** save and restore sessions (`.vibeview` JSON). Recent files are under File ▸ Open Recent.
 - **Quick Look:** previews in Finder.
 
@@ -48,7 +53,7 @@ Orbitals load straight from ORCA/Gaussian output. Same-named Molden or fchk file
 
 ### Vibrations and IR spectra
 
-Pick a mode in the table, or click its peak, and the molecule vibrates. The animation runs on the GPU, so the view stays smooth while you rotate. Spectra use adjustable broadening and frequency scaling.
+Pick a mode in the table, or click its peak, and the molecule vibrates. The animation runs on the GPU, so the view stays smooth while you rotate. Spectra use adjustable line shapes and frequency scaling.
 
 ![Vibrations tab with the broadened IR spectrum and normal-mode table](docs/screenshots/window-vibrations-ir.png)
 
@@ -83,7 +88,7 @@ Paste this into Terminal:
 curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash
 ```
 
-It downloads the latest release, installs VibeView in `/Applications`, and opens it. It also clears the download quarantine flag, so the first launch shows no Gatekeeper prompt. Requires an Apple Silicon Mac with macOS 14 or later.
+It downloads the latest release, installs VibeView in `/Applications`, and opens it. If [xtb](https://github.com/grimme-lab/xtb) isn't already on your PATH, in a conda environment or in Homebrew, it asks whether to download the official xtb build. The download is checked against its published SHA-256 before installing. Pass `--with-xtb` or `--no-xtb` to skip the question. It also clears the download quarantine flag, so the first launch shows no Gatekeeper prompt. Requires an Apple Silicon Mac with macOS 14 or later.
 
 Other options:
 

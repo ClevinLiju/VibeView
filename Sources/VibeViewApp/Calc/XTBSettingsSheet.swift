@@ -101,7 +101,7 @@ enum XTBJobRunner {
         setup.jobType = settings.task == .singlePoint ? .energy : (settings.task == .hessian ? .optFreq : .optimize)
         setup.method = settings.method.title
         let id = queue.registerExternal(program: .xtb, name: baseName, directory: dir, outputURL: dir.appendingPathComponent("xtb.out"),
-                                        setup: setup, cancel: { handle.cancel() })
+                                        setup: setup, commandLine: settings.commandLine(molecule: molecule), cancel: { handle.cancel() })
         JobLogCenter.shared.register(log, for: id)
         editor.statusMessage = "Running xtb (\(settings.method.title))\u{2026}"
         if showLog { LogWindow.show(id: id, model: log) }
@@ -333,6 +333,7 @@ struct XTBSettingsSheet: View {
     private func run() {
         settings.extraArguments = ShellWords.split(extraText).words
         XTBSettingsStore.save(settings)
+        guard GeometryPreflightPrompt.confirm(editor.molecule, program: "xtb") else { return }
         if XTBJobRunner.run(editor: editor, settings: settings) != nil { isPresented = false }
         else { message = editor.statusMessage }
     }
