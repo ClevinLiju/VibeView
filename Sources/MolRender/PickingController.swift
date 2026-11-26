@@ -138,12 +138,15 @@ import MolCore
     /// True while a rubber-band overlay is shown.
     var hasBoxOverlay: Bool { boxLayer?.superlayer != nil }
 
-    /// Visible atoms whose projection lies in `r` and in front of the camera.
+    /// Pickable atoms whose projection lies in `r` and in front of the camera. Like click picking and the lasso this
+    /// honours `RenderOptions.atomMask`: in the cartoon style only the residues' CA stand-ins (and atoms still drawn,
+    /// e.g. ligands) are boxed, never the atoms hidden under the cartoon.
     func atoms(in r: CGRect) -> Set<Int> {
         let v = renderer.view
         let mol = renderer.molecule
+        let options = renderer.options
         var proj = [CGPoint?](repeating: nil, count: mol.atoms.count)
-        for (i, a) in mol.atoms.enumerated() where RenderMetrics.isAtomVisible(a, options: renderer.options) {
+        for (i, a) in mol.atoms.enumerated() where RenderMetrics.isAtomPickable(i, in: mol, options: options) {
             let p = v.projectPoint(SCNVector3(a.position))
             if p.z >= 0, p.z <= 1, p.x.isFinite, p.y.isFinite { proj[i] = CGPoint(x: p.x, y: p.y) }
         }

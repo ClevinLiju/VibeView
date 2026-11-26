@@ -26,6 +26,7 @@ final class VibeViewAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { PerfProbe.log("didFinishLaunching") }
         if IconRenderer.runIfRequested() { return }
         NSApp.activate(ignoringOtherApps: true)
         Task { @MainActor in

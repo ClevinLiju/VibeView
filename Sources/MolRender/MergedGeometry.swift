@@ -40,10 +40,20 @@ enum MergedGeometry {
         return SphereTemplate(positions: p, indices: idx)
     }
 
+    /// Bytes per packed vertex (three Floats, no SIMD padding: 12 instead of the 16 of `SIMD3<Float>`).
+    static let packedStride = 3 * MemoryLayout<Float>.size
+
+    /// Packed (12-byte stride) source; the merged meshes are large, so the padding of `SIMD3<Float>` is not kept.
     static func source(_ v: [SIMD3<Float>], _ semantic: SCNGeometrySource.Semantic) -> SCNGeometrySource {
-        SCNGeometrySource(data: v.withUnsafeBufferPointer { Data(buffer: $0) }, semantic: semantic,
-                          vectorCount: v.count, usesFloatComponents: true, componentsPerVector: 3,
-                          bytesPerComponent: 4, dataOffset: 0, dataStride: MemoryLayout<SIMD3<Float>>.stride)
+        source(count: v.count, semantic) { out in for (i, p) in v.enumerated() { out[3 * i] = p.x; out[3 * i + 1] = p.y; out[3 * i + 2] = p.z } }
+    }
+    /// Packed source of `count` vectors written by `fill` (3 Floats per vector) straight into the source's storage.
+    static func source(count: Int, _ semantic: SCNGeometrySource.Semantic,
+                       fill: (UnsafeMutableBufferPointer<Float>) -> Void) -> SCNGeometrySource {
+        var d = Data(count: count * packedStride)
+        d.withUnsafeMutableBytes { raw in fill(raw.bindMemory(to: Float.self)) }
+        return SCNGeometrySource(data: d, semantic: semantic, vectorCount: count, usesFloatComponents: true,
+                                 componentsPerVector: 3, bytesPerComponent: 4, dataOffset: 0, dataStride: packedStride)
     }
     static func element(_ idx: [UInt32]) -> SCNGeometryElement {
         SCNGeometryElement(data: idx.withUnsafeBufferPointer { Data(buffer: $0) }, primitiveType: .triangles,
@@ -62,7 +72,10 @@ enum MergedGeometry {
     }
 
     static func assemble(_ name: String, verts: [SIMD3<Float>], normals: [SIMD3<Float>], groups: Groups, materials: MaterialLibrary) -> SCNNode {
-        let g = SCNGeometry(sources: [source(verts, .vertex), source(normals, .normal)], elements: groups.indices.map(element))
+        assemble(name, sources: [source(verts, .vertex), source(normals, .normal)], groups: groups, materials: materials)
+    }
+    static func assemble(_ name: String, sources: [SCNGeometrySource], groups: Groups, materials: MaterialLibrary) -> SCNNode {
+        let g = SCNGeometry(sources: sources, elements: groups.indices.map(element))
         g.materials = groups.order.map { materials.material(for: $0) }
         let n = SCNNode(geometry: g); n.name = name
         return n
@@ -70,11 +83,51 @@ enum MergedGeometry {
 
     /// Replace the vertex (and optionally normal) source, keeping elements and materials.
     static func replace(_ node: SCNNode, verts: [SIMD3<Float>], normals: [SIMD3<Float>]?) {
+        replace(node, vertexSource: source(verts, .vertex), normalSource: normals.map { source($0, .normal) })
+    }
+    static func replace(_ node: SCNNode, vertexSource: SCNGeometrySource, normalSource: SCNGeometrySource?) {
         guard let old = node.geometry else { return }
-        let nSrc = normals.map { source($0, .normal) } ?? old.sources(for: .normal).first
-        let g = SCNGeometry(sources: [source(verts, .vertex)] + (nSrc.map { [$0] } ?? []), elements: old.elements)
+        let nSrc = normalSource ?? old.sources(for: .normal).first
+        let g = SCNGeometry(sources: [vertexSource] + (nSrc.map { [$0] } ?? []), elements: old.elements)
         g.materials = old.materials
         node.geometry = g
+    }
+
+    /// Node with one triangle element per colour for items (atoms / bond pieces) that each repeat the index template
+    /// `tpl` offset by `item * stride` vertices. `colors[j]` is item j's colour; groups are in first-appearance order.
+    /// Indices are written straight into each element's storage (exact size, no intermediate arrays).
+    static func assembleTemplated(_ name: String, sources: [SCNGeometrySource], colors: [RGBA], tpl: [UInt32], stride: Int,
+                                  materials: MaterialLibrary) -> SCNNode {
+        var order: [RGBA] = [], slot: [RGBA: Int] = [:]
+        var group = [Int](); group.reserveCapacity(colors.count)
+        var perGroup = [Int]()
+        for c in colors {
+            let g: Int
+            if let x = slot[c] { g = x } else { g = order.count; slot[c] = g; order.append(c); perGroup.append(0) }
+            perGroup[g] += 1
+            group.append(g)
+        }
+        // One exact-size buffer per colour, filled in a single pass and handed to Data without a copy.
+        let bufs = perGroup.map { UnsafeMutablePointer<UInt32>.allocate(capacity: max(1, $0 * tpl.count)) }
+        var cursor = [Int](repeating: 0, count: order.count)
+        tpl.withUnsafeBufferPointer { t in
+            for (j, g) in group.enumerated() {
+                let base = UInt32(j * stride), out = bufs[g] + cursor[g]
+                for k in 0..<t.count { out[k] = t[k] + base }
+                cursor[g] += t.count
+            }
+        }
+        let elements = bufs.indices.map { g in
+            let count = perGroup[g] * tpl.count
+            let d = Data(bytesNoCopy: bufs[g], count: count * MemoryLayout<UInt32>.size, deallocator: .custom { p, _ in
+                p.assumingMemoryBound(to: UInt32.self).deallocate()
+            })
+            return SCNGeometryElement(data: d, primitiveType: .triangles, primitiveCount: count / 3, bytesPerIndex: 4)
+        }
+        let geo = SCNGeometry(sources: sources, elements: elements)
+        geo.materials = order.map { materials.material(for: $0) }
+        let n = SCNNode(geometry: geo); n.name = name
+        return n
     }
 
     static func vertexCount(_ node: SCNNode) -> Int { node.geometry?.sources(for: .vertex).first?.vectorCount ?? -1 }
@@ -86,43 +139,44 @@ enum MergedGeometry {
         return (lon, max(4, lon * 2 / 3))
     }
 
-    private static func atomVerts(_ slice: ArraySlice<Int>, molecule: Molecule, options: RenderOptions, tpl: SphereTemplate) -> [SIMD3<Float>] {
+    /// Packed vertex source for the atoms of `slice`: the template sphere scaled and moved onto each atom.
+    private static func atomVertexSource(_ slice: ArraySlice<Int>, molecule: Molecule, options: RenderOptions, tpl: SphereTemplate) -> SCNGeometrySource {
         let V = tpl.positions.count
-        var verts = [SIMD3<Float>](repeating: .zero, count: slice.count * V)
-        verts.withUnsafeMutableBufferPointer { out in
+        return source(count: slice.count * V, .vertex) { out in
             tpl.positions.withUnsafeBufferPointer { t in
                 var o = 0
                 for i in slice {
                     let a = molecule.atoms[i]
                     let c = SIMD3<Float>(a.position), r = Float(AtomLayerBuilder.radius(of: a, options: options))
-                    for v in 0..<V { out[o + v] = c + t[v] * r }
-                    o += V
+                    for v in 0..<V {
+                        let p = c + t[v] * r
+                        out[o] = p.x; out[o + 1] = p.y; out[o + 2] = p.z
+                        o += 3
+                    }
                 }
             }
         }
-        return verts
     }
 
     static func buildAtoms(_ layer: SCNNode, idx: [Int], molecule: Molecule, options: RenderOptions, colors: [RGBA], materials: MaterialLibrary) {
         let (lon, lat) = atomSegments(options, idx.count)
         let tpl = unitSphere(lon: lon, lat: lat)
         let V = tpl.positions.count
+        // Unit-sphere normals are the template positions, the same for every atom.
+        let tplNormals = tpl.positions.flatMap { [$0.x, $0.y, $0.z] }
         var n = 0, start = 0
         while start < idx.count {
             let end = min(idx.count, start + atomChunk)
             let slice = idx[start..<end]
-            let verts = atomVerts(slice, molecule: molecule, options: options, tpl: tpl)
-            var normals = [SIMD3<Float>](); normals.reserveCapacity(verts.count)
-            var groups = Groups()
-            for (j, i) in slice.enumerated() {
-                normals.append(contentsOf: tpl.positions)
-                let color = i < colors.count ? colors[i] : ElementPalette.color(molecule.atoms[i].atomicNumber)
-                let g = groups.index(for: color)
-                let base = UInt32(j * V)
-                groups.indices[g].reserveCapacity(groups.indices[g].count + tpl.indices.count)
-                for t in tpl.indices { groups.indices[g].append(t + base) }
+            let normals = source(count: slice.count * V, .normal) { out in
+                tplNormals.withUnsafeBufferPointer { t in
+                    for j in 0..<slice.count { UnsafeMutableBufferPointer(rebasing: out[(j * t.count)..<((j + 1) * t.count)]).initialize(from: t) }
+                }
             }
-            layer.addChildNode(assemble(atomPrefix + "\(n)", verts: verts, normals: normals, groups: groups, materials: materials))
+            let colorOf = slice.map { i in i < colors.count ? colors[i] : ElementPalette.color(molecule.atoms[i].atomicNumber) }
+            let verts = atomVertexSource(slice, molecule: molecule, options: options, tpl: tpl)
+            layer.addChildNode(assembleTemplated(atomPrefix + "\(n)", sources: [verts, normals], colors: colorOf, tpl: tpl.indices,
+                                                 stride: V, materials: materials))
             n += 1; start = end
         }
     }
@@ -141,7 +195,7 @@ enum MergedGeometry {
         start = 0
         for node in children {
             let end = min(idx.count, start + atomChunk)
-            replace(node, verts: atomVerts(idx[start..<end], molecule: molecule, options: options, tpl: tpl), normals: nil)
+            replace(node, vertexSource: atomVertexSource(idx[start..<end], molecule: molecule, options: options, tpl: tpl), normalSource: nil)
             start = end
         }
         return true
@@ -157,13 +211,17 @@ enum MergedGeometry {
         (0..<radial).map { k in let a = 2 * Float.pi * Float(k) / Float(radial); return SIMD2(cos(a), sin(a)) }
     }
 
-    private static func bondVerts(_ segs: ArraySlice<BondSegment>, radial: Int) -> ([SIMD3<Float>], [SIMD3<Float>]) {
+    /// Packed vertex and normal sources of the open cylinders of `segs`.
+    private static func bondSources(_ segs: ArraySlice<BondSegment>, radial: Int) -> (SCNGeometrySource, SCNGeometrySource) {
         let ring = ring(radial)
         let V = 2 * radial
-        var verts = [SIMD3<Float>](repeating: .zero, count: segs.count * V)
-        var normals = verts
-        verts.withUnsafeMutableBufferPointer { vo in normals.withUnsafeMutableBufferPointer { no in
+        var normalData = Data(count: segs.count * V * packedStride)
+        let verts = source(count: segs.count * V, .vertex) { vo in normalData.withUnsafeMutableBytes { raw in
+            let no = raw.bindMemory(to: Float.self)
             var o = 0
+            @inline(__always) func put(_ buf: UnsafeMutableBufferPointer<Float>, _ at: Int, _ p: SIMD3<Float>) {
+                buf[3 * at] = p.x; buf[3 * at + 1] = p.y; buf[3 * at + 2] = p.z
+            }
             for s in segs {
                 let a = SIMD3<Float>(s.start), b = SIMD3<Float>(s.end)
                 let d = b - a
@@ -176,12 +234,14 @@ enum MergedGeometry {
                 let r = Float(s.radius)
                 for k in 0..<radial {
                     let dir = u * ring[k].x + v * ring[k].y
-                    vo[o + k] = a + dir * r; vo[o + radial + k] = b + dir * r
-                    no[o + k] = dir; no[o + radial + k] = dir
+                    put(vo, o + k, a + dir * r); put(vo, o + radial + k, b + dir * r)
+                    put(no, o + k, dir); put(no, o + radial + k, dir)
                 }
                 o += V
             }
         } }
+        let normals = SCNGeometrySource(data: normalData, semantic: .normal, vectorCount: segs.count * V, usesFloatComponents: true,
+                                        componentsPerVector: 3, bytesPerComponent: 4, dataOffset: 0, dataStride: packedStride)
         return (verts, normals)
     }
 
@@ -201,14 +261,9 @@ enum MergedGeometry {
         while start < segs.count {
             let end = min(segs.count, start + bondChunk)
             let slice = segs[start..<end]
-            let (verts, normals) = bondVerts(slice, radial: radial)
-            var groups = Groups()
-            for (j, s) in slice.enumerated() {
-                let g = groups.index(for: s.color)
-                let base = UInt32(j * 2 * radial)
-                for t in tpl { groups.indices[g].append(t + base) }
-            }
-            layer.addChildNode(assemble(bondPrefix + "\(n)", verts: verts, normals: normals, groups: groups, materials: materials))
+            let (verts, normals) = bondSources(slice, radial: radial)
+            layer.addChildNode(assembleTemplated(bondPrefix + "\(n)", sources: [verts, normals], colors: slice.map(\.color), tpl: tpl,
+                                                 stride: 2 * radial, materials: materials))
             n += 1; start = end
         }
     }
@@ -226,8 +281,8 @@ enum MergedGeometry {
         start = 0
         for node in children {
             let end = min(segs.count, start + bondChunk)
-            let (v, nrm) = bondVerts(segs[start..<end], radial: radial)
-            replace(node, verts: v, normals: nrm)
+            let (v, nrm) = bondSources(segs[start..<end], radial: radial)
+            replace(node, vertexSource: v, normalSource: nrm)
             start = end
         }
         return true

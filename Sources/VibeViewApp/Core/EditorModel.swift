@@ -130,7 +130,7 @@ public final class EditorModel: ObservableObject {
         change(&m)
         guard m != molecule else { return }
         undoStack.append((actionName, molecule))
-        if undoStack.count > 200 { undoStack.removeFirst() }
+        trimUndo()
         redoStack.removeAll()
         molecule = m
         selection = selection.filter { $0 < m.atoms.count }
@@ -148,6 +148,23 @@ public final class EditorModel: ObservableObject {
 
     /// Replace the whole molecule (e.g. adopt an optimization frame) as one undoable step.
     public func replaceMolecule(_ m: Molecule, actionName: String) { apply(actionName) { $0 = m } }
+
+    /// Undo depth: at most `undoLimit` steps and about `undoByteBudget` bytes of snapshots (only very large
+    /// structures reach the byte budget; they still keep at least `undoMinimumSteps` steps).
+    static let undoLimit = 200
+    static let undoByteBudget = 256 << 20
+    static let undoMinimumSteps = 20
+    /// Upper estimate of one snapshot's storage (unchanged arrays are shared copy-on-write between snapshots).
+    static func snapshotBytes(_ m: Molecule) -> Int {
+        m.atoms.count * MemoryLayout<Atom>.stride + m.bonds.count * MemoryLayout<Bond>.stride
+    }
+    private func trimUndo() {
+        if undoStack.count > Self.undoLimit { undoStack.removeFirst(undoStack.count - Self.undoLimit) }
+        var total = undoStack.reduce(0) { $0 + Self.snapshotBytes($1.1) }
+        while total > Self.undoByteBudget && undoStack.count > Self.undoMinimumSteps {
+            total -= Self.snapshotBytes(undoStack.removeFirst().1)
+        }
+    }
 
     public func undo() {
         guard let (name, prev) = undoStack.popLast() else { return }

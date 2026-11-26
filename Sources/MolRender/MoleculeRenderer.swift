@@ -106,6 +106,13 @@ public struct PickEvent: Sendable {
     var vectorLayer = SCNNode()
     let surfaceLayer = SCNNode()
     private(set) var lighting: LightingRig!
+    /// Developer frame timing (`onNextFrame`, `benchmarkSpin`); idle unless used.
+    let frameProbe = FrameProbe()
+    /// True while the view renders continuously after a size change.
+    private(set) var resizeSettleActive = false
+    private var resizeSettleDeadline = 0.0
+    /// Seconds the last full scene rebuild (`setMolecule` / geometry option change) took on the main thread.
+    public private(set) var lastRebuildSeconds = 0.0
     private(set) var cachedBounds: (center: Vec3, radius: Double) = (.zero, 5)
 
     public init(molecule: Molecule = Molecule(), options: RenderOptions = RenderOptions()) {
@@ -245,6 +252,13 @@ public struct PickEvent: Sendable {
     // MARK: Building
 
     func rebuildAll() {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        defer {
+            lastRebuildSeconds = CFAbsoluteTimeGetCurrent() - t0
+            // Building merged geometry for a big structure frees tens of MB of temporaries (and the previous
+            // scene's buffers); hand those pages back to the system instead of keeping them dirty in the process.
+            if molecule.atoms.count > AtomLayerBuilder.mergeThreshold { Self.releaseFreedMemory() }
+        }
         hoverRevision &+= 1
         refreshAtomMask()
         cachedBounds = boundingSphere()
@@ -372,6 +386,43 @@ public struct PickEvent: Sendable {
         root.addChildNode(new)
     }
 
+    /// Seconds of continuous rendering after the last view size change (see `keepRenderingAfterResize`).
+    static let resizeSettleSeconds = 2.5
+
+    /// SceneKit allocates the HDR and deferred-shadow render targets for every drawable size it is given and evicts
+    /// unused ones only while it keeps rendering frames. An on-demand view stops drawing as soon as a resize (or the
+    /// launch layout) ends, so every intermediate size stayed resident: a 60-step window resize grew the process by
+    /// ~7 GB of GPU memory. Rendering the unchanged scene for a moment after the last size change lets SceneKit
+    /// release them (the picture is identical; the view returns to on-demand drawing afterwards).
+    func keepRenderingAfterResize() {
+        resizeSettleDeadline = ProcessInfo.processInfo.systemUptime + Self.resizeSettleSeconds
+        guard !resizeSettleActive else { return }
+        resizeSettleActive = true
+        view.rendersContinuously = true
+        scheduleResizeSettleCheck(after: Self.resizeSettleSeconds)
+    }
+    private func scheduleResizeSettleCheck(after t: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.resizeSettleActive else { return }
+                let left = self.resizeSettleDeadline - ProcessInfo.processInfo.systemUptime
+                if left > 0.01 { self.scheduleResizeSettleCheck(after: left); return }
+                self.resizeSettleActive = false
+                if self.vibration?.isGPUActive != true && self.frameProbe.isIdle { self.view.rendersContinuously = false }
+            }
+        }
+    }
+
+    /// Returns free malloc pages to the system (off the main thread; coalesced while one is pending).
+    public nonisolated static func releaseFreedMemory() {
+        guard reliefPending.testAndSet() else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
+            reliefPending.clear()
+            malloc_zone_pressure_relief(nil, 0)
+        }
+    }
+    private nonisolated static let reliefPending = AtomicFlag()
+
     func emptyNode(_ name: String) -> SCNNode { let n = SCNNode(); n.name = name; return n }
 
     // MARK: Introspection (used by checks and the app's status bar)
@@ -388,4 +439,13 @@ public struct PickEvent: Sendable {
                                     labels: NodeName.labels, measurements: NodeName.measurements,
                                     surfaces: NodeName.surfaces, cell: NodeName.cell, vectors: NodeName.vectors,
                                     cartoon: NodeName.cartoon)
+}
+
+/// Minimal lock-protected flag.
+final class AtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var set = false
+    /// Sets the flag; true if it was clear.
+    func testAndSet() -> Bool { lock.lock(); defer { lock.unlock() }; if set { return false }; set = true; return true }
+    func clear() { lock.lock(); set = false; lock.unlock() }
 }

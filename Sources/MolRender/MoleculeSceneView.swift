@@ -24,8 +24,10 @@ public final class MoleculeSCNView: SCNView {
     private enum DragMode { case none, orbit, pan, box, lasso, move, rotateSelection }
 
     public override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize != frame.size
         super.setFrameSize(newSize)
         renderer?.refreshOutline()
+        if changed { renderer?.keepRenderingAfterResize() }
     }
     public override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()

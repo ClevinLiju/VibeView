@@ -57,6 +57,33 @@ extension Checks {
                 else { throw CheckFailure(description: "nothing picked over a CA") }
             }
         },
+        Check("render.cartoon.boxSelectHonoursMask") {
+            // Rubber-band selection over the whole view picks what click picking and the lasso can pick: the CA
+            // stand-ins and the atoms still drawn, never the atoms hidden under the cartoon.
+            let m = try ProteinFixture.molecule()
+            let rec = PDBProteinRecords.parse(ProteinFixture.text)
+            try MainActor.assumeIsolated {
+                let r = MoleculeRenderer(molecule: m)
+                r.proteinRecords = rec
+                r.fitToView(animated: false)
+                let everything = r.atomsInViewRect(r.view.bounds)
+                try expect(everything.count > m.atoms.count / 2, "ball-and-stick box \(everything.count)")
+                var o = r.options; o.style = .cartoon; r.options = o
+                r.fitToView(animated: false)
+                let mask = r.options.atomMask, p = r.protein!
+                let boxed = r.atomsInViewRect(r.view.bounds)
+                let hidden = boxed.filter { mask.isHidden($0) && !mask.isStandIn($0) }
+                try expect(hidden.isEmpty, "\(hidden.count) atoms hidden under the cartoon were boxed")
+                try expect(boxed.allSatisfy { RenderMetrics.isAtomPickable($0, in: m, options: r.options) }, "unpickable atom boxed")
+                let cas = Set(p.residues.map(\.ca).filter { $0 >= 0 })
+                try expect(cas.isSubset(of: boxed), "CA stand-ins missing: \(cas.subtracting(boxed).count)")
+                try expect(boxed.count < everything.count, "cartoon box \(boxed.count) vs \(everything.count)")
+                // The built-in selection path gives the same set.
+                r.selection = []
+                r.performBoxSelect(from: .zero, to: CGPoint(x: r.view.bounds.maxX, y: r.view.bounds.maxY))
+                try expect(r.selection == boxed, "box selection \(r.selection.count) vs \(boxed.count)")
+            }
+        },
         Check("render.cartoon.4hhb.timing") {
             // VIBEVIEW_CHECK_PDB=<file> times another structure (e.g. the full 4HHB tetramer) instead of the fixture.
             let path = ProcessInfo.processInfo.environment["VIBEVIEW_CHECK_PDB"]

@@ -23,6 +23,7 @@ final class ViewportSync {
     init(editor: EditorModel) {
         self.editor = editor
         renderer = MoleculeRenderer(molecule: Molecule(), options: editor.renderOptions)
+        PerfProbe.windowCreated(renderer)
         renderer.onSelectionChange = { [weak self] sel in
             guard let self, let ed = self.editor, !self.pushingSelection, ed.selection != sel else { return }
             ed.selection = sel
@@ -97,6 +98,7 @@ final class ViewportSync {
         } else {
             let fit = !didFit || shownMolecule.atoms.isEmpty
             renderer.setMolecule(m, fitCamera: false)
+            PerfProbe.structureShown(renderer, atoms: m.atoms.count)
             let sphere = renderer.boundingSphere()
             // Leave room to sketch around small structures; refit once the structure outgrows the view.
             let target = m.atoms.count <= 5 ? max(sphere.radius, 3.5) : sphere.radius

@@ -366,7 +366,8 @@ extension Checks {
                     let s = n.geometry!.sources(for: .vertex)[0]
                     let d = s.data as NSData
                     for i in 0..<s.vectorCount {
-                        let p = d.bytes.load(fromByteOffset: s.dataOffset + i * s.dataStride, as: SIMD3<Float>.self)
+                        let o = s.dataOffset + i * s.dataStride   // packed or padded: read three Floats
+                        let p = SIMD3<Float>((0..<3).map { d.bytes.loadUnaligned(fromByteOffset: o + 4 * $0, as: Float.self) })
                         lo = simd_min(lo, p); hi = simd_max(hi, p)
                     }
                 }

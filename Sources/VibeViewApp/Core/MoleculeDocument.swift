@@ -71,7 +71,13 @@ public struct MoleculeDocument: FileDocument {
         let byExt = configuration.file.filename.flatMap { MolFormat.forExtension(($0 as NSString).pathExtension) }
         let fmt = MolFormat.all.first { $0.type == configuration.contentType } ?? byExt ?? MolFormat.forType(configuration.contentType)
         let ext = fmt?.ext ?? ((configuration.file.filename ?? "") as NSString).pathExtension
+        let t0 = CFAbsoluteTimeGetCurrent()
         let loaded = try IOBridge.read(data: data, ext: ext, fileName: configuration.file.filename)
+        if AppEnv.isSet("PERF") {
+            let line = "document read: \(configuration.file.filename ?? "?") (\(data.count) bytes, \(loaded.molecule.atoms.count) atoms) in \(String(format: "%.1f ms", (CFAbsoluteTimeGetCurrent() - t0) * 1000))"
+            let at = Date()
+            DispatchQueue.main.async { PerfProbe.log(line, at: at) }
+        }
         molecule = loaded.molecule
         result = loaded.result
         wavefunction = loaded.wavefunction

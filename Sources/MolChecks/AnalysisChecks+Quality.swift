@@ -65,6 +65,34 @@ extension Checks {
                 try expect(worst < 1e-5, "MO \(mo): fast vs reference max diff \(worst)")
             }
         },
+        Check("analysis.quality.appGridTiming") {
+            // The path the app takes for an orbital surface (`WavefunctionSurfaces.orbitalGrid`) against the BLAS
+            // reference evaluator, per quality preset: same values, and the timing of both.
+            for file in ["io/orca/h2co_tddft.molden.input", "analysis/water_tzvp.molden"] {
+                guard let wf = try MoldenFile.read(url: testDataURL(file)).wavefunction else { throw CheckFailure(description: "no wavefunction in \(file)") }
+                let ev = OrbitalEvaluator(wavefunction: wf)
+                let homo = wf.homoIndex!
+                for q in OrbitalGridQuality.allCases {
+                    let g = GridSpec.adaptive(wf, quality: q)
+                    let c = Array(wf.alpha.orbital(homo))
+                    var t0 = DispatchTime.now()
+                    let ref = ev.evaluate(.orbital(c), on: g)!
+                    let tRef = secondsSince(t0)
+                    t0 = DispatchTime.now()
+                    let app = WavefunctionSurfaces.orbitalGrid(wf, mo: homo, grid: g, evaluator: ev)
+                    let tApp = secondsSince(t0)
+                    t0 = DispatchTime.now()
+                    let fast = ev.evaluateOrbitalFast(c, on: g)!
+                    let tFast = secondsSince(t0)
+                    var worst: Float = 0, worstFast: Float = 0
+                    for (x, y) in zip(ref.values, app.values) { worst = max(worst, abs(x - y)) }
+                    for (x, y) in zip(ref.values, fast.values) { worstFast = max(worstFast, abs(x - y)) }
+                    print(String(format: "    %@ %@ %d pts: reference %.1f ms, app path %.1f ms (max diff %.1e), fast %.1f ms (%.1e)",
+                                 (file as NSString).lastPathComponent, q.rawValue, g.pointCount, tRef * 1000, tApp * 1000, worst, tFast * 1000, worstFast))
+                    try expect(app.counts == ref.counts && worst < 1e-5, "\(file) \(q): max diff \(worst)")
+                }
+            }
+        },
         Check("analysis.quality.weld") {
             var m = sphereMesh()
             let n0 = m.vertices.count
