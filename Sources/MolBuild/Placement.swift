@@ -52,6 +52,7 @@ public enum BuildError: Error, LocalizedError, Equatable, Sendable {
 public enum BuildItem: Equatable, Sendable {
     case element(Int)
     case fragment(String)    // FragmentLibrary id
+    case group(String)       // GroupLibrary id (element picker: hybridized atoms and functional groups)
 }
 
 /// What was clicked.
@@ -63,12 +64,17 @@ public enum BuildTarget: Equatable, Sendable {
 public extension Builder {
     /// The single entry point for a Sketch click: see the table at the top of this file.
     static func click(_ item: BuildItem, on target: BuildTarget, in m: Molecule) throws -> Molecule {
+        if case .group(let id) = item {
+            guard let g = GroupLibrary.group(id: id) else { throw BuildError.unknownFragment(id) }
+            return try clickGroup(g, on: target, in: m)
+        }
         switch (item, target) {
         case let (.element(z), .empty(p)):
             return placeElement(z, in: m, at: p, addHydrogens: true)
         case let (.fragment(id), .empty(p)):
             guard let f = FragmentLibrary.fragment(id: id) else { throw BuildError.unknownFragment(id) }
             return place(f, in: m, at: p)
+        case let (.group(id), .empty): throw BuildError.unknownFragment(id)   // handled above
         case let (_, .atom(i)):
             guard m.atoms.indices.contains(i) else { throw BuildError.noSuchAtom }
             if m.atoms[i].atomicNumber == 1, terminalHost(m, i) != nil {
@@ -78,6 +84,7 @@ public extension Builder {
                 case .fragment(let id):
                     guard let f = FragmentLibrary.fragment(id: id) else { throw BuildError.unknownFragment(id) }
                     if let r = attach(f, to: m, replacingHydrogen: i) { return r }
+                case .group: break   // handled above
                 }
                 throw BuildError.noSuchAtom
             }
@@ -86,6 +93,7 @@ public extension Builder {
             case .fragment(let id):
                 guard let f = FragmentLibrary.fragment(id: id) else { throw BuildError.unknownFragment(id) }
                 return try replaceAtom(i, in: m, with: f)
+            case .group(let id): throw BuildError.unknownFragment(id)   // handled above
             }
         }
     }

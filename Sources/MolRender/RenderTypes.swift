@@ -18,7 +18,35 @@ public struct RGBA: Sendable, Hashable, Codable {
 }
 
 public enum RenderStyle: String, Sendable, Codable, CaseIterable {
-    case ballAndStick, tube, wireframe, spaceFilling
+    /// `cartoon`: protein backbones as ribbons (helices), arrows (strands) and tubes (loops); every atom not part
+    /// of a protein residue (ligands, hetero groups) is drawn ball-and-stick. Non-proteins look like ball-and-stick.
+    case ballAndStick, tube, wireframe, spaceFilling, cartoon
+}
+
+/// Cartoon coloring (style `.cartoon`).
+public enum CartoonColoring: String, Sendable, Codable, CaseIterable {
+    /// Helix pink, strand yellow, loop grey.
+    case secondaryStructure
+    /// One color per chain.
+    case chain
+}
+
+/// Per-atom visibility computed by the renderer (the cartoon hides the residues it draws, and water). It rides on
+/// `RenderOptions` so every layer builder and picking see it, but it is not part of the options' identity: any two
+/// masks compare equal, hash to nothing and are never persisted (encoded as null, decoded as empty).
+public struct AtomVisibilityMask: Sendable, Hashable, Codable {
+    /// 0 = drawn, 1 = hidden, 2 = hidden but pickable/highlightable (CA atoms standing in for cartoon residues).
+    public var state: [UInt8]
+    public init(state: [UInt8]) { self.state = state }
+    /// Everything drawn.
+    public static let none = AtomVisibilityMask(state: [])
+    public static func == (a: AtomVisibilityMask, b: AtomVisibilityMask) -> Bool { true }
+    public func hash(into h: inout Hasher) {}
+    public init(from decoder: Decoder) throws { state = [] }
+    public func encode(to encoder: Encoder) throws { var c = encoder.singleValueContainer(); try c.encodeNil() }
+    @inline(__always) public func isHidden(_ i: Int) -> Bool { i < state.count && state[i] != 0 }
+    @inline(__always) public func isStandIn(_ i: Int) -> Bool { i < state.count && state[i] == 2 }
+    public var hiddenCount: Int { state.reduce(0) { $0 + ($1 != 0 ? 1 : 0) } }
 }
 
 public enum AtomColorScheme: Sendable, Hashable, Codable {
@@ -198,6 +226,13 @@ public struct RenderOptions: Sendable, Hashable, Codable {
     /// at the camera-target depth.
     public var showScaleBar: Bool = false
 
+    // Cartoon style
+    public var cartoonColoring: CartoonColoring = .secondaryStructure
+    /// Hide water molecules (HOH, WAT…) while the cartoon is shown.
+    public var cartoonHidesWater: Bool = true
+    /// Set by the renderer (see `AtomVisibilityMask`); leave empty.
+    public var atomMask: AtomVisibilityMask = .none
+
     public var selectionColor: RGBA = RGBA(1.0, 0.85, 0.1, 0.55)
     public var hoverColor: RGBA = RGBA(0.3, 0.8, 1.0, 0.45)
 
@@ -266,5 +301,6 @@ extension RenderOptions {
         if c.contains(.slabNear) { slabNear = try? c.decodeIfPresent(Double.self, forKey: .slabNear) }
         if c.contains(.slabFar) { slabFar = try? c.decodeIfPresent(Double.self, forKey: .slabFar) }
         d(.showAxes, &showAxes); d(.showScaleBar, &showScaleBar)
+        d(.cartoonColoring, &cartoonColoring); d(.cartoonHidesWater, &cartoonHidesWater)
     }
 }

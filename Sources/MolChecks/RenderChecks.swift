@@ -12,7 +12,7 @@ import AppKit
 // main-actor APIs are reached with MainActor.assumeIsolated (checks run on the main thread).
 extension Checks {
     static let render: [Check] = renderCore + renderScene + renderInteraction + renderMedia + renderVisual
-        + renderKekule + renderOrbitals + renderVibration + renderFeatures
+        + renderKekule + renderOrbitals + renderVibration + renderFeatures + renderCartoon
 
     static let renderCore: [Check] = [
         Check("render.core.chargeColorMap") {

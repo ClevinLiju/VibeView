@@ -88,7 +88,7 @@ public enum BondGeometry {
     /// One circle per aromatic ring (center = ring centroid, normal = ring plane normal, radius = 0.6 x mean
     /// center-to-atom distance). Empty unless the style is ball-and-stick with bond orders shown and `.circle`.
     public static func aromaticRingCircles(molecule: Molecule, options: RenderOptions) -> [(center: Vec3, normal: Vec3, radius: Double)] {
-        guard options.aromaticStyle == .circle, options.showBondOrders, options.style == .ballAndStick else { return [] }
+        guard options.aromaticStyle == .circle, options.showBondOrders, options.style == .ballAndStick || options.style == .cartoon else { return [] }
         var out: [(center: Vec3, normal: Vec3, radius: Double)] = []
         for ring in molecule.aromaticRings() where ring.count >= 3 {
             let pts = ring.map { molecule.atoms[$0].position }
@@ -112,7 +112,7 @@ public enum BondGeometry {
     public static func segments(molecule: Molecule, options: RenderOptions, colors: [RGBA]) -> [BondSegment] {
         let baseR = RenderMetrics.bondRadius(options: options)
         guard options.style != .spaceFilling, baseR > 0 else { return [] }
-        let multi = options.showBondOrders && (options.style == .ballAndStick)
+        let multi = options.showBondOrders && (options.style == .ballAndStick || options.style == .cartoon)
         var ctx: Context? = nil
         var kekule: [BondOrder]? = nil
         var out: [BondSegment] = []

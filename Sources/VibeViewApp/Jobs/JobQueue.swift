@@ -378,6 +378,13 @@ final class JobQueue: ObservableObject {
                     await self.convertOrbitals(id)
                     self.finalize(id)
                 }
+            } else if job.program == .gaussian, job.status != .cancelled, Self.gaussianFormchkEnabled, let chk = Self.checkpointURL(job),
+                      GaussianFormchk.needsConversion(chk: chk, fchk: Self.fchkURL(job)) {
+                jobs[i].isPostProcessing = true
+                Task { @MainActor in
+                    await self.convertCheckpoint(id, chk: chk)
+                    self.finalize(id)
+                }
             } else {
                 finalize(id)
             }
@@ -424,6 +431,47 @@ final class JobQueue: ObservableObject {
 
     /// Test hook: the orca_2mkl to use instead of the one next to the located orca.
     var orcaMoldenToolOverride: URL?
+
+    // MARK: Gaussian .chk → .fchk
+
+    /// Preference (on by default): run `formchk` after Gaussian jobs (and when a Gaussian log is opened).
+    static var gaussianFormchkEnabled: Bool {
+        UserDefaults.standard.object(forKey: AppSettings.gaussianAutoFormchkKey) as? Bool ?? true
+    }
+
+    /// The job's checkpoint: the `%chk=` of the input as written (relative names resolve in the job folder).
+    static func checkpointURL(_ j: JobRun) -> URL? {
+        guard let text = try? String(contentsOf: j.inputURL, encoding: .utf8), let name = GaussianFormchk.checkpointName(inGaussianInput: text) else { return nil }
+        let p = (name as NSString).expandingTildeInPath
+        return p.hasPrefix("/") ? URL(fileURLWithPath: p) : j.directory.appendingPathComponent(p)
+    }
+
+    /// `<output stem>.fchk` in the job folder, so it loads as the wavefunction companion of the log.
+    static func fchkURL(_ j: JobRun) -> URL { j.directory.appendingPathComponent(j.outputURL.deletingPathExtension().lastPathComponent + ".fchk") }
+
+    /// Runs formchk for the job's checkpoint. Never throws: a failure or a missing formchk is logged.
+    func convertCheckpoint(_ id: UUID, chk: URL) async {
+        guard let j = job(id) else { return }
+        let target = Self.fchkURL(j)
+        guard let tool = formchkToolOverride ?? GaussianFormchk.locate(gaussian: resolveExecutable(.gaussian)) else {
+            postStep(id, "Orbital conversion skipped: formchk not found (GAUSS_EXEDIR, the Gaussian folder or PATH). Run “formchk \(chk.lastPathComponent) \(target.lastPathComponent)” in the job folder to see orbitals.")
+            return
+        }
+        postStep(id, "Converting checkpoint: formchk \(chk.lastPathComponent) \(target.lastPathComponent) \u{2026}")
+        do {
+            let o = try await GaussianFormchk.convert(chk: chk, to: target, executable: tool)
+            if let i = index(id) { jobs[i].moldenURL = o.url }
+            switch o {
+            case .keptNewer: postStep(id, "Kept the newer \(target.lastPathComponent) (formchk output discarded)")
+            default: postStep(id, "Orbitals converted: \(target.lastPathComponent) (loaded with the results)")
+            }
+        } catch {
+            postStep(id, "Checkpoint conversion failed: \(error.localizedDescription). The results open without orbitals.")
+        }
+    }
+
+    /// Test hook: the formchk to use instead of the located one.
+    var formchkToolOverride: URL?
 
     private func postStep(_ id: UUID, _ line: String) {
         guard let i = index(id) else { return }

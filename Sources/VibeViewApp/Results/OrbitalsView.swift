@@ -1,11 +1,14 @@
 import SwiftUI
 import MolCore
+import MolAnalysis
 
 struct OrbitalsView: View {
     @ObservedObject var editor: EditorModel
     let result: CalculationResult
 
     @State private var spin: OrbitalInfo.Spin = .alpha
+
+    private var levelDiagram: OrbitalLevelDiagram { OrbitalLevelDiagram(orbitals: result.orbitals) }
 
     private var unrestricted: Bool { result.orbitals.contains { $0.spin == .beta } }
 
@@ -54,7 +57,12 @@ struct OrbitalsView: View {
                 if !editor.orbitalStatus.isEmpty {
                     Text(editor.orbitalStatus).font(.caption).foregroundStyle(.secondary)
                 }
-                Spacer(minLength: 0)
+                OrbitalLevelDiagramView(diagram: levelDiagram, selected: editor.activeOrbitalIndex,
+                                        selectedSpin: unrestricted ? (spin == .beta ? .beta : .alpha) : nil) { idx, colSpin in
+                    if colSpin == .beta { spin = .beta } else if colSpin == .alpha { spin = .alpha }
+                    editor.activeOrbitalIndex = idx
+                }
+                .frame(minHeight: 180, maxHeight: .infinity)
             }
             .padding(10).frame(minWidth: 240, maxWidth: 340)
             orbitalList.frame(minWidth: 260)

@@ -110,8 +110,8 @@ extension CommandRegistry {
                 return CommandOutput("\(hidden ? "hid" : "showed") \(s.count) atom(s)", value: .atoms(s))
             }
         }
-        add("style", [], "style ball|stick|spacefill|wire", "Set the display style.") { inv in
-            try need(inv, 1, "style ball|stick|spacefill|wire")
+        add("style", [], "style ball|stick|spacefill|wire|cartoon", "Set the display style (cartoon: protein ribbons).") { inv in
+            try need(inv, 1, "style ball|stick|spacefill|wire|cartoon")
             guard let s = DisplayStyleName(rawValue: inv.arguments[0].lowercased()) else {
                 throw CommandError("unknown style '\(inv.arguments[0])'; choose " + DisplayStyleName.allCases.map(\.rawValue).joined(separator: ", "))
             }
@@ -228,13 +228,28 @@ extension CommandRegistry {
             try inv.context.showVibration(n)
             return CommandOutput("showing mode \(n)")
         }
-        add("export", [], ImageExportRequest.usage,
-            "Export a picture of the current view. The file extension picks the format; with no size the image is the view at 2× its on-screen size.") { inv in
-            guard inv.arguments.count >= 2, inv.arguments[0].lowercased() == "image" else { throw CommandError("usage: " + ImageExportRequest.usage) }
-            let req = try ImageExportRequest.parse(path: inv.arguments[1], options: Array(inv.arguments.dropFirst(2)))
-            let url = inv.url(inv.arguments[1])
-            try inv.context.exportImage(req, to: url)
-            return CommandOutput("exported \(url.path)")
+        add("export", [], ExportCommand.usage,
+            "Export a picture of the view, an animation (GIF/MP4), a structure file or a results table (CSV). With no image size the picture is the view at 2× its on-screen size.") { inv in
+            let cmd = try ExportCommand.parse(inv.arguments)
+            switch cmd {
+            case let .image(path, req):
+                let url = inv.url(path)
+                try inv.context.exportImage(req, to: url)
+                return CommandOutput("exported \(url.path)")
+            case let .animation(path, req):
+                let url = inv.url(path)
+                let info = try inv.context.exportAnimation(req, to: url)
+                return CommandOutput("exported \(url.path)" + (info.isEmpty ? "" : " (\(info))"))
+            case let .csv(path, table):
+                let url = inv.url(path)
+                try inv.context.exportTable(table, to: url)
+                return CommandOutput("exported \(table.rawValue) to \(url.path)")
+            case let .structure(path, all, selected):
+                let url = inv.url(path)
+                if let f = MoleculeFileFormat.detect(url: url), !f.canWrite { throw CommandError("\(f.displayName) files cannot be written") }
+                let info = try inv.context.exportStructure(to: url, allFrames: all, selectedOnly: selected)
+                return CommandOutput("exported \(url.path)" + (info.isEmpty ? "" : " (\(info))"))
+            }
         }
         add("undo", [], "undo", "Undo the last edit.") { inv in
             inv.context.undo() ? CommandOutput("undone") : CommandOutput([CommandMessage(.warning, "nothing to undo")])

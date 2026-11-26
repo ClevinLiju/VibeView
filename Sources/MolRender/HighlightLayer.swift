@@ -15,7 +15,7 @@ public enum HighlightLayerBuilder {
         func halo(_ i: Int, _ mat: SCNMaterial, extra: Double) -> SCNNode? {
             guard i >= 0, i < molecule.atoms.count else { return nil }
             let a = molecule.atoms[i]
-            guard RenderMetrics.isAtomVisible(a, options: options) else { return nil }
+            guard RenderMetrics.isAtomPickable(i, in: molecule, options: options) else { return nil }
             let r = RenderMetrics.atomRadius(atomicNumber: a.atomicNumber, options: options) * 1.25 + 0.1 + extra
             let key = Int((r * 1000).rounded()) &* 4 &+ (mat === hovMat ? 1 : 0)
             let g: SCNSphere

@@ -64,11 +64,18 @@ struct LibrarySidebar: View {
 private struct ElementTile: View {
     @ObservedObject var editor: EditorModel
     let z: Int
+    @State private var showGroups = false
+    private var on: Bool {
+        if editor.payload == .element(z) { return true }
+        if case .group(let id) = editor.payload { return GroupLibrary.group(id: id)?.element == z }
+        return false
+    }
     var body: some View {
-        let on = editor.payload == .element(z)
+        let on = self.on
         let c = ElementInfo.rgb(z)
         Button {
             editor.payload = .element(z); editor.tool = .build
+            if ElementGroupPicker.hasGroups(z) { showGroups = true }
         } label: {
             Text(ElementInfo.symbol(z))
                 .font(.system(.callout, design: .rounded).weight(.semibold))
@@ -80,7 +87,10 @@ private struct ElementTile: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("\(ElementInfo.name(z)) — click to sketch")
+        .help("\(ElementInfo.name(z)) — click to sketch; hybridized forms and functional groups are offered")
+        .popover(isPresented: $showGroups, arrowEdge: .trailing) {
+            ElementGroupPicker(editor: editor, z: z, onPick: { showGroups = false }).padding(12).frame(width: 540)
+        }
     }
 }
 

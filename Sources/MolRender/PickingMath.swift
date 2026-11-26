@@ -71,8 +71,10 @@ public enum PickMath {
         var bestAtom: (Int, Double)? = nil
         for i in 0..<n {
             let a = molecule.atoms[i]
-            guard RenderMetrics.isAtomVisible(a, options: options) else { continue }
-            let r = max(RenderMetrics.atomRadius(atomicNumber: a.atomicNumber, options: options), minPickRadius)
+            guard RenderMetrics.isAtomPickable(i, in: molecule, options: options) else { continue }
+            // A CA standing in for its cartoon residue is picked within the ribbon's width.
+            let standIn = options.atomMask.isStandIn(i)
+            let r = standIn ? 1.1 : max(RenderMetrics.atomRadius(atomicNumber: a.atomicNumber, options: options), minPickRadius)
             if let t = raySphere(origin: origin, dir: dir, center: a.position, radius: r), bestAtom == nil || t < bestAtom!.1 {
                 bestAtom = (i, t)
             }

@@ -146,9 +146,17 @@ struct VibeViewCommands: Commands {
                 .disabled(editor == nil)
             Button("Open Session…") { SessionStore.openPanel() }
                 .keyboardShortcut("o", modifiers: [.command, .option])
-            Button("Export Image…") { editor?.exportImage() }
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(editor == nil)
+            Menu("Export") {
+                Button("Structure…") { editor?.exportStructureDialog() }
+                    .disabled(!hasAtoms)
+                Button("Image…") { editor?.exportImage() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(editor == nil)
+                Button("Animation (GIF / MP4)…") { editor?.exportAnimationDialog() }
+                    .disabled(!hasAtoms)
+                Button("Table (CSV)…") { editor?.exportTableDialog() }
+                    .disabled(editor?.result == nil)
+            }
         }
         CommandGroup(replacing: .undoRedo) {
             Button("Undo" + (editor?.undoActionName.map { " " + $0 } ?? "")) { editor?.undo() }
@@ -183,6 +191,11 @@ struct VibeViewCommands: Commands {
                     Toggle(s.title, isOn: Binding(get: { editor?.renderOptions.style == s }, set: { _ in editor?.setStyle(s) }))
                         .keyboardShortcut(s.shortcut, modifiers: [.command, .control])
                 }
+                Divider()
+                Toggle("Cartoon Colored by Chain", isOn: Binding(get: { editor?.renderOptions.cartoonColoring == .chain },
+                                                                 set: { on in editor?.renderOptions.cartoonColoring = on ? .chain : .secondaryStructure }))
+                Toggle("Cartoon Hides Water", isOn: Binding(get: { editor?.renderOptions.cartoonHidesWater ?? true },
+                                                            set: { on in editor?.renderOptions.cartoonHidesWater = on }))
             }
             Menu("Labels") {
                 ForEach(LabelMode.menuCases, id: \.self) { l in
@@ -228,6 +241,9 @@ struct VibeViewCommands: Commands {
             Button((editor?.showResults ?? true) ? "Hide Results" : "Show Results") { editor?.showResults.toggle() }
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 .disabled(editor?.result == nil)
+            Button("Show Z-Matrix") { editor?.resultsTab = .zmatrix; editor?.showResults = true }
+                .keyboardShortcut("z", modifiers: [.command, .option])
+                .disabled(!hasAtoms)
             Divider()
         }
         CommandMenu("Structure") {
@@ -250,6 +266,8 @@ struct VibeViewCommands: Commands {
             Button("Mirror Through XY Plane") { editor?.mirrorStructure() }.disabled(!hasAtoms)
             Button("Center at Origin") { editor?.centerAtOrigin() }.disabled(!hasAtoms)
             Button("Rebuild Bonds") { editor?.rebuildBonds() }.disabled(!hasAtoms)
+            Divider()
+            Button("From Z-Matrix\u{2026}") { editor?.showFromZMatrix = true }.disabled(editor == nil)
         }
         CommandMenu("Calculate") {
             Button("New Calculation…") { editor?.showCalcSetup = true }
@@ -268,13 +286,13 @@ struct VibeViewCommands: Commands {
 
 extension RenderStyle {
     var title: String {
-        switch self { case .ballAndStick: "Ball and Stick"; case .tube: "Tubes"; case .wireframe: "Wireframe"; case .spaceFilling: "Space Filling" }
+        switch self { case .ballAndStick: "Ball and Stick"; case .tube: "Tubes"; case .wireframe: "Wireframe"; case .spaceFilling: "Space Filling"; case .cartoon: "Cartoon" }
     }
     var symbol: String {
-        switch self { case .ballAndStick: "circle.hexagongrid"; case .tube: "line.3.horizontal"; case .wireframe: "skew"; case .spaceFilling: "circle.grid.3x3.fill" }
+        switch self { case .ballAndStick: "circle.hexagongrid"; case .tube: "line.3.horizontal"; case .wireframe: "skew"; case .spaceFilling: "circle.grid.3x3.fill"; case .cartoon: "scribble.variable" }
     }
     var shortcut: KeyEquivalent {
-        switch self { case .ballAndStick: "1"; case .tube: "2"; case .wireframe: "3"; case .spaceFilling: "4" }
+        switch self { case .ballAndStick: "1"; case .tube: "2"; case .wireframe: "3"; case .spaceFilling: "4"; case .cartoon: "5" }
     }
 }
 

@@ -196,8 +196,33 @@ struct CalcSetupSheet: View {
             if setup.program == .xtb {
                 Picker("Method", selection: xtbBinding) { ForEach(XTBMethod.allCases) { Text($0.title).tag($0) } }
             } else {
-                ChoiceField(title: "Method", options: CalcSetup.methods(for: setup.program), value: methodBinding)
-                ChoiceField(title: "Basis set", options: CalcSetup.bases(for: setup.program), value: basisBinding)
+                let p = setup.program
+                GroupedChoiceField(title: "Method", groups: GroupedChoiceField.grouped(CalcCatalog.methods(for: p), group: \.group) { e in
+                    e.keyword(for: p).map { .init(value: $0, label: e.label) }
+                }, value: methodBinding)
+                if setup.methodIsBasisFree {
+                    LabeledContent("Basis set") { Text(setup.catalogMethod?.kind == .composite ? "built into the method" : "none (semi-empirical)").foregroundStyle(.secondary) }
+                } else {
+                    GroupedChoiceField(title: "Basis set", groups: GroupedChoiceField.grouped(CalcCatalog.bases(for: p), group: \.group) { b in
+                        b.keyword(for: p).map { .init(value: $0, label: b.label) }
+                    }, value: basisBinding)
+                }
+                if setup.dispersionIsBuiltin || setup.methodIsBasisFree {
+                    LabeledContent("Dispersion") { Text(setup.dispersionIsBuiltin ? "built in" : "none").foregroundStyle(.secondary) }
+                } else if setup.dispersionChoices.isEmpty {
+                    LabeledContent("Dispersion") { Text("no parameters for this method").foregroundStyle(.secondary) }
+                } else {
+                    Picker("Dispersion", selection: Binding(get: { setup.effectiveDispersion }, set: { setup.dispersion = $0 })) {
+                        Text("None").tag(CalcDispersion?.none)
+                        ForEach(setup.dispersionChoices) { Text($0.title).tag(CalcDispersion?.some($0)) }
+                    }
+                }
+                if p == .orca && !setup.methodIsBasisFree {
+                    Picker("RI / auxiliary basis", selection: Binding(get: { setup.orcaAuxiliary ?? .automatic }, set: { setup.orcaAuxiliary = $0 })) {
+                        ForEach(OrcaAuxiliary.allCases) { Text($0.title).tag($0) }
+                    }
+                    .help("Automatic: ORCA's default for Coulomb/exchange; RI-MP2, DLPNO and double hybrids get the matching /C basis")
+                }
             }
         }
     }
@@ -304,6 +329,12 @@ struct CalcSetupSheet: View {
             }
             if let e = editProblem {
                 Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout)
+            }
+            let advice = setup.catalogAdvisories(molecule: editor.molecule)
+            if !advice.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(advice, id: \.self) { Label($0, systemImage: "info.circle").foregroundStyle(.orange).font(.callout) }
+                }
             }
             if !problems.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {

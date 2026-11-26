@@ -70,6 +70,20 @@ final class ViewportSync {
             .debounce(for: .milliseconds(120), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.editor?.refreshOrbitalSurface() }
             .store(in: &bag)
+        // PDB documents: residue names, chains and HELIX/SHEET records for the cartoon style.
+        editor.$fileURL.removeDuplicates().sink { [weak self] url in self?.loadProteinRecords(url) }.store(in: &bag)
+    }
+
+    private func loadProteinRecords(_ url: URL?) {
+        guard let url, ["pdb", "ent"].contains(url.pathExtension.lowercased()) else {
+            if renderer.proteinRecords != nil { renderer.proteinRecords = nil }
+            return
+        }
+        Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: url) else { return }
+            let rec = PDBProteinRecords.parse(String(decoding: data, as: UTF8.self))
+            await MainActor.run { [weak self] in self?.renderer.proteinRecords = rec }
+        }
     }
 
     // MARK: Sync

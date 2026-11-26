@@ -4,6 +4,7 @@ import MolCore
 import MolIO
 import MolRender
 import MolCommand
+import MolAnalysis
 
 /// `CommandContext` for one document window: commands act on its editor, renderer and file location.
 /// Atom indices are 0-based on both sides.
@@ -52,7 +53,7 @@ final class AppCommandContext: @preconcurrency CommandContext {
     func setHydrogensVisible(_ visible: Bool) { editor?.renderOptions.showHydrogens = visible }
 
     func setStyle(_ style: DisplayStyleName) {
-        let s: RenderStyle = switch style { case .ball: .ballAndStick; case .stick: .tube; case .spacefill: .spaceFilling; case .wire: .wireframe }
+        let s: RenderStyle = switch style { case .ball: .ballAndStick; case .stick: .tube; case .spacefill: .spaceFilling; case .wire: .wireframe; case .cartoon: .cartoon }
         editor?.setStyle(s)
     }
 
@@ -142,6 +143,24 @@ final class AppCommandContext: @preconcurrency CommandContext {
         }
         do { try renderer.exportImage(to: url, options: o) }
         catch { throw CommandError("image export failed: \(error.localizedDescription)") }
+    }
+
+    func exportAnimation(_ request: AnimationExportRequest, to url: URL) throws -> String {
+        do { return try ed.runAnimationExport(request, to: url) } catch let e as CommandError { throw e }
+        catch { throw CommandError((error as? LocalizedError)?.errorDescription ?? "\(error)") }
+    }
+
+    func exportTable(_ table: CSVTableName, to url: URL) throws {
+        let t: ResultTables.Table = switch table {
+        case .frequencies: .frequencies; case .orbitals: .orbitals; case .states: .states; case .energies: .energies; case .charges: .charges
+        }
+        do { try ed.writeTable(t, to: url) } catch let e as CommandError { throw e }
+        catch { throw CommandError((error as? LocalizedError)?.errorDescription ?? "\(error)") }
+    }
+
+    func exportStructure(to url: URL, allFrames: Bool, selectedOnly: Bool) throws -> String {
+        do { return try ed.writeStructure(to: url, allFrames: allFrames, selectedOnly: selectedOnly) } catch let e as CommandError { throw e }
+        catch { throw CommandError((error as? LocalizedError)?.errorDescription ?? "\(error)") }
     }
 
     func undo() -> Bool { guard let e = editor, e.canUndo else { return false }; e.undo(); return true }

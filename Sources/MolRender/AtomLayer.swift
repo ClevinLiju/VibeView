@@ -23,9 +23,9 @@ public enum AtomLayerBuilder {
             for b in molecule.bonds where RenderMetrics.isBondVisible(b, in: molecule, options: options) {
                 hasBond[b.a] = true; hasBond[b.b] = true
             }
-            for (i, a) in molecule.atoms.enumerated() where RenderMetrics.isAtomVisible(a, options: options) && !hasBond[i] { idx.append(i) }
+            for i in molecule.atoms.indices where RenderMetrics.isAtomVisible(i, in: molecule, options: options) && !hasBond[i] { idx.append(i) }
         } else {
-            for (i, a) in molecule.atoms.enumerated() where RenderMetrics.isAtomVisible(a, options: options) { idx.append(i) }
+            for i in molecule.atoms.indices where RenderMetrics.isAtomVisible(i, in: molecule, options: options) { idx.append(i) }
         }
         return idx
     }

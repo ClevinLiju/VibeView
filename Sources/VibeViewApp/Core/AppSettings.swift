@@ -18,4 +18,5 @@ public enum AppSettings {
     public static let processorsKey = "vibeview.defaultProcessors"         // Int
     public static let memoryKey = "vibeview.defaultMemory"                 // e.g. "4GB"
     public static let orcaAutoMoldenKey = "vibeview.orca.autoMolden"       // Bool, default true: orca_2mkl -molden after ORCA jobs
+    public static let gaussianAutoFormchkKey = "vibeview.gaussian.autoFormchk" // Bool, default true: formchk .chk -> .fchk after Gaussian jobs and on open
 }

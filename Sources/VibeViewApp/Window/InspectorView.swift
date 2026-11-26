@@ -141,6 +141,13 @@ private struct DisplaySection: View {
             ForEach(RenderStyle.allCases, id: \.self) { s in Image(systemName: s.symbol).help(s.title).tag(s) }
         }
         .pickerStyle(.segmented)
+        if editor.renderOptions.style == .cartoon {
+            Picker("Cartoon", selection: $editor.renderOptions.cartoonColoring) {
+                Text("Secondary structure").tag(CartoonColoring.secondaryStructure)
+                Text("Chain").tag(CartoonColoring.chain)
+            }
+            Toggle("Hide water", isOn: $editor.renderOptions.cartoonHidesWater)
+        }
         Picker("Labels", selection: Binding(get: { editor.renderOptions.labelMode }, set: { editor.setLabels($0) })) {
             ForEach(LabelMode.menuCases, id: \.self) { Text($0.title).tag($0) }
         }

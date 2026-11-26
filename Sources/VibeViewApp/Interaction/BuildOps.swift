@@ -24,6 +24,7 @@ enum BuildOps {
         switch payload {
         case .element(let z): return Builder.placeElement(z, in: m, at: p, addHydrogens: true)
         case .fragment(let id): return FragmentLibrary.fragment(id: id).map { Builder.place($0, in: m, at: p) }
+        case .group(let id): return GroupLibrary.group(id: id).map { Builder.place($0.fragment, in: m, at: p) }
         }
     }
 
@@ -31,12 +32,18 @@ enum BuildOps {
         switch payload {
         case .element(let z): return Builder.attachElement(z, to: m, replacingHydrogen: h, addHydrogens: true)
         case .fragment(let id): return FragmentLibrary.fragment(id: id).flatMap { Builder.attach($0, to: m, replacingHydrogen: h) }
+        case .group(let id): return try? Builder.click(.group(id), on: .atom(h), in: m)
         }
     }
 
     static func grow(_ payload: BuildPayload, from atom: Int, in m: Molecule) -> Molecule? {
         switch payload {
         case .element(let z): return Builder.bondElement(z, to: m, atom: atom, addHydrogens: true)
+        case .group(let id):
+            // Bond to a free valence of the atom, else substitute one of its hydrogens.
+            if let r = try? Builder.click(.group(id), on: .atom(atom), in: m), r.atoms.count > m.atoms.count { return r }
+            guard let h = m.neighbors(of: atom).first(where: { isHydrogen(m, $0) }) else { return nil }
+            return attach(payload, to: m, replacingHydrogen: h)
         case .fragment:
             guard let h = m.neighbors(of: atom).first(where: { isHydrogen(m, $0) }) else { return nil }
             return attach(payload, to: m, replacingHydrogen: h)
@@ -54,6 +61,14 @@ enum BuildOps {
 
 extension BuildOps {
     static func fragmentName(_ id: String) -> String { FragmentLibrary.fragment(id: id)?.name ?? id }
+    static func groupLabel(_ id: String) -> String { GroupLibrary.group(id: id)?.label ?? id }
+    static func payloadName(_ p: BuildPayload) -> String {
+        switch p {
+        case .element(let z): ElementInfo.symbol(z)
+        case .fragment(let id): fragmentName(id)
+        case .group(let id): GroupLibrary.group(id: id)?.name ?? id
+        }
+    }
 }
 extension BuildOps {
     static func removeHydrogens(_ m: inout Molecule, atoms: Set<Int>?) { Editing.removeHydrogens(&m, atoms: atoms.map { Array($0).sorted() }) }

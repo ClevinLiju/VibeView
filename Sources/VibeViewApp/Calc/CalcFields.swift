@@ -97,3 +97,50 @@ struct OptionalCountField: View {
             .multilineTextAlignment(.trailing)
     }
 }
+
+/// Like `ChoiceField`, with the presets grouped into sections (catalog groups) and shown by label.
+struct GroupedChoiceField: View {
+    struct Option: Hashable { var value: String; var label: String }
+    let title: String
+    let groups: [(title: String, options: [Option])]
+    @Binding var value: String
+    @State private var forceCustom = false
+
+    var body: some View {
+        let all = groups.flatMap(\.options).map(\.value)
+        let isCustom = forceCustom || !all.contains(value)
+        VStack(alignment: .leading, spacing: 4) {
+            Picker(title, selection: Binding(
+                get: { isCustom ? "\u{0}custom" : value },
+                set: { new in
+                    if new == "\u{0}custom" { forceCustom = true } else { forceCustom = false; value = new }
+                })) {
+                ForEach(groups, id: \.title) { g in
+                    Section(g.title) {
+                        ForEach(g.options, id: \.self) { o in
+                            Text(o.label == o.value ? o.label : "\(o.label)  (\(o.value))").tag(o.value)
+                        }
+                    }
+                }
+                Divider()
+                Text("Custom\u{2026}").tag("\u{0}custom")
+            }
+            if isCustom {
+                TextField("\(title) keyword", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+            }
+        }
+    }
+
+    /// Groups in first-appearance order.
+    static func grouped<T>(_ items: [T], group: (T) -> String, option: (T) -> Option?) -> [(title: String, options: [Option])] {
+        var out: [(title: String, options: [Option])] = []
+        for it in items {
+            guard let o = option(it) else { continue }
+            let g = group(it)
+            if let k = out.firstIndex(where: { $0.title == g }) { out[k].options.append(o) } else { out.append((g, [o])) }
+        }
+        return out
+    }
+}

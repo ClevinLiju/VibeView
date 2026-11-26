@@ -2,12 +2,12 @@ import SwiftUI
 import MolCore
 
 enum ResultsTab: String, CaseIterable, Identifiable {
-    case trajectory, vibrations, orbitals, uvvis, summary
+    case trajectory, vibrations, orbitals, uvvis, zmatrix, summary
     var id: String { rawValue }
     var title: String {
         switch self {
         case .trajectory: "Trajectory"; case .vibrations: "Vibrations"; case .orbitals: "Orbitals"
-        case .uvvis: "UV-Vis"; case .summary: "Summary"
+        case .uvvis: "UV-Vis"; case .zmatrix: "Z-Matrix"; case .summary: "Summary"
         }
     }
     static func available(for r: CalculationResult) -> [ResultsTab] {
@@ -16,8 +16,14 @@ enum ResultsTab: String, CaseIterable, Identifiable {
         if !r.normalModes.isEmpty { t.append(.vibrations) }
         if !r.orbitals.isEmpty { t.append(.orbitals) }
         if !r.excitedStates.isEmpty { t.append(.uvvis) }
+        t.append(.zmatrix)
         t.append(.summary)
         return t
+    }
+    /// Tabs for a document: the result's tabs, or just the Z-matrix for a structure without results.
+    static func available(result r: CalculationResult?, atomCount: Int) -> [ResultsTab] {
+        if let r { return available(for: r).filter { $0 != .zmatrix || atomCount > 0 } }
+        return atomCount > 0 ? [.zmatrix] : []
     }
 }
 
@@ -26,8 +32,8 @@ struct ResultsPanel: View {
     @ObservedObject var editor: EditorModel
 
     var body: some View {
-        if let r = editor.result {
-            let tabs = ResultsTab.available(for: r)
+        let tabs = ResultsTab.available(result: editor.result, atomCount: editor.molecule.atoms.count)
+        if !tabs.isEmpty {
             let current = tabs.contains(editor.resultsTab) ? editor.resultsTab : tabs[0]
             VStack(spacing: 0) {
                 Picker("Results", selection: Binding(get: { current }, set: { editor.resultsTab = $0 })) {
@@ -37,12 +43,16 @@ struct ResultsPanel: View {
                 .padding(.horizontal, 10).padding(.vertical, 7)
                 Divider()
                 Group {
-                    switch current {
-                    case .trajectory: TrajectoryView(editor: editor, result: r)
-                    case .vibrations: VibrationsView(editor: editor, result: r)
-                    case .orbitals: OrbitalsView(editor: editor, result: r)
-                    case .uvvis: UVVisView(result: r)
-                    case .summary: SummaryView(result: r)
+                    if current == .zmatrix {
+                        ZMatrixView(editor: editor)
+                    } else if let r = editor.result {
+                        switch current {
+                        case .trajectory: TrajectoryView(editor: editor, result: r)
+                        case .vibrations: VibrationsView(editor: editor, result: r)
+                        case .orbitals: OrbitalsView(editor: editor, result: r)
+                        case .uvvis: UVVisView(result: r)
+                        case .zmatrix, .summary: SummaryView(result: r)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

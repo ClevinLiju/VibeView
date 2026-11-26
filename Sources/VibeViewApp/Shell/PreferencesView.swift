@@ -9,7 +9,7 @@ struct PreferencesView: View {
             CalcPrefs().tabItem { Label("Calculation", systemImage: "function") }
             ProgramsPrefs().tabItem { Label("Programs", systemImage: "terminal") }
         }
-        .frame(width: 600, height: 380)
+        .frame(width: 600, height: 420)
         .padding()
     }
 }
@@ -117,6 +117,7 @@ private struct ProgramRow: View {
 private struct ProgramsPrefs: View {
     @AppStorage(AppSettings.scratchDirKey) private var scratch = ""
     @AppStorage(AppSettings.orcaAutoMoldenKey) private var orcaMolden = true
+    @AppStorage(AppSettings.gaussianAutoFormchkKey) private var gaussianFormchk = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -133,6 +134,8 @@ private struct ProgramsPrefs: View {
             }
             Toggle("After ORCA jobs, convert orbitals to Molden (orca_2mkl) so they can be shown", isOn: $orcaMolden)
                 .help("Runs “orca_2mkl <job> -molden” in the job folder when a .gbw was written; orca_2mkl is taken from the ORCA folder.")
+            Toggle("After Gaussian jobs and when opening a Gaussian log, convert the .chk with formchk so orbitals can be shown", isOn: $gaussianFormchk)
+                .help("Runs “formchk <name>.chk <name>.fchk” in the file's folder when no up-to-date .fchk exists; a newer .fchk is never overwritten. formchk is taken from GAUSS_EXEDIR, the Gaussian folder or PATH.")
             Text("Detect looks in your settings, environment variables, PATH and the usual install folders.")
                 .font(.caption).foregroundStyle(.secondary)
         }

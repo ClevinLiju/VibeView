@@ -42,7 +42,7 @@ struct ViewportInteraction {
         let m = editor.molecule
         let payload = editor.payload
         let item: BuildItem
-        switch payload { case .element(let z): item = .element(z); case .fragment(let id): item = .fragment(id) }
+        switch payload { case .element(let z): item = .element(z); case .fragment(let id): item = .fragment(id); case .group(let id): item = .group(id) }
         switch pick {
         case .empty(let p):
             run("Add \(payloadName)") { try Builder.click(item, on: .empty(p), in: $0) }
@@ -64,7 +64,7 @@ struct ViewportInteraction {
     }
 
     private var payloadName: String {
-        switch editor.payload { case .element(let z): ElementInfo.symbol(z); case .fragment(let id): BuildOps.fragmentName(id) }
+        BuildOps.payloadName(editor.payload)
     }
 
     /// Run a throwing MolBuild edit as one undo step; refusals go to the status bar.

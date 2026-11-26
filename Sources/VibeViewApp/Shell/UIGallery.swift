@@ -28,6 +28,7 @@ enum UIGallery {
              AnyView(PeriodicTablePopover(editor: editor, isPresented: .constant(true)))),
         ]
         entries.append(("fragments", CGSize(width: 760, height: 640), AnyView(FragmentGalleryView())))
+        entries += PortedPanelsGallery.entries(editor: editor)
         let console = editor.console
         if let dir = AppEnv.value("GALLERY_CWD") { console.context.currentDirectory = URL(fileURLWithPath: dir) }
         for cmd in ["pwd", "ls", "help measure", "select all", "measure distance 1 2", "frobnicate"] { console.input = cmd; console.submit() }

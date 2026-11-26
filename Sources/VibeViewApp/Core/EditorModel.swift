@@ -34,6 +34,7 @@ public enum MeasureMode: String, CaseIterable, Identifiable, Sendable {
 public enum BuildPayload: Equatable, Sendable {
     case element(Int)          // atomic number
     case fragment(String)      // MolBuild FragmentLibrary id
+    case group(String)         // MolBuild GroupLibrary id (element picker: hybridized atom or functional group)
 }
 
 /// Per-window editing state. The document holds the persisted molecule; the editor mirrors it.
@@ -77,6 +78,7 @@ public final class EditorModel: ObservableObject {
     @Published public var showXTBSettings = false
     @Published public var showNameLookup = false
     @Published public var showConsole = false
+    @Published public var showFromZMatrix = false
     /// Same-named files found next to the document (Molden, fchk, hess…) and merged into the result.
     @Published public var companions: [CompanionFile] = []
     @Published public var showInspector = true

@@ -5,7 +5,7 @@ import MolAnalysis
 // Lead 5 (Analysis). Check names all start with "analysis." so `vibeview-check analysis` selects them.
 // Sub-suites live in AnalysisChecks+Surface.swift, AnalysisChecks+Orbitals.swift, AnalysisChecks+Spectra.swift.
 extension Checks {
-    static let analysis: [Check] = analysisTypes + analysisSurface + analysisOrbitals + analysisSpectra + analysisRealData + analysisLevels + analysisQuality
+    static let analysis: [Check] = analysisTypes + analysisSurface + analysisOrbitals + analysisSpectra + analysisRealData + analysisLevels + analysisQuality + analysisProtein
 
     static let analysisTypes: [Check] = [
         Check("analysis.types.shellCounts") {

@@ -3,6 +3,7 @@ import SceneKit
 import AppKit
 import simd
 import MolCore
+import MolAnalysis
 
 /// Result of a click on the 3D view.
 public struct PickEvent: Sendable {
@@ -30,7 +31,18 @@ public struct PickEvent: Sendable {
     public let materials = MaterialLibrary()
 
     public private(set) var molecule = Molecule()
-    public var options: RenderOptions { didSet { optionsChanged(from: oldValue) } }
+    public var options: RenderOptions { didSet { refreshAtomMask(); optionsChanged(from: oldValue) } }
+
+    /// PDB records of the file the molecule came from (residue names, chains, HELIX/SHEET). Optional: without them
+    /// the cartoon perceives the backbone from bonds and computes the secondary structure (simplified DSSP).
+    public var proteinRecords: PDBProteinRecords? {
+        didSet { protein = nil; if options.style == .cartoon { refreshAtomMask(); rebuildAll() } }
+    }
+    /// Protein analysis of the current molecule (computed when the cartoon style is first needed).
+    public private(set) var protein: ProteinStructure?
+    /// Size and build time of the last cartoon mesh.
+    public private(set) var cartoonStats = CartoonLayerBuilder.Stats()
+    var cartoonLayer = SCNNode()
 
     /// Selected atom indices. Highlighted; set by built-in click/box handling when `autoSelect`.
     public var selection: Set<Int> = [] { didSet { if selection != oldValue { rebuildHighlight(); onSelectionChange?(selection) } } }
@@ -134,6 +146,7 @@ public struct PickEvent: Sendable {
     /// Replace the molecule and rebuild every layer. Selection indices beyond the new atom count are dropped.
     public func setMolecule(_ m: Molecule, fitCamera: Bool = false) {
         molecule = m
+        protein = nil
         selection = selection.filter { $0 < m.atoms.count }
         if case .atom(let i) = hovered, i >= m.atoms.count { hovered = .none }
         if case .bond(let i) = hovered, i >= m.bonds.count { hovered = .none }
@@ -147,6 +160,7 @@ public struct PickEvent: Sendable {
         for i in positions.indices { molecule.atoms[i].position = positions[i] }
         hoverRevision &+= 1
         vibration?.positionsChangedExternally()
+        if options.style == .cartoon, protein != nil { rebuildCartoon() }
         let okA = AtomLayerBuilder.updatePositions(atomLayer, molecule: molecule, options: options)
         let okB = BondLayerBuilder.updatePositions(bondLayer, molecule: molecule, options: options)
         if !okA { replace(&atomLayer, with: AtomLayerBuilder.build(molecule: molecule, options: options, colors: currentColors, materials: materials)) }
@@ -173,7 +187,7 @@ public struct PickEvent: Sendable {
 
     /// Bounding sphere of visible atoms (center, radius incl. display radii); radius >= 1.
     public func boundingSphere() -> (center: Vec3, radius: Double) {
-        let atoms = molecule.atoms.filter { RenderMetrics.isAtomVisible($0, options: options) }
+        let atoms = molecule.atoms.indices.filter { RenderMetrics.isAtomVisible($0, in: molecule, options: options) }.map { molecule.atoms[$0] }
         var pts = atoms.map(\.position)
         if let cell = options.unitCell, options.showUnitCell { pts += cell.corners }
         // Visible isosurfaces (orbital lobes extend well past the atoms): their bounding-box corners.
@@ -232,11 +246,13 @@ public struct PickEvent: Sendable {
 
     func rebuildAll() {
         hoverRevision &+= 1
+        refreshAtomMask()
         cachedBounds = boundingSphere()
         let colors = currentColors
         materials.preset = options.material
         replace(&atomLayer, with: AtomLayerBuilder.build(molecule: molecule, options: options, colors: colors, materials: materials))
         replace(&bondLayer, with: BondLayerBuilder.build(molecule: molecule, options: options, colors: colors, materials: materials))
+        rebuildCartoon()
         rebuildCell()
         rebuildOverlays()
         if surfaceLayer.parent == nil { root.addChildNode(surfaceLayer) }
@@ -270,6 +286,7 @@ public struct PickEvent: Sendable {
             || old.wireWidth != options.wireWidth || old.splitBondColors != options.splitBondColors || old.bondColor != options.bondColor
             || old.showBondOrders != options.showBondOrders || old.aromaticStyle != options.aromaticStyle || old.dashedBonds != options.dashedBonds
             || old.showHydrogens != options.showHydrogens || old.geometryQuality != options.geometryQuality
+            || old.cartoonColoring != options.cartoonColoring || old.cartoonHidesWater != options.cartoonHidesWater
         if old.material != options.material { geometryChanged = true }
         if geometryChanged {
             rebuildAll()
@@ -311,6 +328,43 @@ public struct PickEvent: Sendable {
                                           pixelAngle: 2 * tan(fov / 2) / heightPixels)
     }
 
+    // MARK: Cartoon
+
+    /// Puts the cartoon visibility mask on `options` (or removes it when the style is not `.cartoon`).
+    func refreshAtomMask() {
+        guard options.style == .cartoon else {
+            if !options.atomMask.state.isEmpty { options.atomMask = .none }
+            return
+        }
+        let p = proteinStructure()
+        let mask = CartoonLayerBuilder.mask(p, atomCount: molecule.atoms.count, hideWater: options.cartoonHidesWater)
+        if options.atomMask.state != mask.state { options.atomMask = mask }
+    }
+
+    /// The protein analysis of the current molecule, computed on first use.
+    @discardableResult public func proteinStructure() -> ProteinStructure {
+        if let p = protein, p.atomCount == molecule.atoms.count { return p }
+        let p = ProteinAnalysis.looksLikeProtein(molecule) ? ProteinAnalysis.analyze(molecule, records: proteinRecords) : {
+            var e = ProteinStructure.empty
+            e.atomCount = molecule.atoms.count
+            e.polymerAtoms = [Bool](repeating: false, count: molecule.atoms.count); e.waterAtoms = e.polymerAtoms
+            return e
+        }()
+        protein = p
+        return p
+    }
+
+    func rebuildCartoon() {
+        guard options.style == .cartoon else {
+            if cartoonLayer.parent != nil || !cartoonLayer.childNodes.isEmpty { replace(&cartoonLayer, with: emptyNode(NodeName.cartoon)) }
+            return
+        }
+        var st = CartoonLayerBuilder.Stats()
+        let node = CartoonLayerBuilder.build(protein: proteinStructure(), molecule: molecule, options: options, materials: materials, stats: &st)
+        cartoonStats = st
+        replace(&cartoonLayer, with: node)
+    }
+
     func replace(_ layer: inout SCNNode, with new: SCNNode) {
         if vibration?.isGPUActive == true, new.name == NodeName.atoms || new.name == NodeName.bonds { new.isHidden = true }
         layer.removeFromParentNode()
@@ -332,5 +386,6 @@ public struct PickEvent: Sendable {
     /// Layer names usable with `geometryNodeCount`.
     public static let layerNames = (atoms: NodeName.atoms, bonds: NodeName.bonds, highlight: NodeName.highlight,
                                     labels: NodeName.labels, measurements: NodeName.measurements,
-                                    surfaces: NodeName.surfaces, cell: NodeName.cell, vectors: NodeName.vectors)
+                                    surfaces: NodeName.surfaces, cell: NodeName.cell, vectors: NodeName.vectors,
+                                    cartoon: NodeName.cartoon)
 }

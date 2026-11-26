@@ -22,8 +22,11 @@ struct FragmentSketch: Equatable {
     /// Positions are normalised into the unit square [0,1]² (y down), aspect preserved and centred.
     static func make(_ f: Fragment) -> FragmentSketch {
         let m = f.molecule
-        let heavy = m.atoms.indices.filter { m.atoms[$0].atomicNumber > 1 }
-        guard !heavy.isEmpty else { return FragmentSketch() }
+        let heavyOnly = m.atoms.indices.filter { m.atoms[$0].atomicNumber > 1 }
+        guard !heavyOnly.isEmpty else { return FragmentSketch() }
+        // A single-atom template (element picker: C sp³, N sp²…) shows its hydrogens so the geometry reads.
+        let showH = heavyOnly.count == 1
+        let heavy = showH ? m.atoms.indices.filter { $0 != f.leaving } : heavyOnly
         let index = Dictionary(uniqueKeysWithValues: heavy.enumerated().map { ($1, $0) })
 
         // Best-fit plane of the heavy atoms (+ the attachment direction so the stub is not foreshortened).
@@ -68,7 +71,9 @@ struct FragmentSketch: Equatable {
             let z = m.atoms[i].atomicNumber
             let hCount = m.buildNeighbors(of: i).filter { $0 != f.leaving && m.atoms[$0].atomicNumber == 1 }.count
             var label: String? = nil
-            if z != 6 || heavy.count == 1 {
+            if showH {
+                label = Elements.symbol(z)
+            } else if z != 6 || heavy.count == 1 {
                 let sym = Elements.symbol(z)
                 label = hCount == 0 ? sym : sym + "H" + (hCount > 1 ? "\(hCount)" : "")
             }
@@ -198,10 +203,19 @@ struct FragmentSketch: Equatable {
 enum FragmentThumbnails {
     private static let cache = NSCache<NSString, NSImage>()
     private static var sketches: [String: FragmentSketch] = [:]
+    /// Thumbnail ids starting with this name a GroupLibrary entry instead of a fragment.
+    static let groupPrefix = "group:"
 
     static func sketch(_ id: String) -> FragmentSketch? {
         if let s = sketches[id] { return s }
-        guard let f = FragmentLibrary.fragment(id: id) else { return nil }
+        let f: Fragment
+        if id.hasPrefix(groupPrefix) {
+            guard let g = GroupLibrary.group(id: String(id.dropFirst(groupPrefix.count))) else { return nil }
+            f = g.fragment
+        } else {
+            guard let ff = FragmentLibrary.fragment(id: id) else { return nil }
+            f = ff
+        }
         let s = FragmentSketch.make(f)
         sketches[id] = s
         return s

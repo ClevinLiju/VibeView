@@ -24,7 +24,7 @@ public enum LabelLayerBuilder {
         var planes: [String: SCNPlane] = [:]
         let color = options.theme.foreground
         let h = max(0.05, options.labelSize)
-        for (i, a) in molecule.atoms.enumerated() where RenderMetrics.isAtomVisible(a, options: options) {
+        for (i, a) in molecule.atoms.enumerated() where RenderMetrics.isAtomVisible(i, in: molecule, options: options) {
             guard let s = text(for: a, index: i, mode: options.labelMode) else { continue }
             let r = RenderMetrics.atomRadius(atomicNumber: a.atomicNumber, options: options)
             let n = labelNode(text: s, color: color, height: h, anchorOffset: r * 0.72, planes: &planes)

@@ -136,6 +136,10 @@ public struct CalcSetup: Sendable, Codable, Equatable {
     public var extraKeywords: String = ""
     public var printLevel: PrintLevel = .additional
     public var title: String = ""
+    /// Empirical dispersion (written only when the catalog allows it for the method and program; see CalcCatalog.swift).
+    public var dispersion: CalcDispersion? = nil
+    /// ORCA RI / auxiliary-basis choice (nil: automatic).
+    public var orcaAuxiliary: OrcaAuxiliary? = nil
 
     public init() {}
 
@@ -151,10 +155,17 @@ public struct CalcSetup: Sendable, Codable, Equatable {
     /// Switch program, resetting method/basis/solvent model when the current ones do not exist for the new program.
     public mutating func setProgram(_ p: QCProgram) {
         guard p != program else { return }
+        let old = program
         program = p
-        if !Self.methods(for: p).contains(method) { method = Self.defaultMethod(for: p) }
+        if !Self.methods(for: p).contains(method) {
+            // Same catalog method under the new program's spelling (PBE0 <-> PBE1PBE), else the default.
+            method = CalcCatalog.method(matching: method, program: old)?.keyword(for: p) ?? Self.defaultMethod(for: p)
+        }
         if p == .xtb { basis = "" }
-        else if basis.isEmpty || !Self.bases(for: p).contains(basis) { basis = Self.defaultBasis(for: p) }
+        else if basis.isEmpty || !Self.bases(for: p).contains(basis) {
+            basis = CalcCatalog.basis(matching: basis, program: old)?.keyword(for: p) ?? Self.defaultBasis(for: p)
+        }
+        if let d = dispersion, !d.programs.contains(p) { dispersion = nil }
         if !supportedJobTypes.contains(jobType) { jobType = .optimize }
         if p == .xtb, case .smd(let s) = solvation { solvation = .pcm(s) }
     }
@@ -184,22 +195,15 @@ public struct CalcSetup: Sendable, Codable, Equatable {
         }
     }
 
+    /// Method keywords offered for a program, in catalog order (CalcCatalog.swift).
     public static func methods(for program: QCProgram) -> [String] {
-        switch program {
-        case .gaussian: ["B3LYP", "HF", "MP2", "M06-2X", "wB97X-D", "PBE0", "CAM-B3LYP"]
-        case .orca: ["B3LYP", "PBE0", "wB97X-D3", "M06-2X", "TPSS", "CAM-B3LYP", "B2PLYP", "HF", "MP2", "DLPNO-CCSD(T)", "r2SCAN-3c", "B97-3c", "HF-3c", "PBEh-3c"]
-        case .qchem: ["B3LYP", "PBE0", "PBE", "wB97X-D", "wB97M-V", "M06-2X", "CAM-B3LYP", "HF", "MP2"]
-        case .xtb: XTBMethod.allCases.map(\.title)
-        }
+        if program == .xtb { return XTBMethod.allCases.map(\.title) }
+        return CalcCatalog.methods(for: program).compactMap { $0.keyword(for: program) }
     }
 
+    /// Basis-set keywords offered for a program, in catalog order (empty for xtb).
     public static func bases(for program: QCProgram) -> [String] {
-        switch program {
-        case .gaussian: ["STO-3G", "6-31G(d)", "6-31+G(d,p)", "6-311+G(d,p)", "def2-SVP", "def2-TZVP", "cc-pVDZ", "aug-cc-pVTZ", "LANL2DZ"]
-        case .orca: ["STO-3G", "6-31G(d)", "6-31+G(d,p)", "def2-SVP", "def2-TZVP", "def2-TZVPP", "def2-QZVP", "ma-def2-SVP", "cc-pVDZ", "cc-pVTZ", "aug-cc-pVDZ"]
-        case .qchem: ["STO-3G", "6-31G*", "6-31+G*", "6-311+G(d,p)", "def2-SVP", "def2-TZVP", "cc-pVDZ", "cc-pVTZ", "aug-cc-pVTZ"]
-        case .xtb: []
-        }
+        CalcCatalog.bases(for: program).compactMap { $0.keyword(for: program) }
     }
 
     public static func defaultMethod(for p: QCProgram) -> String { p == .xtb ? XTBMethod.gfn2.title : "B3LYP" }
@@ -261,8 +265,9 @@ public struct CalcSetup: Sendable, Codable, Equatable {
 
     public func routeLine() -> String {
         var parts: [String] = []
-        let level = basis.isEmpty ? method : "\(method)/\(basis)"
+        let level = basis.isEmpty || Self.basisOptional(method) ? method : "\(method)/\(basis)"
         parts.append(level)
+        if let d = effectiveDispersion?.keyword(for: .gaussian) { parts.append(d) }
         switch jobType {
         case .energy: parts.append("SP")
         case .optimize: parts.append("Opt")
@@ -361,7 +366,7 @@ public struct CalcSetup: Sendable, Codable, Equatable {
         if !supportedJobTypes.contains(jobType) { p.append("\(program.title) does not support \(jobType.title.lowercased()) here.") }
         if program != .xtb {
             if method.trimmingCharacters(in: .whitespaces).isEmpty { p.append("Choose a method.") }
-            if basis.trimmingCharacters(in: .whitespaces).isEmpty && !Self.basisOptional(method) { p.append("Choose a basis set.") }
+            if basis.trimmingCharacters(in: .whitespaces).isEmpty && !methodIsBasisFree { p.append("Choose a basis set.") }
         }
         if nprocs < 1 { p.append("Use at least 1 processor core.") }
         if let sv = solvation.solvent, program == .xtb, Self.solventInfo(sv)?.xtb == nil, Self.solventInfo(sv) != nil {
@@ -401,7 +406,9 @@ public struct CalcSetup: Sendable, Codable, Equatable {
     }
 
     static func basisOptional(_ method: String) -> Bool {
-        let m = method.uppercased()
-        return ["AM1", "PM3", "PM6", "PM7", "PM3MM", "RM1", "INDO", "CNDO", "R2SCAN-3C", "B97-3C", "HF-3C", "PBEH-3C"].contains(m)
+        let m = method.trimmingCharacters(in: .whitespaces).uppercased()
+        if let e = CalcCatalog.method(matching: m), e.kind.isBasisFree { return true }
+        return m.hasSuffix("-3C") || ["AM1", "PM3", "PM6", "PM7", "PM3MM", "RM1", "INDO", "CNDO", "MNDO", "ZINDO", "CBS-QB3", "CBS-4M",
+                                      "CBS-APNO", "G3", "G3MP2", "G3B3", "G4", "G4MP2", "W1U", "W1BD"].contains(m)
     }
 }

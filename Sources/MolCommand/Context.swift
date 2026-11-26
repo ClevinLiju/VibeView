@@ -34,6 +34,13 @@ public protocol CommandContext: AnyObject {
     func exportImage(to url: URL, width: Int?, height: Int?) throws
     /// Full-featured export used by `export image`; the default forwards to `exportImage(to:width:height:)`.
     func exportImage(_ request: ImageExportRequest, to url: URL) throws
+    /// `export gif|mp4|mov`: returns a short summary (frames, size).
+    func exportAnimation(_ request: AnimationExportRequest, to url: URL) throws -> String
+    /// `export csv`.
+    func exportTable(_ table: CSVTableName, to url: URL) throws
+    /// `export structure`: the format comes from the extension; `allFrames` writes every frame of a trajectory
+    /// (multi-frame formats); `selectedOnly` writes only the selected atoms. Returns a short summary.
+    func exportStructure(to url: URL, allFrames: Bool, selectedOnly: Bool) throws -> String
     func undo() -> Bool
     func redo() -> Bool
 }
@@ -59,6 +66,12 @@ public extension CommandContext {
     func exportImage(to url: URL, width: Int?, height: Int?) throws { throw CommandError("image export is not supported here") }
     func exportImage(_ request: ImageExportRequest, to url: URL) throws {
         try exportImage(to: url, width: request.width, height: request.height)
+    }
+    func exportAnimation(_ request: AnimationExportRequest, to url: URL) throws -> String { throw CommandError("animation export is not supported here") }
+    func exportTable(_ table: CSVTableName, to url: URL) throws { throw CommandError("table export is not supported here") }
+    func exportStructure(to url: URL, allFrames: Bool, selectedOnly: Bool) throws -> String {
+        try save(to: url, format: nil)
+        return "saved \(url.lastPathComponent)"
     }
     func undo() -> Bool { false }
     func redo() -> Bool { false }

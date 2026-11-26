@@ -5,6 +5,14 @@ struct PeriodicTablePopover: View {
     @ObservedObject var editor: EditorModel
     @Binding var isPresented: Bool
     @StateObject private var hover = StateBox<Int?>(nil)
+    /// The element whose atom / hybridized forms / functional groups are listed under the table.
+    @State private var chosen: Int?
+
+    init(editor: EditorModel, isPresented: Binding<Bool>, initialElement: Int? = nil) {
+        self.editor = editor
+        self._isPresented = isPresented
+        self._chosen = State(initialValue: initialElement)
+    }
     static let cell: CGFloat = 34
     /// Gap (in cells) between the main body (rows 0...6) and the lanthanide/actinide rows.
     static let fBlockGap: CGFloat = 0.4
@@ -20,7 +28,7 @@ struct PeriodicTablePopover: View {
             HStack {
                 Text("Element").font(.headline)
                 Spacer()
-                Text(hover.value.map { "\(ElementInfo.name($0)) · Z \($0)" } ?? "Click an element to sketch with it")
+                Text(hover.value.map { "\(ElementInfo.name($0)) · Z \($0)" } ?? (chosen == nil ? "Click an element to sketch with it" : "Pick the atom or a group below"))
                     .font(.callout).foregroundStyle(.secondary)
             }
             ZStack(alignment: .topLeading) {
@@ -37,6 +45,11 @@ struct PeriodicTablePopover: View {
                     .frame(width: 2 * cell - 4, alignment: .trailing).offset(x: 0, y: (Self.displayRow(9) + 0.35) * cell)
             }
             .frame(width: cell * 18, height: cell * Self.gridRows, alignment: .topLeading)
+            if let z = chosen {
+                Divider()
+                ElementGroupPicker(editor: editor, z: z, onPick: { isPresented = false })
+                    .frame(width: cell * 18, alignment: .leading)
+            }
         }
         .padding(12)
         .fixedSize()
@@ -46,11 +59,13 @@ struct PeriodicTablePopover: View {
 
     private func button(_ z: Int) -> some View {
         let cell = Self.cell
-        let selected = editor.payload == .element(z)
+        let selected = editor.payload == .element(z) || chosen == z
         let c = ElementInfo.rgb(z)
         let light = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) > 0.55
         return Button {
-            editor.payload = .element(z); editor.tool = .build; isPresented = false
+            editor.payload = .element(z); editor.tool = .build
+            // Elements with hybridized forms or groups keep the popover open and list them below the table.
+            if ElementGroupPicker.hasGroups(z) { chosen = z } else { isPresented = false }
         } label: {
             VStack(spacing: 0) {
                 Text("\(z)").font(.system(size: 7))

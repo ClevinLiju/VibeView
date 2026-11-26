@@ -32,7 +32,8 @@ struct MainWindowView: View {
                         .frame(minWidth: 360, minHeight: 260)
                         .overlay { if dropTargeted { DropHighlight() } }
                         .onDrop(of: [.fileURL], isTargeted: $dropTargeted, perform: handleDrop)
-                    if editor.result != nil && editor.showResults {
+                    // Without a result the panel holds only the Z-Matrix tab, shown on request (View ▸ Show Z-Matrix).
+                    if editor.showResults && (editor.result != nil || (editor.resultsTab == .zmatrix && !editor.molecule.atoms.isEmpty)) {
                         ResultsPanel(editor: editor).frame(minHeight: 220, idealHeight: 300)
                     }
                     if editor.showConsole {
@@ -50,6 +51,7 @@ struct MainWindowView: View {
         .sheet(isPresented: $editor.showCalcSetup) { CalcSetupSheet(editor: editor) }
         .onReceive(NotificationCenter.default.publisher(for: .vibeviewShowJobQueue)) { _ in openWindow(id: "job-queue") }
         .sheet(isPresented: $editor.showPubChem) { NameLookupSheet(editor: editor) }
+        .sheet(isPresented: $editor.showFromZMatrix) { FromZMatrixSheet(editor: editor) }
         .sheet(isPresented: $editor.showXTBSettings) { XTBSettingsSheet(editor: editor, isPresented: $editor.showXTBSettings) }
         .overlay(alignment: .top) {
             if editor.showCommandPalette {
@@ -127,6 +129,7 @@ struct MainWindowView: View {
         switch editor.payload {
         case .element(let z): return ElementInfo.symbol(z)
         case .fragment(let id): return FragmentNames.short(id)
+        case .group(let id): return BuildOps.groupLabel(id)
         }
     }
 

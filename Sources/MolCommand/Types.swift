@@ -37,7 +37,7 @@ public struct CommandResult: Sendable, Equatable {
     public var text: String { messages.map(\.text).joined(separator: "\n") }
 }
 
-public enum DisplayStyleName: String, Sendable, CaseIterable { case ball, stick, spacefill, wire }
+public enum DisplayStyleName: String, Sendable, CaseIterable { case ball, stick, spacefill, wire, cartoon }
 public enum LabelKind: String, Sendable, CaseIterable { case atoms, charges }
 public enum Axis: String, Sendable, CaseIterable { case x, y, z }
 

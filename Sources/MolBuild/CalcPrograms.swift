@@ -60,7 +60,9 @@ extension CalcSetup {
 
     public func orcaInputText(molecule: Molecule) -> String {
         var simple: [String] = [method]
-        if !basis.isEmpty { simple.append(basis) }
+        if !basis.isEmpty && !Self.basisOptional(method) { simple.append(basis) }   // composites/semi-empirical bring their own
+        if let d = effectiveDispersion?.keyword(for: .orca) { simple.append(d) }
+        simple += orcaAuxiliaryKeywords
         var blocks: [String] = []
         switch jobType {
         case .energy: simple.append("SP")
@@ -117,7 +119,9 @@ extension CalcSetup {
 
     private func qchemRem(job: String, molecule: Molecule, readGuess: Bool) -> [String] {
         var r: [String] = ["JOBTYPE \(job)", "METHOD \(method)"]
-        if !basis.isEmpty { r.append("BASIS \(basis)") }
+        if !basis.isEmpty && !Self.basisOptional(method) { r.append("BASIS \(basis)") }
+        if let d = effectiveDispersion?.keyword(for: .qchem) { r.append(d) }
+        r += qchemECPLines(molecule: molecule)
         if memoryMB > 0 { r.append("MEM_TOTAL \(memoryMB)") }
         if multiplicity > 1 { r.append("UNRESTRICTED TRUE") }
         if readGuess { r.append("SCF_GUESS READ") }

@@ -180,7 +180,7 @@ extension PickingController {
         let v = renderer.view
         let mol = renderer.molecule
         var proj = [CGPoint?](repeating: nil, count: mol.atoms.count)
-        for (i, a) in mol.atoms.enumerated() where RenderMetrics.isAtomVisible(a, options: renderer.options) {
+        for (i, a) in mol.atoms.enumerated() where RenderMetrics.isAtomPickable(i, in: mol, options: renderer.options) {
             let p = v.projectPoint(SCNVector3(a.position))
             if p.z >= 0, p.z <= 1, p.x.isFinite, p.y.isFinite { proj[i] = CGPoint(x: p.x, y: p.y) }
         }

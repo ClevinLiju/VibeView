@@ -10,7 +10,7 @@ public enum RenderMetrics {
     public static func atomRadius(atomicNumber z: Int, options: RenderOptions) -> Double {
         switch options.style {
         case .spaceFilling: return ElementPalette.vdwRadius(z)
-        case .ballAndStick: return max(options.atomScale * ElementPalette.vdwRadius(z), options.bondRadius * 1.15)
+        case .ballAndStick, .cartoon: return max(options.atomScale * ElementPalette.vdwRadius(z), options.bondRadius * 1.15)
         case .tube: return options.tubeRadius
         case .wireframe: return 0.06          // small pickable dot
         }
@@ -18,7 +18,7 @@ public enum RenderMetrics {
     /// Displayed bond cylinder radius (Å); 0 for space-filling (bonds hidden).
     public static func bondRadius(options: RenderOptions) -> Double {
         switch options.style {
-        case .ballAndStick: return options.bondRadius
+        case .ballAndStick, .cartoon: return options.bondRadius
         case .tube: return options.tubeRadius
         case .wireframe: return 0.02 * options.wireWidth
         case .spaceFilling: return 0
@@ -27,9 +27,21 @@ public enum RenderMetrics {
     public static func isAtomVisible(_ atom: Atom, options: RenderOptions) -> Bool {
         options.showHydrogens || atom.atomicNumber != 1
     }
+    /// Index-aware visibility: also honours the renderer's `atomMask` (cartoon residues, hidden water).
+    public static func isAtomVisible(_ i: Int, in molecule: Molecule, options: RenderOptions) -> Bool {
+        guard i >= 0, i < molecule.atoms.count else { return false }
+        if options.atomMask.isHidden(i) { return false }
+        return isAtomVisible(molecule.atoms[i], options: options)
+    }
+    /// Visible, or a CA atom standing in for its cartoon residue (picking and highlights).
+    public static func isAtomPickable(_ i: Int, in molecule: Molecule, options: RenderOptions) -> Bool {
+        guard i >= 0, i < molecule.atoms.count else { return false }
+        if options.atomMask.isHidden(i) { return options.atomMask.isStandIn(i) }
+        return isAtomVisible(molecule.atoms[i], options: options)
+    }
     public static func isBondVisible(_ bond: Bond, in molecule: Molecule, options: RenderOptions) -> Bool {
         guard options.style != .spaceFilling, bond.a < molecule.atoms.count, bond.b < molecule.atoms.count else { return false }
-        return isAtomVisible(molecule.atoms[bond.a], options: options) && isAtomVisible(molecule.atoms[bond.b], options: options)
+        return isAtomVisible(bond.a, in: molecule, options: options) && isAtomVisible(bond.b, in: molecule, options: options)
     }
     /// Per-atom display colors for the current color scheme.
     public static func atomColors(for molecule: Molecule, options: RenderOptions) -> [RGBA] {
@@ -98,6 +110,7 @@ enum NodeName {
     static let surfaces = "vibeview.surfaces"
     static let cell = "vibeview.cell"
     static let vectors = "vibeview.vectors"
+    static let cartoon = "vibeview.cartoon"
     static let camera = "vibeview.camera"
     static func atom(_ i: Int) -> String { "atom:\(i)" }
     static func bond(_ i: Int) -> String { "bond:\(i)" }
