@@ -4,7 +4,7 @@ import MolCore
 import MolBuild
 import MolRender
 
-/// Developer aid for headless UI review: with `VIBEVIEW_SNAPSHOT_DIR` (or the older `VIBEVIEW_SNAPSHOT_DIR`) set, every window is written to
+/// Developer aid for headless UI review: with `VIBEVIEW_SNAPSHOT_DIR` set, every window is written to
 /// `<dir>/window-<n>.png` a few seconds after launch (SceneKit views are composited via `snapshot()`).
 @MainActor
 enum WindowSnapshots {

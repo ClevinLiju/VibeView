@@ -5,9 +5,9 @@ set -euo pipefail
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/dist}"
-SCRATCH="${VIBEVIEW_SCRATCH:-${VIBEVIEW_SCRATCH:-$ROOT/.build-app}}"
+SCRATCH="${VIBEVIEW_SCRATCH:-$ROOT/.build-app}"
 FILE_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)"
-VERSION="${VIBEVIEW_VERSION:-${VIBEVIEW_VERSION:-${FILE_VERSION:-0.3.0}}}"
+VERSION="${VIBEVIEW_VERSION:-${FILE_VERSION:-0.4.0}}"
 APP="$OUT/VibeView.app"
 
 echo "==> Building release (scratch: $SCRATCH)"

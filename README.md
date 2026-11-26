@@ -144,8 +144,6 @@ VibeView can run calculations if the programs are installed; viewing and buildin
 - `VIBEVIEW_SELFTEST`: run the built-in self-test
 - `VIBEVIEW_DEBUG_IO`: debug output for file reading
 
-The older `VIBEVIEW_*` names still work.
-
 ## Project layout
 
 Internal modules keep their `Mol*` prefix:

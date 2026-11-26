@@ -13,7 +13,7 @@ for a in "$@"; do
   esac
 done
 FILE_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)"
-VERSION="${VIBEVIEW_VERSION:-${VIBEVIEW_VERSION:-${FILE_VERSION:-0.3.0}}}"
+VERSION="${VIBEVIEW_VERSION:-${FILE_VERSION:-0.4.0}}"
 APP="$DIST/VibeView.app"
 DMG="$DIST/VibeView-$VERSION.dmg"
 
