@@ -30,6 +30,11 @@ enum WindowSnapshots {
 
     static func capture(to dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Inventory of every window, to tell real document windows from framework-internal ones.
+        let inventory = NSApp.windows.enumerated().map { n, w in
+            "\(n)\t\(type(of: w))\tvisible=\(w.isVisible)\tonScreen=\(w.isOnActiveSpace)\talpha=\(w.alphaValue)\tlevel=\(w.level.rawValue)\tframe=\(NSStringFromRect(w.frame))\ttitle=\(w.title)"
+        }.joined(separator: "\n")
+        try? (inventory + "\n").write(to: dir.appendingPathComponent("windows.txt"), atomically: true, encoding: .utf8)
         for (n, w) in NSApp.windows.enumerated() where w.isVisible {
             guard let rep = composite(w), let png = rep.representation(using: .png, properties: [:]) else { continue }
             try? png.write(to: dir.appendingPathComponent("window-\(n)-\(w.title.replacingOccurrences(of: "/", with: "-")).png"))
