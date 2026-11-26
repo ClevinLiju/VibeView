@@ -85,6 +85,19 @@ public struct XTBRunner: Sendable {
         throw ComputeError.notInstalled(program: "xtb", searched: searchDirectories ?? ProgramLocator.searchDirectories(for: "xtb"))
     }
 
+    /// The settings' environment plus `XTBPATH` when the executable ships its parameter files beside it
+    /// (`<prefix>/bin/xtb` with `<prefix>/share/xtb`, the layout of the official release archives), unless
+    /// the user already set one.
+    static func environment(for exe: URL, settings: XTBSettings) -> [String: String] {
+        var env = settings.environment()
+        let share = exe.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("share/xtb")
+        if env["XTBPATH"] == nil, FileManager.default.fileExists(atPath: share.appendingPathComponent("param_gfn2-xtb.txt").path) {
+            env["XTBPATH"] = share.path
+        }
+        return env
+    }
+
     static func newRunDirectory() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("vibeview-xtb-\(UUID().uuidString)")
     }
@@ -107,7 +120,7 @@ public struct XTBRunner: Sendable {
         let cmd = settings.commandLine(molecule: molecule, executable: exe.path)
         let sink = onEvent ?? { _ in }
         let out = try await ProgramRunner.runLogged(
-            executable: exe, arguments: args, workingDirectory: dir, environment: settings.environment(),
+            executable: exe, arguments: args, workingDirectory: dir, environment: Self.environment(for: exe, settings: settings),
             timeout: settings.timeout, throwOnFailure: false,
             tailFiles: settings.task == .singlePoint ? [] : ["xtbopt.log"], stdoutFile: "xtb.out", onEvent: sink)
         let log = out.stdout

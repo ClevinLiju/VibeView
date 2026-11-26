@@ -1,6 +1,11 @@
 import Foundation
 
 public enum ProgramLocator {
+    /// `~/Library/Application Support/VibeView/`: where the installer puts helper programs such as xtb.
+    public static var managedDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/VibeView")
+    }
+
     public static func searchDirectories(for name: String = "") -> [String] {
         let fm = FileManager.default
         let home = NSHomeDirectory()
@@ -14,6 +19,8 @@ public enum ProgramLocator {
             dirs.append("\(home)/\(root)/bin")
         }
         dirs += ["/opt/homebrew/bin", "/usr/local/bin"]
+        // Programs VibeView installed itself (scripts/install.sh puts xtb here when none was found).
+        dirs.append(ProgramLocator.managedDirectory.appendingPathComponent("xtb/bin").path)
         var seen = Set<String>()
         return dirs.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
