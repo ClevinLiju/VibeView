@@ -33,6 +33,10 @@ public struct PubChemClient: Sendable {
     public func fetch(smiles: String) async throws -> PubChemCompound {
         try await fetch(domain: "smiles", value: smiles, query: smiles, post: true)
     }
+    /// By standard InChIKey (ChEMBL records carry one), so ChEMBL hits get PubChem's 3D conformer.
+    public func fetch(inchiKey: String) async throws -> PubChemCompound {
+        try await fetch(domain: "inchikey", value: inchiKey, query: inchiKey, post: false)
+    }
 
     private func fetch(domain: String, value: String, query: String, post: Bool) async throws -> PubChemCompound {
         for (i, type) in ["3d", "2d"].enumerated() {

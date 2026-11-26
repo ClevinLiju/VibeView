@@ -65,7 +65,9 @@ public enum MolecularFileLoader {
         case .xyz:
             return try done(try XYZFormat.parse(text))
         case .pdb:
-            return try done(try PDBFormat.parse(text).withResidueBondOrders().models)
+            // PDBx/mmCIF (.cif, .mmcif) is read into the same PDBFile model.
+            if MMCIFFormat.looksLikeMMCIF(text) { return try done(try MMCIFFormat.parse(text).pdb.withPerceivedBondOrders().models) }
+            return try done(try PDBFormat.parse(text).withPerceivedBondOrders().models)
         case .mol, .sdf:
             let recs = try MDLMolFormat.parse(text)
             var o = try done(recs.map(\.molecule))
@@ -127,7 +129,12 @@ public enum MolecularFileLoader {
         case .sdf: return MDLMolFormat.writeSDF([SDFRecord(molecule: molecule)])
         case .cml: return CMLFormat.write(molecule)
         case .gaussianInput:
-            return GaussianJob(spec: CalcSpec(program: .gaussian, method: "B3LYP", basis: "6-31G(d)", molecule: molecule)).inputText
+            // No %mem / %nprocshared: Gaussian's defaults run everywhere, while a fixed %mem=2000MB stops a 32-bit
+            // Gaussian 09W right after Link 1.
+            var job = GaussianJob(spec: CalcSpec(program: .gaussian, method: "B3LYP", basis: "6-31G(d)", molecule: molecule))
+            job.link0.memory = nil
+            job.link0.nprocShared = nil
+            return job.inputText
         case .orcaInput:
             return OrcaInput.write(CalcSpec(program: .orca, method: "B3LYP", basis: "def2-SVP", molecule: molecule))
         case .qchemInput:

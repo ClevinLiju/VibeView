@@ -76,8 +76,10 @@ Spectrum  = { "xLabel": str, "yLabel": str, "xAxisReversed": bool, "xB64": str, 
 | `calc.run` | `{ docId, "spec": CalcSpecJSON, "directory": str\|null, "inputText": str\|null }` | `{ "jobId": str, "directory": str }`. Streams `job.log` events. When it finishes, sends `job.finished`. |
 | `calc.cancel` | `{ jobId }` | `{}` |
 | `xtb.run` | `{ docId, "settings": XTBSettingsJSON }` | `{ "jobId": str, "directory": str }`. Same events. On success the document gets the optimized geometry (one undo step). |
-| `lookup.suggest` | `{ "query": str, "limit": int=8 }` | `{ "candidates": [ { "cid", "title", "iupacName", "formula", "molecularWeight", "canonicalSMILES", "synonyms", "casNumber", "matchKind", "thumbnailB64": str\|null } ], "error": str\|null }` |
-| `lookup.structure` | `{ "cid": int }` | `Molecule` |
+| `lookup.suggest` | `{ "query": str, "limit": int=8, "source": "auto"\|"pubchem"\|"pdb"\|"chembl"\|"drugbank"\|"cactus"\|"scifinder" = "auto" }` | `{ "candidates": [ LookupCandidate ], "source", "resolvedSource", "notice": str\|null, "error": str\|null, "errorCode": str\|null }` (see Lookup below) |
+| `lookup.structure` | `{ "id": str }` (or the older `{ "cid": int }`) | `Molecule` |
+| `lookup.download` | `{ "id": "pdb:<ID>", "directory": str\|null }` | `{ "path", "fileName", "downloadedFormat": "pdb"\|"cif" }`; open it with `doc.open` |
+| `lookup.sources` | – | `[ { "id", "name", "available": bool, "hint" } ]` |
 | `command.execute` | `{ docId, "line": str }` | `{ "results": [ { "command": str, "success": bool, "messages": [ {level, text} ] } ], "molecule": Molecule\|null, "view": ViewChange\|null }` |
 | `command.complete` | `{ docId, "line": str, "cursor": int }` | `{ "completions": [str], "replaceFrom": int }` |
 | `session.save` / `session.load` | `{ "path": str, "docs": [docId]... }` | session JSON (same schema as `.vibeview` on macOS) |
@@ -227,10 +229,29 @@ is either a clarification of something the table leaves open, or an additive fie
   pcm/cpcm/smd/alpb/gbsa). `scan` is `{atoms, start, end, steps}`. `extraKeywords` may be an array or a space-separated
   string. Also accepted: `charge`, `multiplicity` (override the document's), `checkpointName`, `computeFrequenciesAfterTS`.
 - `calc.preview` extras: `fileContents: [{name, contents}]`, `outputFile`, and `executable` (resolved path or null).
+  Gaussian also gets `warnings: [str]` (adaptations to the installed build, then input-check messages), `check: [InputIssue]`
+  and `gaussian: {name, maxMemoryMB: int|null, hasDef2AndGD3: bool}|null` (the located build, from its PE header: 32-bit
+  and link year). `InputIssue = {severity: "error"|"warning", line: int|null (1-based), message, fixable: bool}`.
+- Gaussian adaptation (`GaussianInstallProfile.adapt`, applied to the spec by `calc.preview` and `calc.run`): a 32-bit build
+  gets `%mem` of at most 1500 MB (G09W stops right after Link 1 with 1700 MB or more, so the output has no atoms); builds
+  before G09 rev. D.01 (link year < 2013, e.g. G09W A.02) get `def2-SVP`→`SVP`, `def2-TZVP`→`TZVP`, `def2-QZVP`→`QZVP`
+  and no `EmpiricalDispersion` (both are Link 1 syntax errors there). Each change is a `warnings` line.
+- The Gaussian command line names the output file: `g09 job.gjf job.log` (or g16). With one argument, Windows G09 passes the
+  absolute output path to l1.exe unquoted, so in a folder with a space ("VibeView Jobs") the output went to a file named
+  after the first word (`C:\Users\<user>\VibeView`) and job.log held only the header: the "no atoms" error.
+- `calc.checkInput {program: "gaussian", text}` → `{issues: [InputIssue], repaired: str|null, fixes: [str], gaussian}`:
+  structural check of an edited input (Link 0, route, title, charge/multiplicity, molecule, blank-line terminators,
+  Geom=Connectivity section, ModRedundant, `--Link1--` steps, %mem against the build, def2/GD3 on old builds). `repaired`
+  is the text with the fixable problems repaired (missing title section, missing blank line after a section or at the end,
+  %mem above the limit), null when nothing is fixable. Other programs return no issues.
   When `errors` isn't empty, `input` is "".
 - `calc.run`/`xtb.run`: `directory` defaults to `~/VibeView Jobs/<program>-<yyyyMMdd-HHmmss>`. `calc.run` also takes
   `baseName` (default "job") and returns `commandLine`, `inputFile` and `outputFile`. A missing program is answered at once
-  with `not_installed`. Invalid specs or settings give `bad_request`.
+  with `not_installed`. Invalid specs or settings give `bad_request`. For Gaussian, `calc.run` also returns `warnings`,
+  `repairs` (fixes applied to `inputText`, which is otherwise written as given) and `check` (InputIssue list of the file
+  written); warnings and repairs are also sent as `job.log` stderr lines starting with "VibeView: ". A failed Gaussian
+  job's `job.finished.error` is Gaussian's own reason ("syntax error at 'EmpiricalDispersion=GD3BJ'", "stopped right
+  after Link 1", "End of file in ZSymb. (l101.exe)") instead of "no atoms".
 - `job.finished` extras: `cancelled`, `directory`. For xtb: `energy`, `gradientNorm`, `homoLumoGapEV`, `converged`, `cycles`
   and `frequencies`, plus `errorCode` on failure. `xtb.run`'s `docId` is the source document, which received the optimized
   coordinates (undo step "xtb Optimization", topology kept). `calc.run`'s `docId` is a new document even when the job failed,
@@ -261,8 +282,34 @@ is either a clarification of something the table leaves open, or an additive fie
 **Lookup**
 - `lookup.suggest` candidates also carry `matchedQuery` and `depictionURL`. When nothing is found, `error` explains why
   and `errorCode` holds the protocol code (`offline`, `timeout`, `not_found`, …).
-- `lookup.structure {cid, title?}` returns a Molecule with bonds and bond orders (perceived if missing). It doesn't create a
-  document: use `doc.new {molecule}` or `edit.apply replaceMolecule`.
+- `lookup.structure {id | cid, title?}` returns a Molecule with bonds and bond orders (perceived if missing). It doesn't create a
+  document: use `doc.new {molecule}` or `edit.apply replaceMolecule`. For a PDB id it is the entry's first model (no residue
+  information); to open a protein as a document use `lookup.download`, then `doc.open`.
+- `LookupCandidate = {id: "<source>:<identifier>", source, sourceName, identifier, cid (0 when not from PubChem), title,
+  iupacName, formula, molecularWeight, canonicalSMILES, synonyms, casNumber, matchKind, matchedQuery, depictionURL,
+  thumbnailB64, thumbnailMIME ("image/png" PubChem/CACTUS, "image/jpeg" RCSB, "image/svg+xml" ChEMBL), details: [str]
+  (e.g. "X-Ray diffraction · 1.50 Å · 327 atoms · released 1981-04-30", organisms), webURL, drugBankID, chemblID,
+  sourceNote, isMacromolecule}`. Ids returned by a search stay valid for `lookup.structure`/`lookup.download`;
+  `pubchem:<cid>`, `pdb:<ID>` and `chembl:<ID>` also work without a search.
+- Sources. `pubchem`: as before. `pdb`: a PDB ID (`1CRN`, `pdb:1crn`, `pdb_00001crn`) or RCSB full-text search
+  (search.rcsb.org v2); metadata from the RCSB GraphQL API; thumbnail cdn.rcsb.org `<id>_assembly-1.jpeg`.
+  `lookup.download` saves files.rcsb.org `<ID>.pdb`, or `<ID>.cif` when the entry has no PDB-format file, to `directory`
+  (default `%LOCALAPPDATA%\VibeView\Downloads`). `chembl`: EBI ChEMBL REST, by CHEMBL ID or name search; structures are
+  PubChem's 3D conformer for the record's InChIKey, else the ChEMBL molfile with hydrogens added and embedded in 3D.
+  `drugbank`: no free API, so DrugBank IDs and names are resolved through PubChem (PubChem lists DrugBank IDs as synonyms);
+  candidates carry a `sourceNote` saying so, and the structure is PubChem's. `cactus`: NCI/CADD Chemical Identifier Resolver
+  (one candidate, 3D SD file). `scifinder`: always `errorCode: "unavailable"` with an explanation (no public API; needs an
+  institutional CAS subscription; CAS numbers resolve through PubChem). `auto`: PDB ID → pdb (PubChem when no entry
+  exists), `CHEMBL\d+` → chembl, `DB\d{5}` → drugbank, everything else → PubChem; names also run an RCSB text search, and
+  up to 3 PDB entries follow the PubChem hits (all of them when PubChem has none); CACTUS is tried when PubChem finds
+  nothing. CAS-number queries add the SciFinder `notice`. Requests have timeouts (10–20 s, downloads 60–120 s); errors map
+  to `offline`, `timeout`, `not_found`.
+- **mmCIF.** `.cif`/`.mmcif` files (and text starting with `data_`) are read by `MolIO.MMCIFFormat` into the same model as PDB
+  files, so the document `format` is `pdb`: `_atom_site` (auth chain/residue numbers and names, altLoc selection, all
+  models), `_struct_conf`/`_struct_sheet_range` (helices and strands for `analysis.secondaryStructure` source "file"),
+  `_pdbx_struct_assembly_gen` + `_pdbx_struct_oper_list` (assemblies, operator expressions such as `(1-60)` and
+  `(X0)(1-60)`), `_cell`. Chain IDs may have several characters. Small-molecule CIF (fractional coordinates) gives
+  `parse_error`. Save on a `.cif` document asks for a new file instead of overwriting it.
 
 **Console**
 - `command.execute` result extras: `summary` (DocSummary after the line), `cwd`, `opened: [DocSummary]` (from `open …`, files
@@ -334,15 +381,18 @@ is either a clarification of something the table leaves open, or an additive fie
 - `analysis.secondaryStructure {docId, frame?: int, source?: "auto"|"file"|"computed" = "auto"}` (cancellable) →
   `{atomCount, residueCount, residueSource: "file"|"topology", source: "file"|"computed"|"none", ss: str, chain: [str],
   seq: [int], iCode: [str], name: [str], n: [int], ca: [int], c: [int], o: [int], segments: [[start, end]],
-  polymerAtoms: [int], waterAtoms: [int], helixCount: int, strandCount: int}`.
+  polymerAtoms: [int], waterAtoms: [int], helixCount: int, strandCount: int, chains: [str], atomChain: [int],
+  assembly: {id: str, chains: [str], parts: [{chains: [str], operators: [[12 numbers]]}]}|null}`.
 - Residues come from the PDB file's ATOM/HETATM records when the document was opened from a `.pdb` file with `doc.open`
-  (atoms matched by coordinates, the first alternate location wins, `frame` selects the MODEL). Otherwise (other formats,
+  (atoms matched by coordinates, `frame` selects the MODEL). Otherwise (other formats,
   `doc.openText`, or no matching records) the backbone is perceived from the bond graph: N–CA–C(=O) residues linked by C–N
   bonds, chains `A`, `B`, … numbered from 1, `name` "UNK". Fewer than 3 such residues count as no protein (`residueCount` 0,
   `source` "none", empty arrays).
 - Per-residue arrays are parallel and in chain order. `n`/`ca`/`c`/`o` are 0-based atom indices (`o` may be -1).
   `segments` are half-open residue ranges `[start, end)` of continuous backbone; a new segment starts at a chain change or
-  when C(i)–N(i+1) > 2.0 Å.
+  when C(i)–N(i+1) > 2.0 Å (CA(i)–CA(i+1) > 4.3 Å when a residue lacks its N or C). A residue needs a CA and an N or a C.
+  From file records, residues are standard amino acids (also when written as HETATM) plus any residue peptide-linked to a
+  neighbour (modified residues such as MSE); a lone non-standard group is a ligand even when it has N/CA/C atom names.
 - `ss` has one character per residue: `H` α-helix, `G` 3₁₀-helix, `I` π-helix, `E` strand, `B` isolated bridge, `T` turn,
   `L` loop. With `source: "auto"` the file's HELIX/SHEET records are used when present (`source` "file"; HELIX class 5 → `G`,
   class 3 → `I`, else `H`; SHEET → `E`; all other residues `L`), otherwise a simplified DSSP runs (`source` "computed"; backbone
@@ -350,6 +400,16 @@ is either a clarification of something the table leaves open, or an additive fie
   records), and `"computed"` ignores the records. `helixCount`/`strandCount` count runs of H/G/I and of E within segments.
 - `polymerAtoms`: residue atoms plus the hydrogens bonded to them. `waterAtoms`: atoms of HOH/WAT/DOD/H2O/SOL/TIP*/SPC
   residues and their hydrogens. An invalid `source` or an out-of-range `frame` gives `bad_request`.
+- `chains`: chain names (residue chains first, then chains met only on other atoms); `atomChain[i]` indexes it, -1 when
+  the atom has no record. `assembly`: biological assembly 1 from the file's REMARK 350 (null without one, or when the residues
+  are not from the file); operators are row-major 3×4 matrices `[r11 r12 r13 t1 r21 … t3]` in Å applied to the part's chains.
+  The front end shows only the assembly's chains in cartoon mode and draws the non-identity operators as copies.
+
+**PDB reading** (`MolIO.PDBFormat`). Only one alternate location per residue is kept (the altLoc label with the highest summed
+occupancy, ties to the first label; blank altLoc atoms always kept). A multi-MODEL file opens on model 1, the other models are
+frames (the Trajectory tab starts at model 1). Ligands and other non-standard residues get perceived bond orders
+(`PDBLigandBondOrders`: geometry-based implicit hydrogens, then valence matching and aromaticity) unless their CONECT
+records state multiplicities; standard residues keep their templates.
 
 **Z-matrix** (`Sources/VibeViewEngine/Methods+ZMatrix.swift`, MolCore `ZMatrix`). Rows are 0-based, and `order[row]` is the
 document atom index shown in that row. Every edit is one undo step.

@@ -188,6 +188,9 @@ extension SelfTest {
         check("analysis.secondaryStructure bad source -> bad_request", ssb["error"]?["code"]?.stringValue == "bad_request", err(ssb))
 
         // MARK: extended calculation catalog (calc.preview)
+        // The writer is checked as such: no adaptation to the Gaussian installed here (G09W A.02 drops def2 / GD3BJ).
+        ProgramPaths.adaptToInstalledGaussian = false
+        defer { ProgramPaths.adaptToInstalledGaussian = true }
         let w4 = await newWater()
         func preview(_ spec: JSON) async -> (String, String) {
             let r = await call("calc.preview", ["docId": .string(w4), "spec": spec])

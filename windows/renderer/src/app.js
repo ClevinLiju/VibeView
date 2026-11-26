@@ -223,7 +223,7 @@ export class App {
   async save(d = this.active, { as = false } = {}) {
     if (!d) return false;
     let path = d.path;
-    const writable = !path || /\.(log|out|fchk|fch|cube|cub|molden|hess)$/i.test(path);
+    const writable = !path || /\.(log|out|fchk|fch|cube|cub|molden|hess|cif|mmcif)$/i.test(path);
     if (as || writable) {
       const base = (d.path ? d.path.replace(/\.[^.\\/]+$/, '') : (d.summary.title || 'molecule')) + '.xyz';
       path = await api.saveFileDialog({

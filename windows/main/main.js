@@ -6,7 +6,7 @@ const { EngineClient, resolveEnginePath, mockEngine } = require('./engine');
 const { buildMenu } = require('./menu');
 
 const APP_ROOT = path.resolve(__dirname, '..');
-const OPENABLE = ['xyz', 'pdb', 'mol', 'sdf', 'cml', 'gjf', 'com', 'log', 'out', 'fchk', 'fch', 'cube', 'cub', 'molden', 'input',
+const OPENABLE = ['xyz', 'pdb', 'cif', 'mmcif', 'ent', 'mol', 'sdf', 'cml', 'gjf', 'com', 'log', 'out', 'fchk', 'fch', 'cube', 'cub', 'molden', 'input',
   'vibeview', 'inp', 'in', 'hess', 'mol2', 'zmat', 'gzmat', 'trj'];
 
 // ---------- command line ----------
@@ -169,7 +169,7 @@ function main() {
   ipcMain.on('renderer:ready', () => {
     rendererReady = true;
     const files = pendingOpen.splice(0);
-    if (cli.smoke) win.webContents.send('smoke-test', { files, screenshot: cli.screenshot, tab: process.env.VIBEVIEW_SMOKE_TAB || null, orbital: process.env.VIBEVIEW_SMOKE_ORBITAL || null, ui: process.env.VIBEVIEW_SMOKE_UI || null, view: process.env.VIBEVIEW_SMOKE_VIEW || null, console: process.env.VIBEVIEW_SMOKE_CONSOLE || null, exportSpec: process.env.VIBEVIEW_SMOKE_EXPORT || null, dialog: process.env.VIBEVIEW_SMOKE_DIALOG || null, zmatrix: process.env.VIBEVIEW_SMOKE_ZMATRIX || null, build: process.env.VIBEVIEW_SMOKE_BUILD || null });
+    if (cli.smoke) win.webContents.send('smoke-test', { files, screenshot: cli.screenshot, tab: process.env.VIBEVIEW_SMOKE_TAB || null, orbital: process.env.VIBEVIEW_SMOKE_ORBITAL || null, ui: process.env.VIBEVIEW_SMOKE_UI || null, view: process.env.VIBEVIEW_SMOKE_VIEW || null, console: process.env.VIBEVIEW_SMOKE_CONSOLE || null, exportSpec: process.env.VIBEVIEW_SMOKE_EXPORT || null, dialog: process.env.VIBEVIEW_SMOKE_DIALOG || null, zmatrix: process.env.VIBEVIEW_SMOKE_ZMATRIX || null, build: process.env.VIBEVIEW_SMOKE_BUILD || null, measure: process.env.VIBEVIEW_SMOKE_MEASURE || null, lookup: process.env.VIBEVIEW_SMOKE_LOOKUP || null });
     else for (const f of files) win.webContents.send('open-file', f);
   });
   ipcMain.handle('smoke:done', async (_e, { ok, message, viewportPngB64 }) => {

@@ -403,7 +403,9 @@ function buildTrajectory(app, d, body) {
   const right = h('div.pane.chart');
   body.append(left, right);
   const n = d.summary.frameCount;
-  const st = d.cache.traj || (d.cache.traj = { frame: n - 1, fps: 8, playing: false, loop: true });
+  // The document geometry is the last frame, except for PDB models (the document opens on model 1, like RCSB).
+  const home = d.summary.format === 'pdb' ? 0 : n - 1;
+  const st = d.cache.traj || (d.cache.traj = { frame: home, fps: 8, playing: false, loop: true });
   const frameCache = new Map();
   const slider = h('input', { type: 'range', min: 0, max: n - 1, step: 1, value: st.frame, oninput: () => go(Number(slider.value)) });
   const label = h('span', { style: { fontVariantNumeric: 'tabular-nums' } });
@@ -477,6 +479,6 @@ function buildTrajectory(app, d, body) {
     go(st.frame);
   })();
   return {
-    dispose() { st.playing = false; clearTimeout(timer); chart.ro.disconnect(); if (app.active === d && d.frame != null && d.frame !== n - 1) app.viewport.setMolecule(d.molecule, { keepSelection: true }); d.frame = null; },
+    dispose() { st.playing = false; clearTimeout(timer); chart.ro.disconnect(); if (app.active === d && d.frame != null && d.frame !== home) app.viewport.setMolecule(d.molecule, { keepSelection: true }); d.frame = null; },
   };
 }

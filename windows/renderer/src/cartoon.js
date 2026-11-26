@@ -1,10 +1,15 @@
 // Protein cartoon: helices as ribbons, strands as arrows, loops as tubes (style "cartoon").
 //
 // Data comes from the engine's analysis.secondaryStructure (per-residue N/CA/C/O atom indices, secondary structure
-// letters and continuous backbone segments). The trace is a Catmull-Rom spline through the CA atoms (strand CAs are
-// smoothed to take out the pleat); the ribbon's width direction follows the carbonyl C=O vectors, flipped to stay
-// consistent. All profiles share one vertex count, so a segment is a single continuous tube whose cross-section morphs
-// between round (loops), flat ellipse (helices) and rounded box (strands). Everything is merged into one BufferGeometry.
+// letters, continuous backbone segments, the chain of every atom and the file's biological assembly 1). The trace is a
+// Catmull-Rom spline through the CA atoms (strand CAs are smoothed to take out the pleat); the ribbon's width direction
+// follows the carbonyl C=O vectors, flipped to stay consistent. All profiles share one vertex count, so a segment is a
+// single continuous tube whose cross-section morphs between round (loops), flat ellipse (helices) and rounded box
+// (strands). Everything is merged into one BufferGeometry, rebuilt from scratch on every build (never added twice).
+//
+// RCSB/Mol*-like defaults: colour "auto" (one chain: rainbow N→C; several chains: one colour per chain), waters hidden,
+// ligands as ball and stick with their carbons tinted by chain, only the chains of biological assembly 1 shown (its
+// symmetry copies are drawn as transformed copies of the same meshes), chain gaps (missing residues) as dashes.
 import * as THREE from 'three';
 import { STYLE_ICONS } from './icons.js';
 import { request } from './api.js';
@@ -13,12 +18,24 @@ STYLE_ICONS.cartoon = '<svg viewBox="0 0 54 34"><path d="M4 24c6-14 10-14 14 0s8
 
 export const CARTOON_STYLE = { value: 'cartoon', label: 'Cartoon' };
 export const CARTOON_COLORS = [
-  { value: 'ss', label: 'Secondary structure' }, { value: 'chain', label: 'Chain' },
-  { value: 'rainbow', label: 'Rainbow (N→C)' }, { value: 'uniform', label: 'Single colour' },
+  { value: 'auto', label: 'Auto (like RCSB)' }, { value: 'chain', label: 'Chain' },
+  { value: 'ss', label: 'Secondary structure' }, { value: 'rainbow', label: 'Rainbow (N→C)' }, { value: 'uniform', label: 'Single colour' },
+];
+export const CARTOON_ASSEMBLY = [
+  { value: 'assembly', label: 'Biological assembly' }, { value: 'asymmetric', label: 'All chains in the file' },
 ];
 
 const SS_COLORS = { helix: 0xe0457b, strand: 0xf2c230, loop: 0xc8ccd2 };
-const CHAIN_COLORS = [0x4e8fd8, 0x5cbf73, 0xe48a3a, 0xb06fd0, 0x3fb8b0, 0xd85a5a, 0xc9b23d, 0x7a8ee0, 0xe07ab8, 0x8ab84e];
+// Mol* "chain-id" look (ColorBrewer Dark2, then Paired-like extras).
+const CHAIN_COLORS = [0x7570b3, 0x1b9e77, 0xd95f02, 0xe7298a, 0x66a61e, 0xe6ab02, 0xa6761d, 0x1f78b4, 0xb2df8a, 0xfb9a99, 0x6a3d9a, 0x33a02c];
+// Rainbow stops (blue → cyan → green → yellow → orange → red), as in the RCSB sequence-id previews.
+const RAINBOW = [0x3a4cc0, 0x3b8bd0, 0x35b6b0, 0x5cc35a, 0xb7cf3a, 0xf2c230, 0xf28a2a, 0xd7301f].map((c) => new THREE.Color(c));
+
+function rainbowAt(t) {
+  const x = Math.max(0, Math.min(1, t)) * (RAINBOW.length - 1);
+  const i = Math.min(RAINBOW.length - 2, Math.floor(x));
+  return RAINBOW[i].clone().lerp(RAINBOW[i + 1], x - i);
+}
 
 function kind(ch) {
   if (ch === 'H' || ch === 'G' || ch === 'I') return 'helix';
@@ -27,19 +44,28 @@ function kind(ch) {
 }
 
 // Cross-section shapes: half width (along the C=O guide), half thickness, superellipse exponent.
-const LOOP = { w: 0.3, h: 0.3, n: 2 };
-const HELIX = { w: 1.25, h: 0.28, n: 2 };
-const STRAND = { w: 1.05, h: 0.3, n: 5 };
-const ARROW = 1.65; // arrow base half width
+const LOOP = { w: 0.26, h: 0.26, n: 2 };
+const HELIX = { w: 1.2, h: 0.24, n: 2.6 };
+const STRAND = { w: 1.05, h: 0.26, n: 5 };
+const ARROW = 1.7; // arrow base half width
 const smooth = (f) => f * f * (3 - 2 * f);
+
+/** Row-major 3x4 operator → Matrix4. */
+function opMatrix(op) {
+  return new THREE.Matrix4().set(op[0], op[1], op[2], op[3], op[4], op[5], op[6], op[7], op[8], op[9], op[10], op[11], 0, 0, 0, 1);
+}
+const isIdentity = (op) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0].every((v, k) => Math.abs(op[k] - v) < 1e-4);
 
 export class CartoonLayer {
   constructor(vp) {
     this.vp = vp;
     this.data = null;
     this.mesh = null;
-    this.covered = null; // Uint8Array per atom: 1 polymer (cartoon), 2 water
+    this.copies = []; // assembly symmetry copies (Object3Ds in the molecule group)
+    this.covered = null; // Uint8Array per atom: 1 polymer (cartoon), 2 water, 3 chain outside the shown assembly
+    this.drawn = null; // Uint8Array per residue: drawn as cartoon
     this.caIndex = null; // Set of CA atoms (pickable stand-ins for hidden residues)
+    this.coverKey = null;
     this.builtFrom = null;
     this.lastBuildMs = 0;
     this.lastBuildAt = 0;
@@ -48,21 +74,49 @@ export class CartoonLayer {
   /** Engine result (or null). Must match the viewport's current molecule. */
   setData(data) {
     this.data = data && data.residueCount > 0 ? data : null;
-    this.covered = null; this.caIndex = null;
-    if (this.data) {
-      const n = this.data.atomCount;
-      const cov = new Uint8Array(n);
-      // Only residues in segments with >= 2 residues get a cartoon; others stay as atoms.
-      const drawn = new Uint8Array(this.data.residueCount);
-      for (const [s, e] of this.data.segments) if (e - s >= 2) for (let r = s; r < e; r++) drawn[r] = 1;
-      const lone = new Set();
-      for (let r = 0; r < this.data.residueCount; r++) if (!drawn[r]) for (const k of ['n', 'ca', 'c', 'o']) if (this.data[k][r] >= 0) lone.add(this.data[k][r]);
-      for (const i of this.data.polymerAtoms) if (i < n && !lone.has(i)) cov[i] = 1;
-      for (const i of this.data.waterAtoms) if (i < n) cov[i] = 2;
-      this.covered = cov;
-      this.caIndex = new Set(this.data.ca.filter((i, r) => drawn[r]));
-    }
+    this.covered = null; this.caIndex = null; this.drawn = null; this.coverKey = null;
     this.vp.rebuild();
+  }
+
+  /** Chain names shown under the current options (null = all). */
+  shownChains() {
+    const a = this.data?.assembly;
+    if (!a || this.vp.options.cartoonAssembly === 'asymmetric' || !Array.isArray(a.chains) || !a.chains.length) return null;
+    return new Set(a.chains);
+  }
+
+  /** Symmetry operators drawn as copies: the non-identity operators of assembly 1, when one operator set applies to
+   *  every chain of the assembly and includes the identity (the file's own coordinates). */
+  operators() {
+    const a = this.data?.assembly;
+    if (!a || this.vp.options.cartoonAssembly === 'asymmetric' || !a.parts?.length) return [];
+    const sig = (p) => JSON.stringify(p.operators);
+    if (!a.parts.every((p) => sig(p) === sig(a.parts[0]))) return [];
+    const all = a.parts[0].operators.filter((op) => Array.isArray(op) && op.length === 12);
+    if (!all.some(isIdentity)) return [];
+    const ops = all.filter((op) => !isIdentity(op));
+    return ops.length && this.data.atomCount * (ops.length + 1) <= 3_000_000 ? ops.slice(0, 120) : [];
+  }
+
+  /** (Re)computes which atoms the cartoon covers, for the current data and options. */
+  coverage() {
+    const key = this.vp.options.cartoonAssembly || 'assembly';
+    if (this.covered && this.coverKey === key) return;
+    this.coverKey = key;
+    const d = this.data;
+    const n = d.atomCount;
+    const cov = new Uint8Array(n);
+    const chains = this.shownChains();
+    const drawn = new Uint8Array(d.residueCount);
+    for (let r = 0; r < d.residueCount; r++) if (!chains || chains.has(d.chain[r])) drawn[r] = 1;
+    for (const i of d.polymerAtoms) if (i < n) cov[i] = 1;
+    for (const i of d.waterAtoms) if (i < n) cov[i] = 2;
+    if (chains && d.atomChain && d.chains) {
+      for (let i = 0; i < n; i++) { const c = d.atomChain[i]; if (c >= 0 && !chains.has(d.chains[c])) cov[i] = 3; }
+    }
+    this.covered = cov;
+    this.drawn = drawn;
+    this.caIndex = new Set(d.ca.filter((i, r) => drawn[r] && i >= 0));
   }
 
   /** Cartoon applies to the molecule now shown. */
@@ -71,18 +125,33 @@ export class CartoonLayer {
     return vp.options.style === 'cartoon' && !!this.data && !!vp.molecule && vp.molecule.atoms.length === this.data.atomCount;
   }
 
-  /** Atom drawn by the cartoon (or a water hidden in cartoon mode). */
-  hides(i) { return !!(this.covered && this.covered[i] && this.active()); }
+  ready() {
+    if (!this.active()) return false;
+    this.coverage();
+    return true;
+  }
 
-  /** Waters hidden by the cartoon don't count for zoom-to-fit. */
-  excludesFromFit(i) { return !!(this.covered && this.covered[i] === 2 && this.active()); }
+  /** Atom drawn by the cartoon (or a water / an atom of a chain outside the assembly, hidden in cartoon mode). */
+  hides(i) { return this.ready() && !!this.covered[i]; }
+
+  /** Waters and chains outside the assembly don't count for zoom-to-fit. */
+  excludesFromFit(i) { return this.ready() && this.covered[i] >= 2; }
 
   /** CA atom standing in for a cartoon residue (picking, selection highlight). */
-  isPickable(i) { return !!(this.caIndex && this.caIndex.has(i) && this.active()); }
+  isPickable(i) { return this.ready() && this.caIndex.has(i); }
+
+  /** Cartoon-mode colour of a ligand carbon: its element colour tinted with its chain colour (null = unchanged). */
+  ligandCarbonColor(i, base) {
+    const d = this.data;
+    if (!d || !d.atomChain || !this.active() || (this.vp.options.colorScheme || 'element') !== 'element') return null;
+    const c = d.atomChain[i];
+    if (c == null || c < 0) return null;
+    return base.clone().lerp(new THREE.Color(CHAIN_COLORS[c % CHAIN_COLORS.length]), 0.45);
+  }
 
   /** Pick the CA of a cartoon residue near the ray (atoms under the cartoon stay pickable through their CA). */
   pick(ray, best) {
-    if (!this.active() || !this.caIndex) return best;
+    if (!this.ready()) return best;
     const P = this.vp.positions;
     const v = new THREE.Vector3();
     for (const i of this.caIndex) {
@@ -96,24 +165,46 @@ export class CartoonLayer {
     return best;
   }
 
-  /** Called at the end of Viewport.rebuild(): (re)creates the cartoon mesh in `group`. */
+  /** Called at the end of Viewport.rebuild(): (re)creates the cartoon mesh and the assembly copies in `group`. */
   build(group) {
     this.disposeMesh();
-    if (!this.active()) return;
+    if (!this.ready()) return;
     const t0 = performance.now();
-    const geo = buildGeometry(this.data, this.vp.positions, this.vp.options);
-    if (!geo) return;
     const vp = this.vp;
-    let mat;
-    if (vp.options.material === 'flat') mat = new THREE.MeshBasicMaterial({ vertexColors: true });
-    else {
-      mat = vp.material.clone(); // same look (PBR parameters) as the atoms
-      mat.vertexColors = true;
-      mat.color?.set(0xffffff);
+    const geo = buildGeometry(this.data, vp.positions, vp.options, this.drawn);
+    if (geo) {
+      let mat;
+      if (vp.options.material === 'flat') mat = new THREE.MeshBasicMaterial({ vertexColors: true });
+      else {
+        mat = vp.material.clone(); // same look (PBR parameters) as the atoms
+        mat.vertexColors = true;
+        mat.color?.set(0xffffff);
+      }
+      this.mesh = new THREE.Mesh(geo, mat);
+      this.mesh.userData.cartoon = true;
+      group.add(this.mesh);
     }
-    this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.userData.cartoon = true;
-    group.add(this.mesh);
+    // Biological assembly copies: the cartoon, atoms and bonds again under each symmetry operator (display only,
+    // sharing geometry and instance buffers with the originals).
+    for (const op of this.operators()) {
+      const M = opMatrix(op);
+      const add = (src, make) => {
+        if (!src) return;
+        const o = make(src);
+        o.matrixAutoUpdate = false; o.matrix.copy(M); o.frustumCulled = false;
+        o.userData.assemblyCopy = true;
+        group.add(o); this.copies.push(o);
+      };
+      add(this.mesh, (m) => new THREE.Mesh(m.geometry, m.material));
+      for (const src of [vp.atomMesh, vp.bondMesh]) {
+        add(src, (m) => {
+          const c = new THREE.InstancedMesh(m.geometry, m.material, m.count);
+          c.instanceMatrix = m.instanceMatrix; // shared: follows updateMatrices()
+          if (m.instanceColor) c.instanceColor = m.instanceColor;
+          return c;
+        });
+      }
+    }
     this.builtFrom = vp.positions;
     this.lastBuildMs = performance.now() - t0;
     this.lastBuildAt = performance.now();
@@ -129,6 +220,8 @@ export class CartoonLayer {
   }
 
   disposeMesh() {
+    for (const c of this.copies) c.parent?.remove(c); // geometry and buffers are shared: nothing of their own to free
+    this.copies = [];
     if (!this.mesh) return;
     this.mesh.parent?.remove(this.mesh);
     this.mesh.geometry.dispose();
@@ -147,14 +240,24 @@ function catmull(p0, p1, p2, p3, t, out) {
   return out;
 }
 
-function residueColors(data, options) {
+/** Index of a chain in the engine's chain list (the same colour as the chain's ligand carbons). */
+function chainColorIndex(data, name) {
+  const k = data.chains ? data.chains.indexOf(name) : -1;
+  return k >= 0 ? k : [...new Set(data.chain)].indexOf(name);
+}
+
+function residueColors(data, options, drawn) {
   const R = data.residueCount;
   const out = new Array(R);
-  const mode = options.cartoonColor || 'ss';
-  const chains = [...new Set(data.chain)];
+  let mode = options.cartoonColoring || 'auto';
+  if (mode === 'auto') {
+    const shown = new Set();
+    for (let r = 0; r < R; r++) if (!drawn || drawn[r]) shown.add(data.chain[r]);
+    mode = shown.size > 1 ? 'chain' : 'rainbow';
+  }
   for (let r = 0; r < R; r++) {
     let c;
-    if (mode === 'chain') c = new THREE.Color(CHAIN_COLORS[chains.indexOf(data.chain[r]) % CHAIN_COLORS.length]);
+    if (mode === 'chain') c = new THREE.Color(CHAIN_COLORS[chainColorIndex(data, data.chain[r]) % CHAIN_COLORS.length]);
     else if (mode === 'uniform') c = new THREE.Color(options.uniformColor || '#9aa0a8');
     else if (mode !== 'rainbow') c = new THREE.Color(SS_COLORS[kind(data.ss[r])]);
     out[r] = c;
@@ -165,29 +268,87 @@ function residueColors(data, options) {
     for (let r = 1; r <= R; r++) {
       if (r === R || data.chain[r] !== data.chain[s]) {
         const len = Math.max(1, r - s - 1);
-        for (let k = s; k < r; k++) out[k] = new THREE.Color().setHSL(0.66 * (1 - (k - s) / len), 0.75, 0.52);
+        for (let k = s; k < r; k++) out[k] = rainbowAt((k - s) / len);
         s = r;
       }
     }
   }
-  return out;
+  return { colors: out, smoothColors: mode === 'rainbow' };
 }
 
-function buildGeometry(data, positions, options) {
-  const R = data.residueCount;
-  const total = data.segments.reduce((a, [s, e]) => a + (e - s >= 2 ? e - s : 0), 0);
+function buildGeometry(data, positions, options, drawn) {
+  const segments = data.segments.filter(([s]) => !drawn || drawn[s]);
+  const total = segments.reduce((a, [s, e]) => a + (e - s), 0);
   if (!total) return null;
   const S = total > 6000 ? 4 : total > 2000 ? 6 : 10; // samples per residue
   const M = total > 6000 ? 10 : 16; // vertices per ring
-  const colors = residueColors(data, options);
+  const { colors, smoothColors } = residueColors(data, options, drawn);
   const pos = [], nor = [], col = [], idx = [];
   // profile unit circle
   const cosA = [], sinA = [];
   for (let k = 0; k < M; k++) { const a = (k / M) * Math.PI * 2; cosA.push(Math.cos(a)); sinA.push(Math.sin(a)); }
 
-  for (const [s, e] of data.segments) {
+  /** Round tube along a polyline (lone residues, gap dashes), with flat end caps. */
+  const tube = (pts, radius, color) => {
+    if (pts.length < 2) return;
+    const rings = [];
+    let prevN = null;
+    for (let k = 0; k < pts.length; k++) {
+      const T = new THREE.Vector3().subVectors(pts[Math.min(k + 1, pts.length - 1)], pts[Math.max(k - 1, 0)]).normalize();
+      let N = prevN ? prevN.clone().addScaledVector(T, -prevN.dot(T)) : new THREE.Vector3(0, 0, 1).cross(T);
+      if (N.lengthSq() < 1e-6) N = new THREE.Vector3(1, 0, 0).cross(T);
+      N.normalize(); prevN = N;
+      const B = new THREE.Vector3().crossVectors(T, N);
+      rings.push(pos.length / 3);
+      for (let m = 0; m < M; m++) {
+        const d = N.clone().multiplyScalar(cosA[m]).addScaledVector(B, sinA[m]);
+        pos.push(pts[k].x + d.x * radius, pts[k].y + d.y * radius, pts[k].z + d.z * radius);
+        nor.push(d.x, d.y, d.z); col.push(color.r, color.g, color.b);
+      }
+    }
+    for (let k = 0; k + 1 < rings.length; k++) {
+      for (let m = 0; m < M; m++) {
+        const a = rings[k], b = rings[k + 1], m2 = (m + 1) % M;
+        idx.push(a + m, a + m2, b + m, a + m2, b + m2, b + m);
+      }
+    }
+    for (const [k, sign] of [[0, -1], [pts.length - 1, 1]]) {
+      const T = new THREE.Vector3().subVectors(pts[Math.min(k + 1, pts.length - 1)], pts[Math.max(k - 1, 0)]).normalize().multiplyScalar(sign);
+      const center = pos.length / 3;
+      pos.push(pts[k].x, pts[k].y, pts[k].z); nor.push(T.x, T.y, T.z); col.push(color.r, color.g, color.b);
+      const ring = pos.length / 3;
+      for (let m = 0; m < M; m++) { const v = rings[k] + m; pos.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]); nor.push(T.x, T.y, T.z); col.push(color.r, color.g, color.b); }
+      for (let m = 0; m < M; m++) { const m2 = (m + 1) % M; if (sign > 0) idx.push(center, ring + m, ring + m2); else idx.push(center, ring + m2, ring + m); }
+    }
+  };
+  const P = (i) => (i >= 0 ? positions[i] : null);
+
+  // Missing residues inside a chain (a break between consecutive segments of the same chain): a dashed line between
+  // the two CA atoms, like Mol*.
+  for (let k = 0; k + 1 < segments.length; k++) {
+    const e = segments[k][1] - 1, s2 = segments[k + 1][0];
+    if (data.chain[e] !== data.chain[s2] || s2 !== e + 1) continue;
+    const a = P(data.ca[e]), b = P(data.ca[s2]);
+    if (!a || !b) continue;
+    const len = a.distanceTo(b);
+    if (len < 4.2 || len > 80) continue;
+    const dash = 0.5, period = 1.0, nd = Math.floor(len / period);
+    const c = new THREE.Color(0xa0a4aa);
+    for (let j = 0; j < nd; j++) {
+      const t0 = (j * period + (len - nd * period + period - dash) / 2) / len, t1 = t0 + dash / len;
+      if (t1 > 1) break;
+      tube([a.clone().lerp(b, t0), a.clone().lerp(b, t1)], 0.12, c);
+    }
+  }
+
+  for (const [s, e] of segments) {
     const n = e - s;
-    if (n < 2) continue;
+    if (n < 2) {
+      // Lone residue (neighbours missing): a short loop tube N–CA–C.
+      const pts = [P(data.n[s]), P(data.ca[s]), P(data.c[s])].filter(Boolean).map((p) => p.clone());
+      tube(pts, LOOP.w, colors[s]);
+      continue;
+    }
     const ss = []; for (let r = s; r < e; r++) ss.push(kind(data.ss[r]));
     // Control points (CA), strands smoothed.
     const ca = [];
@@ -286,7 +447,7 @@ function buildGeometry(data, positions, options) {
       const c = colors[s + Math.min(n - 1, Math.max(0, sh.res))];
       // Rainbow interpolates smoothly; the others switch at residue boundaries.
       let cr = c;
-      if ((options.cartoonColor || 'ss') === 'rainbow') {
+      if (smoothColors) {
         const lo = Math.min(n - 2, Math.floor(q.t)), f = q.t - lo;
         cr = colors[s + lo].clone().lerp(colors[s + lo + 1], Math.max(0, Math.min(1, f)));
       }
@@ -369,8 +530,9 @@ export function installCartoon(app) {
       if (d.path && ss.residueCount >= 20 && vp.options.style !== 'cartoon') {
         d.styleBeforeCartoon = vp.options.style;
         vp.setOptions({ style: 'cartoon' });
-        vp.fit(); // waters are hidden now and no longer count for the view
       }
+      // Waters and chains outside the assembly are hidden now and no longer count for the view.
+      if (d.path && vp.options.style === 'cartoon') vp.fit();
     }
   };
   let t = null;

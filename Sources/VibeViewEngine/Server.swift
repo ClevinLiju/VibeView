@@ -110,10 +110,10 @@ final class Engine: @unchecked Sendable {
     let store = DocumentStore()
     let docQueue = DocumentQueue()
     let jobs = JobRegistry()
-    let lookup = NameLookup()
     let tracker = RequestTracker()
     let programs = ProgramPaths()
-    let candidateCache = CandidateCache()
+    /// PubChem, RCSB PDB, ChEMBL, DrugBank (via PubChem) and NCI CACTUS lookups (Methods+Lookup.swift).
+    let sources = StructureLookup()
     let out: OutputWriter
 
     init(out: OutputWriter = .shared) { self.out = out }
@@ -220,6 +220,7 @@ final class Engine: @unchecked Sendable {
         case "calc.programs": return programs.json()
         case "calc.setProgramPath": return try calcSetProgramPath(p)
         case "calc.preview": return try await calcPreview(p)
+        case "calc.checkInput": return try await calcCheckInput(p)
         case "calc.run": return try await calcRun(p)
         case "calc.cancel": return try await calcCancel(p)
         case "xtb.run": return try await xtbRun(p)
@@ -227,6 +228,8 @@ final class Engine: @unchecked Sendable {
         // lookup
         case "lookup.suggest": return try await lookupSuggest(p)
         case "lookup.structure": return try await lookupStructure(p)
+        case "lookup.download": return try await lookupDownload(p)
+        case "lookup.sources": return lookupSources()
         // console
         case "command.execute": return try await commandExecute(p)
         case "command.complete": return try await commandComplete(p)

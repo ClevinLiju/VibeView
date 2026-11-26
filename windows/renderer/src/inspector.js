@@ -2,7 +2,7 @@
 import { h, $, clear, segmented, select, fmt } from './dom.js';
 import { STYLE_ICONS } from './icons.js';
 import { request } from './api.js';
-import { CARTOON_STYLE, CARTOON_COLORS } from './cartoon.js';
+import { CARTOON_STYLE, CARTOON_COLORS, CARTOON_ASSEMBLY } from './cartoon.js';
 
 const STYLES = [
   { value: 'ballAndStick', label: 'Ball & stick' }, { value: 'tube', label: 'Tube' },
@@ -51,13 +51,15 @@ export function buildInspector(app) {
   const pg = h('span', {}, '–');
   const aromatic = select([{ value: 'kekule', label: 'Kekulé' }, { value: 'dashed', label: 'Dashed' }], o().aromaticStyle || 'kekule', (v) => set({ aromaticStyle: v }));
   const aromaticRow = h('div.row', { title: 'Aromatic bonds: one alternating Kekulé structure, or a solid and a dashed line' }, h('label', { style: { width: '74px' } }, 'Aromatic'), h('div.grow', {}, aromatic));
-  const cartoonColor = select(CARTOON_COLORS, o().cartoonColor || 'ss', (v) => set({ cartoonColor: v }));
+  const cartoonColor = select(CARTOON_COLORS, o().cartoonColoring || 'auto', (v) => set({ cartoonColoring: v }));
+  const cartoonAssembly = select(CARTOON_ASSEMBLY, o().cartoonAssembly || 'assembly', (v) => { set({ cartoonAssembly: v }); vp.fit(); });
+  const assemblyRow = h('div.row', { title: 'PDB files: show the biological assembly (REMARK 350, as on rcsb.org) or every chain of the file (asymmetric unit)' }, h('label', { style: { width: '74px' } }, 'Show'), h('div.grow', {}, cartoonAssembly));
   const cartoonRow = h('div.row', { style: { marginTop: '8px' }, title: 'Protein residues are drawn as a cartoon; ligands as ball and stick' }, h('label', { style: { width: '74px' } }, 'Cartoon'), h('div.grow', {}, cartoonColor));
   const selInfo = h('div', { style: { fontSize: '12px', color: 'var(--text-2)' } });
   const measures = h('div.measure-list');
 
   root.append(
-    h('div.section', {}, h('h3', {}, 'Style'), styleGrid, cartoonRow,
+    h('div.section', {}, h('h3', {}, 'Style'), styleGrid, cartoonRow, assemblyRow,
       h('div', { style: { marginTop: '8px' } },
         check('Hydrogens', 'showHydrogens'), check('Bond orders', 'showBondOrders', 'Draw double, triple and aromatic bonds'),
         aromaticRow, check('Two-colour bonds', 'splitBondColors'),
@@ -80,6 +82,8 @@ export function buildInspector(app) {
 
   const refreshOptions = () => {
     cartoonRow.hidden = o().style !== 'cartoon';
+    assemblyRow.hidden = o().style !== 'cartoon';
+    cartoonColor.value = o().cartoonColoring || 'auto'; cartoonAssembly.value = o().cartoonAssembly || 'assembly';
     for (const c of styleGrid.children) c.classList.toggle('on', c.dataset.style === o().style);
     for (const i of root.querySelectorAll('input[data-key]')) {
       if (i.type === 'checkbox') i.checked = !!o()[i.dataset.key];

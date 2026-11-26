@@ -777,7 +777,7 @@ extension Checks {
             try expect(!MoleculeFileFormat.gaussianOutput.canWrite && MoleculeFileFormat.cube.canWrite && MoleculeFileFormat.gaussianInput.canWrite)
             try expect(MoleculeFileFormat.gaussianInput.fileExtensions == ["gjf", "com", "gau"])
             try expect(MoleculeFileFormat.formattedCheckpoint.fileExtensions == ["fchk", "fch"])
-            try expect(MoleculeFileFormat.pdb.fileExtensions == ["pdb", "ent"] && MoleculeFileFormat.sdf.fileExtensions == ["sdf", "sd"])
+            try expect(MoleculeFileFormat.pdb.fileExtensions == ["pdb", "ent", "cif", "mmcif"] && MoleculeFileFormat.sdf.fileExtensions == ["sdf", "sd"])
             try expect(MoleculeFileFormat(rawValue: "xyz") == .xyz)
             let data = try JSONEncoder().encode(MoleculeFileFormat.cml)
             try expect(try JSONDecoder().decode(MoleculeFileFormat.self, from: data) == .cml)

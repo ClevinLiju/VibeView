@@ -218,7 +218,7 @@ export function openCalcSetup(app, presetProgram, preset = {}) {
   let manual = false;        // the editor holds user edits
   let generated = '';        // last text from calc.preview
   let lastErrors = [];
-  const editor = codeEditor({ onInput: () => { setManual(editor.value !== generated); } });
+  const editor = codeEditor({ onInput: () => { setManual(editor.value !== generated); if (st.program === 'gaussian') update(); } });
   const badge = h('span.calc-badge', { hidden: true, title: 'Run, Save and Copy use the text exactly as edited. Setup changes no longer rewrite it.' }, 'edited (manual)');
   const regenBtn = h('button.btn.small', { hidden: true, title: 'Discard the manual edits and generate the input from the setup again', onclick: () => { if (window.confirm('Discard your edits to the input file and generate it again from the setup?')) regenerate(); } }, 'Reset to generated');
   const conflict = h('div.calc-conflict', { hidden: true },
@@ -226,6 +226,8 @@ export function openCalcSetup(app, presetProgram, preset = {}) {
     h('button.btn.small.primary', { onclick: () => regenerate() }, 'Discard edits and regenerate'),
     h('button.btn.small', { onclick: () => { conflict.hidden = true; } }, 'Keep my edits'));
   const errors = h('div.errors');
+  // Engine notes for the installed program (G09W: memory limit, def2 / dispersion not available) and input-check problems.
+  const engineNotes = h('div.engine-notes');
   const formchkNote = h('div.calc-note', { style: { marginTop: '4px' } });
   const cmdLine = h('div', { style: { fontSize: '12px', color: 'var(--text-2)', fontFamily: 'var(--mono)', marginTop: '4px', overflowWrap: 'anywhere' } });
   function setManual(v) {
@@ -294,6 +296,14 @@ export function openCalcSetup(app, presetProgram, preset = {}) {
   };
 
   let seq = 0;
+  // Edited Gaussian input: structural check by the engine (calc.checkInput); Run applies the safe repairs.
+  async function checkEdited(my) {
+    try {
+      const c = await request('calc.checkInput', { program: 'gaussian', text: editor.value });
+      if (my !== seq) return;
+      for (const i of c.issues || []) engineNotes.append(h('div' + (i.severity === 'error' ? '.err' : ''), {}, (i.line ? 'Line ' + i.line + ': ' : '') + i.message + (i.fixable ? ' (fixed when the job runs)' : '')));
+    } catch { /* older engine */ }
+  }
   function changed() { refreshOptions(); update(true); }
   async function update(fromOption = false) {
     const my = ++seq;
@@ -307,6 +317,9 @@ export function openCalcSetup(app, presetProgram, preset = {}) {
       if (!manual) editor.value = generated;
       else if (fromOption && editor.value !== generated) conflict.hidden = false;
       errors.textContent = lastErrors.join(' · ');
+      clear(engineNotes);
+      for (const w of r.warnings || []) engineNotes.append(h('div', {}, (r.gaussian ? r.gaussian.name + ': ' : '') + w));
+      if (manual && st.program === 'gaussian' && editor.value.trim()) checkEdited(my);
       cmdLine.textContent = r.commandLine ? `Command: ${r.commandLine}${r.files?.length ? '   Files: ' + r.files.join(', ') : ''}` : '';
       setManual(manual);
     } catch (e) { errors.textContent = e.message; }
@@ -350,7 +363,7 @@ export function openCalcSetup(app, presetProgram, preset = {}) {
     field('Extra keywords', extraKw), field('Extra input', extraIn),
     h('div.row', {}, h('label', {}, 'Run in'), dir, h('button.btn.small', { onclick: async () => { const p = await api.openFileDialog({ directory: true, title: 'Job folder' }); if (p) dir.value = p[0]; } }, 'Browse…')),
     h('div.calc-input-head', {}, h('span', {}, 'Input file'), h('span.hint', {}, 'editable'), badge, h('span.grow'), regenBtn),
-    conflict, editor.root, cmdLine, formchkNote, errors,
+    conflict, editor.root, cmdLine, formchkNote, engineNotes, errors,
   );
   const dlg = modal('Calculation Setup', body, { width: 920, footer: [h('span.grow', {}, 'Results open as a new document when the job finishes.'), copyBtn, saveInputBtn, h('button.btn', { onclick: () => dlg.close() }, 'Cancel'), runBtn] });
   refreshOptions();

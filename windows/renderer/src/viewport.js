@@ -8,6 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Pass } from 'three/addons/postprocessing/Pass.js';
 import { element, cssColor } from './elements.js';
 import { CartoonLayer } from './cartoon.js';
+import { MeasureOverlay } from './measure-overlay.js';
 
 // macOS RenderTheme.background (Sources/MolRender/RenderTypes.swift), sRGB:
 // light (0.93, 0.94, 0.96), dark (0.12, 0.13, 0.15), black, white.
@@ -60,7 +61,8 @@ function studioEnvironment(dark) {
 
 export const DEFAULT_OPTIONS = {
   style: 'ballAndStick', // ballAndStick | tube | wireframe | spaceFilling | cartoon
-  cartoonColor: 'ss', // ss | chain | rainbow | uniform (cartoon.js)
+  cartoonColoring: 'auto', // auto | chain | ss | rainbow | uniform (cartoon.js; auto = RCSB look)
+  cartoonAssembly: 'assembly', // assembly (biological assembly 1 of a PDB file) | asymmetric (every chain in the file)
   atomScale: 0.25, bondRadius: 0.12, tubeRadius: 0.18, wireWidth: 1.5,
   showBondOrders: true, showHydrogens: true, splitBondColors: true,
   aromaticStyle: 'kekule', // kekule | dashed (macOS RenderOptions.aromaticStyle)
@@ -70,6 +72,7 @@ export const DEFAULT_OPTIONS = {
   theme: 'auto', background: null,
   material: 'glossy', // matte | glossy | satin | metallic | flat
   ambientOcclusion: true, projection: 'perspective', showAxes: true,
+  dihedralPlanes: false, // measure-overlay.js: show the two planes of dihedral monitors (per-monitor override m.planes)
 };
 
 // macOS MaterialLibrary.pbrParameters: roughness, metalness, clear coat, clear-coat roughness.
@@ -325,6 +328,7 @@ export class Viewport {
     this.scene.add(this.molGroup);
     this.scene.add(this.surfaces);
     this.overlayGroup = new THREE.Group();
+    this.measureOverlay = new MeasureOverlay(this); // geometry monitors (measure-overlay.js)
     this.scene.add(this.overlayGroup);
 
     // Overlay geometry (selection halos, hover, arrows); atoms and bonds use the LOD geometry below.
@@ -612,6 +616,9 @@ export class Viewport {
     if (name === 'metallic') { L.key.intensity = SCN(1100); L.fill.intensity = SCN(250); L.rim.intensity = SCN(dark ? 500 : 300); this.hemi.intensity = SCN(dark ? 250 : 320); }
     else { L.key.intensity = SCN(820); L.fill.intensity = SCN(180); L.rim.intensity = SCN(dark ? 420 : 160); this.hemi.intensity = SCN(dark ? 380 : 480); }
     this.sao.enabled = !!this.options.ambientOcclusion && name !== 'flat';
+    // Cartoons get a wider, softer occlusion (Mol*-like depth between helices and sheets); atoms keep the macOS 1.4 Å.
+    const aoRadius = this.options.style === 'cartoon' ? 4.0 : 1.4;
+    if (this.aoRadius !== aoRadius) { this.aoRadius = aoRadius; this.sao.updateGtaoMaterial({ radius: aoRadius }); }
     this.dirty = true;
   }
 
@@ -654,6 +661,15 @@ export class Viewport {
 
   atomColors() {
     const base = this.schemeColors();
+    // Cartoon mode: ligand carbons take a tint of their chain colour (RCSB/Mol* look).
+    if (this.cartoon.active()) {
+      const atoms = this.molecule.atoms;
+      for (let i = 0; i < atoms.length; i++) {
+        if (atoms[i].z !== 6 || !base[i]) continue;
+        const t = this.cartoon.ligandCarbonColor(i, base[i]);
+        if (t) base[i] = t;
+      }
+    }
     for (const [i, c] of this.colorOverrides) if (base[i]) base[i] = new THREE.Color(c);
     return base;
   }
@@ -705,7 +721,8 @@ export class Viewport {
     const segs = [];
     this.bondSegs = segs;
     if (o.style === 'spaceFilling') return;
-    const orders = o.showBondOrders && (o.style === 'ballAndStick' || o.style === 'wireframe');
+    // Cartoon mode draws its ligands and other non-polymer atoms as ball and stick, bond orders included.
+    const orders = o.showBondOrders && (o.style === 'ballAndStick' || o.style === 'wireframe' || o.style === 'cartoon');
     // neighbour lists for choosing the plane of multiple bonds
     const nbrs = mol.atoms.map(() => []);
     this.bondOrders = new Map();
@@ -851,16 +868,8 @@ export class Viewport {
         this.overlayGroup.add(m);
       }
     }
-    // measurement lines
-    for (const ms of this.measurements) {
-      const pts = ms.atoms.map((i) => this.positions[i]);
-      if (pts.some((p) => !p)) continue;
-      const g = new THREE.BufferGeometry().setFromPoints(pts);
-      const line = new THREE.Line(g, new THREE.LineDashedMaterial({ color: 0xffc93c, dashSize: 0.14, gapSize: 0.08, depthTest: false, transparent: true }));
-      line.computeLineDistances();
-      line.renderOrder = 10;
-      this.overlayGroup.add(line);
-    }
+    // measurement monitors: dihedral planes in 3D; lines, arcs and values on the 2D overlay (drawOverlay)
+    this.measureOverlay.sync(this.overlayGroup);
     if (this.arrows) this.overlayGroup.add(this.arrows);
     this.dirty = true;
   }
@@ -1082,32 +1091,7 @@ export class Viewport {
         ctx.fillStyle = fg; ctx.fillText(t, s.x, s.y);
       }
     }
-    if (mol) {
-      // Measurement values: large bold digits in gold with a thick dark halo, readable on any background
-      // and over atoms (the user found the old 12 px chips too small).
-      ctx.font = '700 17px "Segoe UI", system-ui, sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round'; ctx.miterLimit = 2;
-      const placed = [];
-      for (const m of this.measurements) {
-        const pts = m.atoms.map((i) => this.positions[i]); if (pts.some((p) => !p)) continue;
-        const c = m.atoms.length === 2 ? pts[0].clone().lerp(pts[1], 0.5) : (m.atoms.length === 3 ? pts[1] : pts[1].clone().lerp(pts[2], 0.5));
-        const s = this.project(c);
-        if (s.z >= 1) continue;
-        const unit = m.kind === 'distance' ? ' Å' : '°';
-        const t = m.value != null ? `${m.value.toFixed(m.kind === 'distance' ? 3 : 1)}${unit}` : '…';
-        const tw = ctx.measureText(t).width;
-        // Stack labels that would overlap an earlier one (e.g. a dihedral centred on a measured bond).
-        let y = s.y - 14;
-        for (let tries = 0; tries < 8 && placed.some((r) => Math.abs(r.x - s.x) < (r.w + tw) / 2 + 4 && Math.abs(r.y - y) < 20); tries++) y -= 21;
-        placed.push({ x: s.x, y, w: tw });
-        ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(10,10,14,0.92)';
-        ctx.strokeText(t, s.x, y);
-        ctx.fillStyle = '#ffc93c';
-        ctx.fillText(t, s.x, y);
-        m.screen = { x: s.x, y, w: tw + 10 };
-      }
-    }
+    if (mol) this.measureOverlay.draw2D(ctx); // distance lines, angle/dihedral arcs and values
     if (this.options.showAxes) this.drawAxes(ctx, 44, h - 44, 26);
     if (this.boxRect) {
       const r = this.boxRect;

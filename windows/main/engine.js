@@ -9,7 +9,7 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 // Methods that can legitimately run long. They are cancellable instead of timing out quickly.
 const LONG_METHODS = new Set([
   'analysis.orbitalSurface', 'analysis.densitySurface', 'analysis.volumeSurface',
-  'doc.open', 'lookup.suggest', 'lookup.structure', 'edit.apply', 'session.load', 'command.execute',
+  'doc.open', 'lookup.suggest', 'lookup.structure', 'lookup.download', 'edit.apply', 'session.load', 'command.execute',
 ]);
 const LONG_TIMEOUT_MS = 10 * 60_000;
 

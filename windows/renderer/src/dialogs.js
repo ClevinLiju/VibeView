@@ -4,63 +4,144 @@ import { request, api } from './api.js';
 import { drawThumbnail } from './sidebar.js';
 import { escapeHTML } from './app.js';
 
-// ---------- Name lookup (PubChem via the engine) ----------
+// ---------- Structure lookup (PubChem, RCSB PDB, ChEMBL, DrugBank via PubChem, NCI CACTUS; engine lookup.*) ----------
+const LOOKUP_SOURCES = [
+  { id: 'auto', name: 'Auto', placeholder: 'Name, CAS, SMILES, CID, PDB ID, CHEMBL or DrugBank ID (e.g. caffeine, 50-78-2, 1CRN, CHEMBL25, DB00945)' },
+  { id: 'pubchem', name: 'PubChem', placeholder: 'Name, CAS number, SMILES or CID (e.g. caffeine, 50-78-2, c1ccccc1, 2244)' },
+  { id: 'pdb', name: 'RCSB PDB', placeholder: 'PDB ID or text (e.g. 1CRN, 4HHB, hemoglobin, lysozyme)' },
+  { id: 'chembl', name: 'ChEMBL', placeholder: 'ChEMBL ID or name (e.g. CHEMBL25, imatinib)' },
+  { id: 'drugbank', name: 'DrugBank', placeholder: 'DrugBank ID or drug name (e.g. DB00945, ibuprofen), resolved through PubChem' },
+  { id: 'cactus', name: 'NCI CACTUS', placeholder: 'Name, CAS number or SMILES (NCI Chemical Identifier Resolver)' },
+  { id: 'scifinder', name: 'SciFinder', placeholder: 'SciFinder needs an institutional CAS subscription' },
+];
+const SOURCE_FOOTER = {
+  auto: 'Auto picks the database from the query: PDB IDs go to RCSB, CHEMBL… to ChEMBL, DB… to DrugBank (via PubChem); names search PubChem and the PDB.',
+  pubchem: 'Structures come from PubChem (3D conformers).',
+  pdb: 'Entries come from the RCSB Protein Data Bank and open as PDB / mmCIF documents.',
+  chembl: 'Records come from ChEMBL (EMBL-EBI); 3D coordinates from PubChem by InChIKey, or embedded from the ChEMBL molfile.',
+  drugbank: 'DrugBank has no free API: DrugBank IDs are resolved through PubChem cross-references, and the structure comes from PubChem.',
+  cactus: 'NCI CACTUS resolves names, CAS numbers and SMILES; it is slower than PubChem and sometimes unavailable.',
+  scifinder: 'SciFinder (CAS) has no public API.',
+};
+
 export function openLookup(app) {
-  const input = h('input', { type: 'search', placeholder: 'Name, CAS number, SMILES or CID (e.g. caffeine, 50-78-2, c1ccccc1, 2244)', autofocus: true, style: { width: '100%' } });
+  let source = LOOKUP_SOURCES.some((s) => s.id === app.settings.lookupSource) ? app.settings.lookupSource : 'auto';
+  if (source === 'scifinder') source = 'auto';
+  const input = h('input', { type: 'search', autofocus: true, style: { width: '100%' } });
   const results = h('div.lookup-results');
-  const status = h('div', { style: { fontSize: '12px', color: 'var(--text-2)', marginTop: '6px', minHeight: '18px' } });
+  const status = h('div.lookup-status');
+  const note = h('div.lookup-note');
+  const footerText = h('span.grow.lookup-foot');
   let candidates = []; let chosen = 0; let token = null; let seq = 0; let timer;
   const btnOpen = h('button.btn.primary', { disabled: true, onclick: () => use('open') }, 'Open as new document');
   const btnInsert = h('button.btn', { disabled: true, onclick: () => use('insert') }, 'Insert into current');
   const btnSketch = h('button.btn', { disabled: true, onclick: () => use('replace') }, 'Replace current');
-  const m = modal('Look Up Structure', h('div', {}, input, status, results), {
-    width: 640,
-    footer: [h('span.grow', {}, 'Structures come from PubChem.'), btnSketch, btnInsert, btnOpen],
+  const sourceSel = segmented(LOOKUP_SOURCES.map((s) => ({ value: s.id, label: s.name, title: s.id === 'scifinder' ? 'No public API (needs a CAS subscription)' : s.placeholder })), source, (v) => setSource(v), 'lookup-sources');
+  const m = modal('Look Up Structure', h('div', {}, sourceSel, input, note, status, results), {
+    width: 720,
+    footer: [footerText, btnSketch, btnInsert, btnOpen],
     onClose: () => { if (token != null) api.cancel(token); },
   });
+
+  function setSource(v) {
+    source = v;
+    if (v !== 'scifinder') { app.settings.lookupSource = v; app.saveSettingsSoon(); }
+    const s = LOOKUP_SOURCES.find((x) => x.id === v);
+    input.placeholder = s.placeholder;
+    footerText.textContent = SOURCE_FOOTER[v] || '';
+    clear(note);
+    if (v === 'scifinder') {
+      note.append(h('b', {}, 'SciFinder is not available here. '),
+        'CAS SciFinder has no public API: it needs an institutional CAS subscription and is used through the SciFinder website. ',
+        'CAS registry numbers (e.g. 50-78-2) still work: Auto and PubChem resolve them through PubChem. ',
+        h('a', { href: 'https://scifinder-n.cas.org/', target: '_blank' }, 'Open SciFinder-n'));
+      note.style.display = '';
+      if (token != null) api.cancel(token);
+      seq++;
+      candidates = []; render(); status.textContent = '';
+      input.disabled = true;
+      return;
+    }
+    input.disabled = false;
+    note.style.display = 'none';
+    input.focus();
+    if (input.value.trim()) search();
+  }
+
+  const sourceBadge = (c) => h('span.src-badge.src-' + c.source, { title: c.sourceNote || c.sourceName }, c.source === 'drugbank' ? 'DrugBank · via PubChem' : c.sourceName);
   const render = () => {
     clear(results);
     candidates.forEach((c, i) => {
-      const thumb = c.thumbnailB64 ? h('img', { src: `data:image/png;base64,${c.thumbnailB64}`, alt: '' }) : h('div.thumb');
+      const mime = c.thumbnailMIME || 'image/png';
+      const thumb = c.thumbnailB64 ? h('img', { src: `data:${mime};base64,${c.thumbnailB64}`, alt: '' }) : h('div.thumb', {}, c.isMacromolecule ? 'no image' : '');
+      const ids = c.source === 'pubchem' || c.source === 'drugbank'
+        ? [c.formula, c.molecularWeight ? `${Number(c.molecularWeight).toFixed(2)} g/mol` : null, c.cid ? `CID ${c.cid}` : null, c.casNumber ? `CAS ${c.casNumber}` : null, c.drugBankID && c.source !== 'drugbank' ? c.drugBankID : null]
+        : c.source === 'pdb' ? [`PDB ${c.identifier}`]
+          : [c.formula, c.molecularWeight ? `${Number(c.molecularWeight).toFixed(2)} g/mol` : null];
+      const link = c.webURL ? h('a.weblink', { href: c.webURL, target: '_blank', title: c.webURL, onclick: (e) => e.stopPropagation() }, 'web page ↗') : null;
       results.append(h('div.cand' + (i === chosen ? '.on' : ''), { onclick: () => { chosen = i; render(); }, ondblclick: () => { chosen = i; use('open'); } }, thumb,
-        h('div.meta', {}, h('b', {}, c.title || c.iupacName || `CID ${c.cid}`), h('div', {}, [c.formula, c.molecularWeight ? `${Number(c.molecularWeight).toFixed(2)} g/mol` : null, `CID ${c.cid}`, c.casNumber ? `CAS ${c.casNumber}` : null].filter(Boolean).join(' · ')),
-          c.iupacName ? h('div.syn', { title: c.iupacName }, c.iupacName) : null,
+        h('div.meta', {},
+          h('div.cand-head', {}, h('b', { title: c.title }, c.title || c.iupacName || c.identifier), sourceBadge(c), link),
+          h('div', {}, ids.filter(Boolean).join(' · ')),
+          ...(c.details || []).map((d) => h('div.syn', { title: d }, d)),
+          c.iupacName && c.source !== 'pdb' ? h('div.syn', { title: c.iupacName }, c.iupacName) : null,
           c.canonicalSMILES ? h('div.syn', { title: c.canonicalSMILES, style: { fontFamily: 'var(--mono)' } }, c.canonicalSMILES) : null,
           (c.synonyms || []).length ? h('div.syn', { title: c.synonyms.join(', ') }, c.synonyms.slice(0, 6).join(', ')) : null)));
     });
-    for (const b of [btnOpen, btnInsert, btnSketch]) b.disabled = !candidates.length;
+    const c = candidates[chosen];
+    for (const b of [btnOpen, btnInsert, btnSketch]) b.disabled = !c;
+    btnInsert.title = c && c.isMacromolecule ? 'Adds every atom of the entry to the current document (without residue information)' : '';
   };
   const search = async () => {
     const q = input.value.trim();
-    if (!q) { candidates = []; render(); status.textContent = ''; return; }
+    if (!q || source === 'scifinder') { candidates = []; render(); status.textContent = ''; return; }
     if (token != null) api.cancel(token);
     const my = ++seq;
-    status.innerHTML = '<span class="spinner" style="display:inline-block;vertical-align:middle;margin-right:6px"></span>Searching…';
+    status.innerHTML = '<span class="spinner" style="display:inline-block;vertical-align:middle;margin-right:6px"></span>Searching ' + escapeHTML(LOOKUP_SOURCES.find((s) => s.id === source).name) + '…';
     try {
-      const r = await request('lookup.suggest', { query: q, limit: 8 }, { cancellable: true, onToken: (t) => { token = t; } });
+      const r = await request('lookup.suggest', { query: q, limit: 8, source }, { cancellable: true, onToken: (t) => { token = t; } });
       if (my !== seq) return;
       candidates = r.candidates || []; chosen = 0;
-      status.textContent = r.error ? r.error : candidates.length ? `${candidates.length} match${candidates.length > 1 ? 'es' : ''}` : 'No matches';
+      const n = candidates.length;
+      const kinds = [...new Set(candidates.map((c) => c.sourceName))];
+      let s = r.error ? (r.errorCode === 'offline' ? 'You appear to be offline.' : r.errorCode === 'timeout' ? 'The database did not answer in time. Try again, or pick another source.' : r.error)
+        : n ? `${n} match${n > 1 ? 'es' : ''}${source === 'auto' && kinds.length ? ' · ' + kinds.join(', ') : ''}` : 'No matches';
+      if (r.notice) s += ' · ' + r.notice;
+      status.textContent = s;
       render();
     } catch (e) { if (my === seq && e.code !== 'cancelled') status.textContent = e.code === 'offline' ? 'You appear to be offline.' : e.message; }
   };
-  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 350); });
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 450); });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { clearTimeout(timer); if (candidates.length) use('open'); else search(); }
     if (e.key === 'ArrowDown' && candidates.length) { e.preventDefault(); chosen = Math.min(candidates.length - 1, chosen + 1); render(); }
     if (e.key === 'ArrowUp' && candidates.length) { e.preventDefault(); chosen = Math.max(0, chosen - 1); render(); }
   });
+  setSource(source);
+  // For the smoke test: drive the dialog without synthesising key events.
+  m.lookup = { setSource: (v) => { sourceSel.setValue(v); setSource(v); }, search: (q) => { input.value = q; return search(); }, use: (how, i = 0) => { chosen = i; return use(how); } };
+  app.lookupDialog = m;
+
   async function use(how) {
     const c = candidates[chosen]; if (!c) return;
-    status.textContent = 'Downloading the 3D structure…';
+    for (const b of [btnOpen, btnInsert, btnSketch]) b.disabled = true;
     try {
-      const mol = await request('lookup.structure', { cid: c.cid });
+      if (c.isMacromolecule && c.source === 'pdb' && how === 'open') {
+        // Download the entry (.pdb, or .cif for large structures) and open it as a file: cartoon, chains, assemblies.
+        status.textContent = `Downloading ${c.identifier} from the RCSB PDB…`;
+        const f = await request('lookup.download', { id: c.id });
+        m.close();
+        await app.openPath(f.path);
+        return;
+      }
+      status.textContent = c.source === 'pdb' ? `Downloading ${c.identifier}…` : 'Downloading the 3D structure…';
+      const mol = await request('lookup.structure', { id: c.id, title: c.title });
       if (!mol.title) mol.title = c.title || '';
       m.close();
       if (how === 'open') {
         await app.newDocument();
         await app.edit({ type: 'replaceMolecule', molecule: mol });
-        app.active.name = c.title || `CID ${c.cid}`; app.emit('docs', app.docs, app.active);
+        app.active.name = c.title || c.identifier; app.emit('docs', app.docs, app.active);
         app.viewport.fit();
       } else if (how === 'replace') {
         await app.edit({ type: 'replaceMolecule', molecule: mol }); app.viewport.fit();
@@ -74,8 +155,35 @@ export function openLookup(app) {
         const merged = { ...cur, atoms: [...cur.atoms, ...mol.atoms.map((a) => ({ ...a, pos: [a.pos[0] + dx, a.pos[1], a.pos[2]] }))], bonds: [...cur.bonds, ...mol.bonds.map((b) => ({ ...b, a: b.a + off, b: b.b + off }))] };
         await app.edit({ type: 'replaceMolecule', molecule: merged }); app.viewport.fit();
       }
-    } catch (e) { status.textContent = e.message; }
+    } catch (e) {
+      status.textContent = e.code === 'offline' ? 'You appear to be offline.' : e.message;
+      render();
+    }
   }
+}
+
+/** Smoke test (VIBEVIEW_SMOKE_LOOKUP="source|query|how", how = show|open|insert|replace; several joined by ";;"). */
+export async function smokeLookup(app, spec, log) {
+  let ok = true;
+  for (const one of spec.split(';;')) {
+    const [source, query, how = 'show'] = one.split('|');
+    openLookup(app);
+    const dlg = app.lookupDialog;
+    dlg.lookup.setSource(source);
+    await dlg.lookup.search(query);
+    const items = [...document.querySelectorAll('.lookup-results .cand')];
+    const status = document.querySelector('.lookup-status')?.textContent || '';
+    log(`lookup ${source} "${query}": ${items.length} candidates; ${status}; first: ${items[0]?.querySelector('b')?.textContent || '-'}; thumbs ${document.querySelectorAll('.lookup-results img').length}`);
+    if (source === 'scifinder') { ok = ok && !!document.querySelector('.lookup-note')?.textContent.includes('CAS'); if (how !== 'show') dlg.close(); continue; }
+    if (!items.length) { ok = false; dlg.close(); continue; }
+    if (how === 'show') continue;   // leave the dialog open for the screenshot
+    const before = app.docs.length;
+    await dlg.lookup.use(how, 0);
+    const d = app.active;
+    log(`  ${how}: docs ${before} -> ${app.docs.length}, active "${d?.name}" ${d?.molecule.atoms.length} atoms, format ${d?.summary.format}`);
+    ok = ok && !!d && d.molecule.atoms.length > 0;
+  }
+  return { ok };
 }
 
 // ---------- Calculation setup ----------

@@ -101,15 +101,15 @@ final class ProgramPaths: @unchecked Sendable {
         let fm = FileManager.default
         var roots = ["C:\\", env["ProgramFiles"] ?? "C:\\Program Files", env["LOCALAPPDATA"].map { $0 + "\\Programs" } ?? ""]
         roots = roots.filter { !$0.isEmpty }
-        let prefix: String
+        let prefixes: [String]
         switch p {
-        case .orca: prefix = "orca"
-        case .gaussian: prefix = "g16"
-        case .qchem: prefix = "qchem"
-        case .xtb: prefix = "xtb"
+        case .orca: prefixes = ["orca"]
+        case .gaussian: prefixes = ["g16", "g09"]   // C:\G16W, C:\G09W
+        case .qchem: prefixes = ["qchem"]
+        case .xtb: prefixes = ["xtb"]
         }
         for r in roots {
-            let names = ((try? fm.contentsOfDirectory(atPath: r)) ?? []).filter { $0.lowercased().hasPrefix(prefix) }
+            let names = ((try? fm.contentsOfDirectory(atPath: r)) ?? []).filter { n in prefixes.contains { n.lowercased().hasPrefix($0) } }
                 .sorted { $0.compare($1, options: .numeric) == .orderedDescending }
             for n in names {
                 let base = (r as NSString).appendingPathComponent(n)
@@ -128,6 +128,18 @@ final class ProgramPaths: @unchecked Sendable {
         return dirs
     }
     #endif
+
+    /// Adapting inputs to the located Gaussian is off in the self-test, which checks the writer rather than the Gaussian installed on the machine.
+    nonisolated(unsafe) static var adaptToInstalledGaussian = true
+
+    /// What the located Gaussian can do (32-bit memory limit, G09 before rev. D.01); nil when none is found or adaptation is off.
+    func gaussianProfile() -> GaussianInstallProfile? {
+        guard Self.adaptToInstalledGaussian else { return nil }
+        guard let exe = locate(.gaussian) else { return nil }
+        let info = ExecutableInfo.read(exe)
+        return GaussianInstallProfile.detect(executableName: exe.lastPathComponent, is32Bit: info?.is32Bit ?? false,
+                                             linkYear: info?.linkYear)
+    }
 
     func json() -> JSON {
         var o: [String: JSON] = [:]
@@ -252,21 +264,58 @@ extension Engine {
         return s
     }
 
+    /// Adapts a Gaussian spec to the installed program (GaussianInstallProfile.adapt): a %mem that a 32-bit build can't
+    /// allocate (G09W stops right after Link 1, so the job "has no atoms") is lowered; builds before G09 D.01 get the
+    /// older Ahlrichs basis names for def2 and no EmpiricalDispersion (both are syntax errors there). One note per change.
+    static func adaptGaussian(_ spec: inout CalcSpec, profile: GaussianInstallProfile?) -> [String] {
+        guard spec.program == .gaussian, let p = profile else { return [] }
+        return p.adapt(&spec)
+    }
+
+    static func issuesJSON(_ issues: [InputIssue]) -> JSON {
+        .array(issues.map { obj(["severity": $0.severity.rawValue, "line": $0.line, "message": $0.message, "fixable": $0.fixable]) })
+    }
+
+    static func profileJSON(_ p: GaussianInstallProfile?) -> JSON {
+        guard let p else { return .null }
+        return obj(["name": p.name, "maxMemoryMB": p.maxMemoryMB, "hasDef2AndGD3": p.hasDef2AndGD3])
+    }
+
     func calcPreview(_ p: Params) async throws -> JSON {
         let d = try await store.get(try p.docId())
-        let spec = try Engine.calcSpec(try p.object("spec"), molecule: d.molecule)
+        var spec = try Engine.calcSpec(try p.object("spec"), molecule: d.molecule)
         let errors = spec.validationErrors()
-        guard errors.isEmpty else { return obj(["input": "", "errors": errors, "files": [String](), "commandLine": ""]) }
+        guard errors.isEmpty else {
+            return obj(["input": "", "errors": errors, "files": [String](), "commandLine": "", "warnings": [String](), "check": JSON.array([])])
+        }
+        let profile = spec.program == .gaussian ? programs.gaussianProfile() : nil
+        var warnings = Engine.adaptGaussian(&spec, profile: profile)
         let plan = try CalcJobPlanner.plan(spec, baseName: p.optString("baseName") ?? "job")
         // The command line names the executable that calc.run will start (g09 vs g16, a configured path, …).
         let exe = programs.locate(spec.program)
+        let issues = spec.program == .gaussian ? GaussianInputCheck.check(plan.inputText, profile: profile) : []
+        warnings += issues.map(\.message)
         return obj([
             "input": plan.inputText, "errors": [String](), "files": plan.files.map(\.name),
             "fileContents": JSON.array(plan.files.map { obj(["name": $0.name, "contents": $0.contents]) }),
             "commandLine": Engine.commandLine(plan, executable: exe.map(ProgramPaths.nativePath)), "outputFile": plan.outputFileName,
             "executable": exe.map(ProgramPaths.nativePath),
+            "warnings": warnings, "check": Engine.issuesJSON(issues), "gaussian": Engine.profileJSON(profile),
         ])
     }
+
+    /// `calc.checkInput {program, text}`: structural check of an (edited) input file against the installed program.
+    func calcCheckInput(_ p: Params) async throws -> JSON {
+        let name = p.optString("program") ?? "gaussian"
+        guard let prog = QCProgram(rawValue: name) else { throw RPCError.badRequest("unknown program '\(name)'") }
+        let text = try p.string("text")
+        guard prog == .gaussian else { return obj(["issues": JSON.array([]), "repaired": JSON.null, "fixes": [String](), "gaussian": JSON.null]) }
+        let profile = programs.gaussianProfile()
+        let issues = GaussianInputCheck.check(text, profile: profile)
+        let r = issues.contains(where: \.fixable) ? GaussianInputCheck.repair(text, profile: profile) : nil
+        return obj(["issues": Engine.issuesJSON(issues), "repaired": r?.text, "fixes": r?.fixes ?? [], "gaussian": Engine.profileJSON(profile)])
+    }
+
 
     /// Default job folder: ~/VibeView Jobs/<prefix>-<timestamp>.
     static func defaultJobDirectory(prefix: String) -> URL {
@@ -313,16 +362,31 @@ extension Engine {
     func calcRun(_ p: Params) async throws -> JSON {
         let docId = try p.docId()
         let d = try await store.get(docId)
-        let spec = try Engine.calcSpec(try p.object("spec"), molecule: d.molecule)
+        var spec = try Engine.calcSpec(try p.object("spec"), molecule: d.molecule)
         let errors = spec.validationErrors()
         guard errors.isEmpty else { throw RPCError.badRequest(errors.joined(separator: "; ")) }
+        let profile = spec.program == .gaussian ? programs.gaussianProfile() : nil
+        var warnings = Engine.adaptGaussian(&spec, profile: profile)
         var plan0 = try CalcJobPlanner.plan(spec, baseName: p.optString("baseName") ?? "job")
         // `inputText`: the input file as the user edited it in the setup dialog; written verbatim instead of the generated one.
+        // A Gaussian input gets the safe repairs of GaussianInputCheck (missing title section, missing blank line after a
+        // section or at the end, %mem above a 32-bit build's limit), which are listed in `repairs`.
         let editedText = p.optString("inputText")
+        var repairs: [String] = []
+        var inputIssues: [InputIssue] = []
         if let text = editedText {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw RPCError.badRequest("inputText is empty") }
-            plan0.files[0].contents = text.hasSuffix("\n") ? text : text + "\n"
+            var t = text
+            if spec.program == .gaussian {
+                (t, repairs) = GaussianInputCheck.repair(text, profile: profile)
+                inputIssues = GaussianInputCheck.check(t, profile: profile)
+            }
+            plan0.files[0].contents = t.hasSuffix("\n") ? t : t + "\n"
+        } else if spec.program == .gaussian {
+            inputIssues = GaussianInputCheck.check(plan0.inputText, profile: profile)
         }
+        if editedText != nil { warnings = [] }   // the edited text has its own %mem (checked below)
+        warnings += repairs.map { "Fixed: " + $0 } + inputIssues.map(\.message)
         let plan = plan0
         guard let exe = programs.locate(spec.program) else {
             throw RPCError.notInstalled("\(spec.program.displayName) was not found. Set its path in Settings (calc.setProgramPath) or add it to PATH.")
@@ -336,10 +400,11 @@ extension Engine {
         for (k, v) in plan.environment { env[k] = v }
         if spec.program == .gaussian {
             if (env["GAUSS_EXEDIR"] ?? "").isEmpty { env["GAUSS_EXEDIR"] = ProgramPaths.nativePath(exe.deletingLastPathComponent()) }
-            if (env["GAUSS_SCRDIR"] ?? "").isEmpty { env["GAUSS_SCRDIR"] = dir.path }
+            if (env["GAUSS_SCRDIR"] ?? "").isEmpty { env["GAUSS_SCRDIR"] = ProgramPaths.nativePath(dir) }
         }
         let jobId = await jobs.newId()
         let cmd = Engine.commandLine(plan, executable: ProgramPaths.nativePath(exe))
+        let notes = warnings
         await jobs.add(jobId, .init(kind: "calc", docId: docId, directory: dir.path, task: nil, status: "running", commandLine: cmd))
         let env2 = env
         // Capture only what the job needs: EngineDocument holds CalculationResult (inline SIMD3 dipole), which must
@@ -348,6 +413,7 @@ extension Engine {
         let gate = ResponseGate.current
         let task = Task.detached { [self] in
             await gate?.wait()
+            for n in notes { self.notify("job.log", obj(["jobId": jobId, "stream": "stderr", "file": JSON.null, "line": "VibeView: " + n])) }
             let handle = ProgramRunner.stream(executable: exe, arguments: plan.arguments, workingDirectory: dir, environment: env2,
                                               stdin: nil, timeout: nil, throwOnFailure: false,
                                               tailFiles: plan.captureStdout ? [] : CalcJobResults.outputFileCandidates(plan),
@@ -391,6 +457,15 @@ extension Engine {
                 if errorText == nil { errorText = "could not read results: \(RPCError.from(error).message)" }
             }
             let ok = !cancelled && exitCode == 0 && normal && errorText == nil
+            // Gaussian's own reason ("End of file in ZSymb", "stopped right after Link 1", …) instead of "no atoms".
+            if !ok, !cancelled, spec.program == .gaussian,
+               let out = CalcJobResults.resolvedOutputFileName(plan, directory: dir),
+               let text = try? String(contentsOf: dir.appendingPathComponent(out), encoding: .utf8),
+               let reason = GaussianInputCheck.failureReason(output: text) {
+                // "could not read results: … no atoms" only repeats that Gaussian stopped early.
+                let keep = errorText.flatMap { $0.hasPrefix("could not read results") ? nil : $0 }
+                errorText = "Gaussian: " + reason + (keep.map { " — " + $0 } ?? "")
+            }
             await self.jobs.setStatus(jobId, cancelled ? "cancelled" : (ok ? "finished" : "failed"))
             if !ok, errorText == nil { errorText = exitCode == 0 ? "the program did not terminate normally" : "exit code \(exitCode)" }
             self.notify("job.finished", obj([
@@ -401,7 +476,8 @@ extension Engine {
         }
         await jobs.setTask(jobId, task)
         return obj(["jobId": jobId, "directory": dir.path, "commandLine": cmd, "inputFile": plan.inputFileName,
-                    "outputFile": plan.outputFileName])
+                    "outputFile": plan.outputFileName, "warnings": warnings, "repairs": repairs,
+                    "check": Engine.issuesJSON(inputIssues)])
     }
 
     func calcCancel(_ p: Params) async throws -> JSON {

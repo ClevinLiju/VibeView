@@ -77,9 +77,12 @@ public enum CalcJobPlanner {
             var s = spec
             if s.checkpointName == nil { s.checkpointName = baseName }
             let inp = baseName + ".gjf"
+            // The output file is named on the command line: without it the Windows builds (G09W/G16W) pass the absolute
+            // output path to l1.exe unquoted, and l1 stops at once (no output past the header) when the job folder has a
+            // space in its path ("VibeView Jobs"). `g16 in out` / `g09 in out` work the same on Unix.
             return CalcJobPlan(program: .gaussian, baseName: baseName,
                                files: [CalcJobFile(name: inp, contents: GaussianJob(spec: s).inputText)],
-                               executableName: "g16", arguments: [inp], environment: [:], captureStdout: false,
+                               executableName: "g16", arguments: [inp, baseName + ".log"], environment: [:], captureStdout: false,
                                outputFileName: baseName + ".log", companionFileNames: [baseName + ".fchk"])
         case .xtb:
             let xyz = baseName + ".xyz"

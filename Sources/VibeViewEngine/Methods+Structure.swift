@@ -56,28 +56,49 @@ enum SecondaryStructure {
         var waters: [Int] = []
         var ranges: [FileRange] = []
         var residueSource = "topology"
+        var atomChainID = [String?](repeating: nil, count: m.atoms.count)
+        var orphanAtoms: [Int] = []
+        var assembly: PDBAssembly? = nil
         if let path = pdbPath, let parsed = PDBCache.shared.get(path) {
             ranges = parsed.ranges
+            assembly = parsed.assemblies.first
             if !parsed.models.isEmpty {
-                (residues, waters) = fromRecords(m, records: parsed.models[min(model, parsed.models.count - 1)])
+                (residues, waters, atomChainID, orphanAtoms) = fromRecords(m, records: parsed.models[min(model, parsed.models.count - 1)])
                 if !residues.isEmpty { residueSource = "file" }
             }
         }
         if cancelled() { return nil }
-        if residues.isEmpty { residues = fromTopology(m) }
+        if residues.isEmpty {
+            residues = fromTopology(m)
+            for r in residues { for a in r.atoms { atomChainID[a] = r.chain } }
+        }
         if cancelled() { return nil }
 
-        // Continuous backbone segments (peptide C–N bond length) and chain breaks.
+        // Peptide links: C(i)–N(i+1) bond length, or CA–CA distance when a residue lacks its N or C.
+        func linked(_ a: Residue, _ b: Residue) -> Bool {
+            guard a.chain == b.chain else { return false }
+            if a.c >= 0 && b.n >= 0 { return simd_distance(m.atoms[a.c].position, m.atoms[b.n].position) < 2.0 }
+            return simd_distance(m.atoms[a.ca].position, m.atoms[b.ca].position) < 4.3
+        }
+        // Polymer residues: standard amino acids, plus anything peptide-linked to a neighbour (modified residues such as
+        // MSE, also when written as HETATM). A lone non-standard group with N/CA/C names is a ligand.
+        if residueSource == "file" {
+            let n = residues.count
+            var keep = [Bool](repeating: false, count: n)
+            for r in 0..<n {
+                if PDBResidueBondOrders.standardResidues.contains(residues[r].name.uppercased()) { keep[r] = true }
+                if r > 0 && linked(residues[r - 1], residues[r]) { keep[r] = true; keep[r - 1] = true }
+            }
+            residues = residues.indices.filter { keep[$0] }.map { residues[$0] }
+        }
+
+        // Continuous backbone segments and chain breaks.
         let R = residues.count
         var segment = [Int](repeating: 0, count: R)
         var segments: [[Int]] = []
         var start = 0
         for r in 0..<R {
-            if r > 0 {
-                let a = residues[r - 1], b = residues[r]
-                let linked = a.chain == b.chain && simd_distance(m.atoms[a.c].position, m.atoms[b.n].position) < 2.0
-                if !linked { segments.append([start, r]); start = r }
-            }
+            if r > 0 && !linked(residues[r - 1], residues[r]) { segments.append([start, r]); start = r }
             segment[r] = segments.count
         }
         if R > 0 { segments.append([start, R]) }
@@ -98,6 +119,7 @@ enum SecondaryStructure {
         // Atoms covered by the cartoon: residue atoms plus hydrogens bonded to them that have no record.
         var polymer = [Bool](repeating: false, count: m.atoms.count)
         for r in residues { for a in r.atoms { polymer[a] = true } }
+        if !residues.isEmpty { for a in orphanAtoms { polymer[a] = true } }
         var isWater = [Bool](repeating: false, count: m.atoms.count)
         for w in waters { isWater[w] = true }
         for b in m.bonds where b.a < m.atoms.count && b.b < m.atoms.count {
@@ -117,8 +139,28 @@ enum SecondaryStructure {
             if s == "E" && prev != "E" { strands += 1 }
         }
 
+        // Chain of every atom (index into "chains", -1 when unknown), for chain colouring of ligands and assemblies.
+        var chainNames: [String] = [], chainIndex: [String: Int] = [:]
+        for r in residues where chainIndex[r.chain] == nil { chainIndex[r.chain] = chainNames.count; chainNames.append(r.chain) }
+        for c in atomChainID { if let c = c, chainIndex[c] == nil { chainIndex[c] = chainNames.count; chainNames.append(c) } }
+        let atomChain = atomChainID.map { c in c.flatMap { chainIndex[$0] } ?? -1 }
+        // Biological assembly 1 (REMARK 350), only when the residues come from the same file.
+        var assemblyJSON: JSON = .null
+        if let a = assembly, residueSource == "file", a.chains.contains(where: { chainIndex[$0] != nil }) {
+            assemblyJSON = obj([
+                "id": a.id,
+                "chains": a.chains,
+                "parts": JSON.array(a.parts.map { p in
+                    obj(["chains": p.chains, "operators": JSON.array(p.operators.map { .array($0.map { .number($0) }) })])
+                }),
+            ])
+        }
+
         return obj([
             "atomCount": m.atoms.count,
+            "chains": chainNames,
+            "atomChain": atomChain,
+            "assembly": assemblyJSON,
             "residueCount": R,
             "residueSource": residueSource,
             "source": ssSource,
@@ -179,7 +221,7 @@ enum SecondaryStructure {
         return models
     }
 
-    static func fromRecords(_ m: Molecule, records: [AtomRecord]) -> ([Residue], [Int]) {
+    static func fromRecords(_ m: Molecule, records: [AtomRecord]) -> ([Residue], [Int], [String?], [Int]) {
         var byPos: [Int64: Int] = [:]
         byPos.reserveCapacity(records.count)
         for (k, a) in records.enumerated() { byPos[posKey(a.position)] = k }
@@ -197,19 +239,21 @@ enum SecondaryStructure {
         var groups = [Residue?](repeating: nil, count: records.isEmpty ? 0 : runs + 1)
         var names = [[String]](repeating: [], count: groups.count)
         var waters: [Int] = []
+        var atomChain = [String?](repeating: nil, count: m.atoms.count)
         for (i, a) in m.atoms.enumerated() {
             guard let k = byPos[posKey(a.position)] else { continue }
             let rec = records[k]
+            atomChain[i] = rec.chainID
             if waterNames.contains(rec.resName.uppercased()) { waters.append(i); continue }
             let g = run[k]
             if groups[g] == nil {
                 groups[g] = Residue(chain: rec.chainID, seq: rec.resSeq, iCode: rec.iCode, name: rec.resName)
                 groups[g]!.isProline = rec.resName.uppercased() == "PRO"
             }
-            // First alternate location of each atom name wins.
+            // A repeated atom name (alternate locations kept in the document) belongs to the residue but not to the backbone.
+            groups[g]!.atoms.append(i)
             if names[g].contains(rec.name) { continue }
             names[g].append(rec.name)
-            groups[g]!.atoms.append(i)
             switch rec.name {
             case "N": groups[g]!.n = i
             case "CA" where a.atomicNumber == 6: groups[g]!.ca = i
@@ -219,8 +263,12 @@ enum SecondaryStructure {
             default: break
             }
         }
-        let residues = groups.compactMap { $0 }.filter { $0.n >= 0 && $0.ca >= 0 && $0.c >= 0 }
-        return (residues, waters)
+        // A CA plus N or C is enough to place the residue on the trace (truncated or partly disordered backbones).
+        let all = groups.compactMap { $0 }
+        let placed = { (r: Residue) in r.ca >= 0 && (r.n >= 0 || r.c >= 0) }
+        // Fragments of standard residues that cannot be placed (e.g. only C and O resolved) still belong to the polymer.
+        let orphans = all.filter { !placed($0) && PDBResidueBondOrders.standardResidues.contains($0.name.uppercased()) }.flatMap { $0.atoms }
+        return (all.filter(placed), waters, atomChain, orphans)
     }
 
     // MARK: Residues from the bond graph
@@ -358,9 +406,9 @@ enum SecondaryStructure {
         // Amide H: the file's H, else placed 1.0 Å from N opposite the previous carbonyl (DSSP).
         var hPos = [Vec3?](repeating: nil, count: R)
         for r in 0..<R {
-            if res[r].isProline { continue }
+            if res[r].isProline || res[r].n < 0 { continue }
             if res[r].h >= 0 { hPos[r] = P[res[r].h]; continue }
-            guard r > 0, segment[r - 1] == segment[r], res[r - 1].o >= 0 else { continue }
+            guard r > 0, segment[r - 1] == segment[r], res[r - 1].o >= 0, res[r - 1].c >= 0 else { continue }
             let d = P[res[r - 1].c] - P[res[r - 1].o]
             let len = simd_length(d)
             if len > 1e-6 { hPos[r] = P[res[r].n] + d / len }
@@ -373,7 +421,7 @@ enum SecondaryStructure {
             guard let H = hPos[j] else { continue }
             let N = P[res[j].n]
             near(j, 9.0) { i in
-                guard abs(i - j) >= 2 || segment[i] != segment[j], res[i].o >= 0 else { return }
+                guard abs(i - j) >= 2 || segment[i] != segment[j], res[i].o >= 0, res[i].c >= 0 else { return }
                 let C = P[res[i].c], O = P[res[i].o]
                 let on2 = dist2(O, N)
                 guard on2 < 30.25 else { return }   // O···N > 5.5 Å can't reach -0.5 kcal/mol
@@ -466,7 +514,10 @@ enum SecondaryStructure {
 /// Parsed PDB files by path (invalidated by size/modification date), so repeated requests don't re-read the file.
 final class PDBCache: @unchecked Sendable {
     static let shared = PDBCache()
-    struct Entry { var stamp: String; var models: [[SecondaryStructure.AtomRecord]]; var ranges: [SecondaryStructure.FileRange] }
+    struct Entry {
+        var stamp: String; var models: [[SecondaryStructure.AtomRecord]]; var ranges: [SecondaryStructure.FileRange]
+        var assemblies: [PDBAssembly] = []
+    }
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private var order: [String] = []
@@ -479,7 +530,25 @@ final class PDBCache: @unchecked Sendable {
         lock.unlock()
         guard let data = FileManager.default.contents(atPath: path) else { return nil }
         let text = String(decoding: data, as: UTF8.self)
-        let e = Entry(stamp: stamp, models: SecondaryStructure.readAtomRecords(text), ranges: SecondaryStructure.parseRanges(text))
+        let e: Entry
+        if MMCIFFormat.looksLikeMMCIF(text) {
+            // PDBx/mmCIF: the same records, helices/strands and assemblies, from MMCIFFormat.
+            guard let f = try? MMCIFFormat.parse(text) else { return nil }
+            let models = zip(f.pdb.models, f.pdb.atomRecords).map { m, recs in
+                zip(m.atoms, recs).map { a, r in
+                    SecondaryStructure.AtomRecord(name: r.name, resName: r.resName, chainID: r.chainID, resSeq: r.resSeq,
+                                                  iCode: r.iCode, position: a.position)
+                }
+            }
+            let ranges = f.secondary.map {
+                SecondaryStructure.FileRange(chain: $0.chain, startSeq: $0.startSeq, startICode: $0.startICode, endSeq: $0.endSeq,
+                                             endICode: $0.endICode, ss: Character($0.kind))
+            }
+            e = Entry(stamp: stamp, models: models, ranges: ranges, assemblies: f.pdb.assemblies)
+        } else {
+            e = Entry(stamp: stamp, models: SecondaryStructure.readAtomRecords(text), ranges: SecondaryStructure.parseRanges(text),
+                      assemblies: PDBFormat.parseAssemblies(text))
+        }
         lock.lock()
         entries[path] = e
         order.removeAll { $0 == path }

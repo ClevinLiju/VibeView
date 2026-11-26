@@ -8,8 +8,10 @@ import MolIO
 public enum LookupMatchKind: String, Sendable, Hashable { case exact, ambiguous, spellingSuggestion, cas, smiles, cid }
 
 public struct LookupCandidate: Sendable, Identifiable, Hashable {
+    /// PubChem compound ID (0 for candidates from other sources).
     public var cid: Int
-    public var id: Int { cid }
+    /// "pubchem:2244", "pdb:1CRN", "chembl:CHEMBL25", "drugbank:DB00945", "cactus:aspirin".
+    public var id: String { source.rawValue + ":" + identifier }
     public var title: String
     public var iupacName: String?
     public var formula: String?
@@ -21,14 +23,36 @@ public struct LookupCandidate: Sendable, Identifiable, Hashable {
     public var thumbnail: Data?
     public var matchKind: LookupMatchKind
     public var matchedQuery: String
+    /// Where the candidate (and its structure) comes from.
+    public var source: LookupSource = .pubchem
+    /// The source's identifier: CID, PDB ID, ChEMBL ID, DrugBank ID, or the resolved query (CACTUS).
+    public var identifier: String = ""
+    /// MIME type of `thumbnail` ("image/png", "image/jpeg", "image/svg+xml").
+    public var thumbnailMIME: String = "image/png"
+    /// Extra lines for the candidate list ("X-ray diffraction, 1.5 Å", "Homo sapiens", "max phase 4").
+    public var details: [String] = []
+    /// The entry's web page.
+    public var webURL: URL? = nil
+    /// DrugBank / ChEMBL IDs found in PubChem's synonyms.
+    public var drugBankID: String? = nil
+    public var chemblID: String? = nil
+    /// How the record was obtained, when it isn't the source's own API ("DrugBank ID resolved through PubChem").
+    public var sourceNote: String? = nil
+    /// Proteins / nucleic acids (opened as a PDB or mmCIF document).
+    public var isMacromolecule: Bool = false
+    /// ChEMBL: the record's molfile and InChIKey (the structure is fetched from these).
+    public var molfile: String? = nil
+    public var inchiKey: String? = nil
 
     public init(cid: Int, title: String, iupacName: String? = nil, formula: String? = nil, molecularWeight: Double? = nil,
                 canonicalSMILES: String? = nil, synonyms: [String] = [], casNumber: String? = nil, depictionURL: URL,
-                thumbnail: Data? = nil, matchKind: LookupMatchKind, matchedQuery: String) {
+                thumbnail: Data? = nil, matchKind: LookupMatchKind, matchedQuery: String,
+                source: LookupSource = .pubchem, identifier: String? = nil) {
         self.cid = cid; self.title = title; self.iupacName = iupacName; self.formula = formula
         self.molecularWeight = molecularWeight; self.canonicalSMILES = canonicalSMILES; self.synonyms = synonyms
         self.casNumber = casNumber; self.depictionURL = depictionURL; self.thumbnail = thumbnail
         self.matchKind = matchKind; self.matchedQuery = matchedQuery
+        self.source = source; self.identifier = identifier ?? String(cid)
     }
 }
 
@@ -351,11 +375,15 @@ public actor NameLookup {
             for cid in missing {
                 let p = pmap[cid]
                 let syn = smap[cid] ?? []
-                built[cid] = LookupCandidate(
+                var c = LookupCandidate(
                     cid: cid, title: p?.title ?? p?.iupacName ?? "CID \(cid)", iupacName: p?.iupacName, formula: p?.formula,
                     molecularWeight: p?.molecularWeight, canonicalSMILES: p?.smiles, synonyms: Array(syn.prefix(5)),
                     casNumber: syn.first(where: CASNumber.isValid), depictionURL: depiction(cid), thumbnail: nil,
                     matchKind: .exact, matchedQuery: "")
+                c.drugBankID = syn.first(where: LookupSourceGuess.isDrugBankID)
+                c.chemblID = syn.first(where: LookupSourceGuess.isChEMBLID)
+                c.webURL = URL(string: "https://pubchem.ncbi.nlm.nih.gov/compound/\(cid)")
+                built[cid] = c
             }
             let thumbs: [Int: Data] = await withTaskGroup(of: (Int, Data?).self) { group in
                 for cid in missing {

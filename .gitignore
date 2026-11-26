@@ -13,3 +13,6 @@ windows/engine/
 # Stray build leftovers at the repository root (a SwiftPM resource-bundle plist, an empty viewport.js).
 /Info.plist
 /viewport.js
+
+# local screenshots and scratch output from agents
+.scratch/

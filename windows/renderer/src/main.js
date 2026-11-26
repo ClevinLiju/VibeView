@@ -11,7 +11,8 @@ import { installCommands } from './commands.js';
 import { runSmokeExports } from './export.js';
 import { installCartoon } from './cartoon.js';
 import { smokeCalcDialog } from './calc-setup.js';
-import { buildMeasurePanel } from './measurepanel.js';
+import { smokeLookup } from './dialogs.js';
+import { buildMeasurePanel, smokeMeasure } from './measurepanel.js';
 import { smokeZMatrix } from './zmatrix.js';
 
 // Numbers always use a decimal point: a ',' typed or pasted into a number field becomes '.'.
@@ -65,7 +66,7 @@ async function start() {
   api.ready();
 }
 
-async function smokeTest(app, { files, tab, orbital, ui, view, console: consoleLine, exportSpec, dialog, zmatrix, build }) {
+async function smokeTest(app, { files, tab, orbital, ui, view, console: consoleLine, exportSpec, dialog, zmatrix, build, measure, lookup }) {
   const log = (s) => api.smokeLog(s);
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   let ok = true; let message = '';
@@ -90,6 +91,8 @@ async function smokeTest(app, { files, tab, orbital, ui, view, console: consoleL
     if (dialog) { const r = await smokeCalcDialog(app, dialog, log); ok = ok && r.ok; message += `dialog ${dialog.split(':')[0]} ${r.ok ? 'ok' : 'FAILED'}; `; }
     if (zmatrix) { const r = await smokeZMatrix(app, zmatrix, log); ok = ok && r.ok; message += `zmatrix ${r.ok ? 'ok' : 'FAILED'}; `; await wait(400); }
     if (build) { const r = await smokeBuild(app, build, log); ok = ok && r.ok; message += `build ${r.ok ? 'ok' : 'FAILED'}; `; await wait(600); }
+    if (measure) { const r = smokeMeasure(app, measure, log); ok = ok && r.ok; message += `measure ${r.ok ? 'ok' : 'FAILED'}; `; await wait(500); }
+    if (lookup) { const r = await smokeLookup(app, lookup, log); ok = ok && r.ok; message += `lookup ${r.ok ? 'ok' : 'FAILED'}; `; await wait(1500); }
     if (exportSpec) { const r = await runSmokeExports(app, exportSpec, log); ok = ok && r.ok; message += `exports ${r.count} ${r.ok ? 'ok' : 'FAILED'}; `; }
     app.viewport.dirty = true;
     await wait(300);

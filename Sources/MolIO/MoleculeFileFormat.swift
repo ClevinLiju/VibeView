@@ -14,7 +14,7 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         case .formattedCheckpoint: return ["fchk", "fch"]
         case .cube: return ["cube", "cub"]
         case .xyz: return ["xyz"]
-        case .pdb: return ["pdb", "ent"]
+        case .pdb: return ["pdb", "ent", "cif", "mmcif"]   // .cif/.mmcif: PDBx/mmCIF (MMCIFFormat)
         case .mol: return ["mol"]
         case .sdf: return ["sdf", "sd"]
         case .cml: return ["cml"]
@@ -118,6 +118,7 @@ public enum MoleculeFileFormat: String, CaseIterable, Sendable, Codable {
         }
         guard let firstIdx = lines.firstIndex(where: { !$0.allSatisfy({ $0 == " " || $0 == "\t" }) }) else { return nil }
         let first = lines[firstIdx].drop { $0 == " " || $0 == "\t" }
+        if first.lowercased().hasPrefix("data_") { return .pdb }   // PDBx/mmCIF, read by MMCIFFormat
         if first.hasPrefix("<?xml") || first.hasPrefix("<cml") || first.hasPrefix("<molecule") {
             if head.contains("<molecule") || head.contains("cml") { return .cml }
         }

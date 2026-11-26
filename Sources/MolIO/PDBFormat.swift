@@ -39,13 +39,42 @@ public struct PDBAtomRecord: Sendable, Codable, Equatable, Hashable {
     }
 }
 
+/// One biological assembly from REMARK 350 (or mmCIF pdbx_struct_assembly_gen): each part applies its operators to
+/// its chains. Operators are row-major 3x4 matrices [r11 r12 r13 t1 r21 r22 r23 t2 r31 r32 r33 t3] in Angstrom.
+public struct PDBAssembly: Sendable, Codable, Equatable, Hashable {
+    public struct Part: Sendable, Codable, Equatable, Hashable {
+        public var chains: [String]
+        public var operators: [[Double]]
+        public init(chains: [String], operators: [[Double]]) { self.chains = chains; self.operators = operators }
+    }
+    public var id: String
+    public var parts: [Part]
+    public init(id: String, parts: [Part]) { self.id = id; self.parts = parts }
+
+    public static let identity: [Double] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
+    public static func isIdentity(_ op: [Double]) -> Bool {
+        op.count == 12 && zip(op, identity).allSatisfy { abs($0 - $1) < 1e-4 }
+    }
+    /// Chains used by any part (order of first mention).
+    public var chains: [String] {
+        var seen = Set<String>(), out: [String] = []
+        for p in parts { for c in p.chains where seen.insert(c).inserted { out.append(c) } }
+        return out
+    }
+}
+
 public struct PDBFile: Sendable, Codable, Equatable {
     public var models: [Molecule]
     public var cell: PDBUnitCell?
     /// One array per model, parallel to `models[i].atoms`.
     public var atomRecords: [[PDBAtomRecord]]
-    public init(models: [Molecule] = [], cell: PDBUnitCell? = nil, atomRecords: [[PDBAtomRecord]] = []) {
-        self.models = models; self.cell = cell; self.atomRecords = atomRecords
+    /// Biological assemblies (REMARK 350), in file order.
+    public var assemblies: [PDBAssembly] = []
+    /// Atoms dropped because they belong to a less occupied alternate location (see `PDBFormat.parse`).
+    public var droppedAltLocAtoms = 0
+    public init(models: [Molecule] = [], cell: PDBUnitCell? = nil, atomRecords: [[PDBAtomRecord]] = [],
+                assemblies: [PDBAssembly] = []) {
+        self.models = models; self.cell = cell; self.atomRecords = atomRecords; self.assemblies = assemblies
     }
 }
 
@@ -56,12 +85,18 @@ public struct PDBFile: Sendable, Codable, Equatable {
 /// triple); across the two directions of a pair the larger multiplicity wins. The writer emits the
 /// neighbour once per unit of order (aromatic is written as single). Only 3 decimals of
 /// coordinate precision are stored in the format.
+///
+/// Alternate locations: by default one conformer per residue is kept (the altLoc label with the highest summed
+/// occupancy in that residue, ties to the label met first); atoms with a blank altLoc are always kept. Pass
+/// `keepAltLocs: true` to read every record.
 public enum PDBFormat {
     private static func fail(_ line: Int?, _ msg: String) -> MolIOError {
         .parse(format: "pdb", line: line, message: msg)
     }
 
-    public static func read(url: URL) throws -> PDBFile { try parse(try readText(url)) }
+    public static func read(url: URL, keepAltLocs: Bool = false) throws -> PDBFile {
+        try parse(try readText(url), keepAltLocs: keepAltLocs)
+    }
 
     // 1-based inclusive column slice, tolerant of short lines.
     private static func field(_ b: [UInt8], _ from: Int, _ to: Int) -> String {
@@ -103,8 +138,80 @@ public enum PDBFormat {
         return sign * (Int(digits) ?? (t.contains("+") || t.contains("-") ? 1 : 0))
     }
 
-    public static func parse(_ text: String) throws -> PDBFile {
+    /// Indices of the records to keep: blank altLoc always, else the residue's preferred altLoc label (highest summed
+    /// occupancy, ties to the label met first).
+    public static func preferredAltLocs(_ recs: [PDBAtomRecord]) -> [Int] {
+        guard recs.contains(where: { !$0.altLoc.isEmpty }) else { return Array(recs.indices) }
+        struct Key: Hashable { var chain: String, seq: Int, icode: String }
+        var occ: [Key: [String: Double]] = [:], labels: [Key: [String]] = [:]
+        for r in recs where !r.altLoc.isEmpty {
+            let k = Key(chain: r.chainID, seq: r.resSeq, icode: r.iCode)
+            if occ[k]?[r.altLoc] == nil { labels[k, default: []].append(r.altLoc) }
+            occ[k, default: [:]][r.altLoc, default: 0] += r.occupancy
+        }
+        var best: [Key: String] = [:]
+        for (k, ls) in labels {
+            var b = ls[0]
+            for l in ls.dropFirst() where (occ[k]?[l] ?? 0) > (occ[k]?[b] ?? 0) + 1e-6 { b = l }
+            best[k] = b
+        }
+        return recs.indices.filter { i in
+            let r = recs[i]
+            return r.altLoc.isEmpty || best[Key(chain: r.chainID, seq: r.resSeq, icode: r.iCode)] == r.altLoc
+        }
+    }
+
+    /// REMARK 350 biological assemblies (BIOMOLECULE / APPLY THE FOLLOWING TO CHAINS / BIOMT1-3).
+    public static func parseAssemblies(_ text: String) -> [PDBAssembly] {
+        var out: [PDBAssembly] = []
+        var cur: PDBAssembly? = nil
+        var chains: [String] = []
+        var ops: [Int: [Double]] = [:], opOrder: [Int] = []
+        var lastWasChains = false
+        func flushPart() {
+            defer { chains = []; ops = [:]; opOrder = [] }
+            guard !chains.isEmpty else { return }
+            let list = opOrder.compactMap { ops[$0] }.filter { $0.count == 12 }
+            cur?.parts.append(.init(chains: chains, operators: list.isEmpty ? [PDBAssembly.identity] : list))
+        }
+        func flushAssembly() { flushPart(); if let c = cur, !c.parts.isEmpty { out.append(c) }; cur = nil }
+        func chainList<S: StringProtocol>(_ s: S) -> [String] {
+            s.split(whereSeparator: { $0 == "," || $0 == " " }).map { String($0) }.filter { !$0.isEmpty && $0 != "AND" }
+        }
+        var done = false
+        text.enumerateLines { line, stop in
+            if line.hasPrefix("ATOM  ") || line.hasPrefix("HETATM") { done = true; stop = true; return }
+            guard line.hasPrefix("REMARK 350") else { return }
+            let body = line.dropFirst(10).trimmingCharacters(in: .whitespaces)
+            if body.hasPrefix("BIOMOLECULE:") {
+                flushAssembly()
+                cur = PDBAssembly(id: body.dropFirst(12).trimmingCharacters(in: .whitespaces), parts: [])
+                lastWasChains = false
+            } else if let r = body.range(of: "APPLY THE FOLLOWING TO CHAINS:") {
+                if !lastWasChains { flushPart() }
+                chains += chainList(body[r.upperBound...])
+                lastWasChains = true
+            } else if body.hasPrefix("AND CHAINS:") {
+                chains += chainList(body.dropFirst(11))
+                lastWasChains = true
+            } else if body.hasPrefix("BIOMT"), body.count > 6,
+                      let row = Int(String(body[body.index(body.startIndex, offsetBy: 5)])), (1...3).contains(row) {
+                lastWasChains = false
+                let f = body.dropFirst(6).split(separator: " ").compactMap { Double($0) }
+                guard f.count >= 5 else { return }
+                let serial = Int(f[0])
+                if ops[serial] == nil { ops[serial] = []; opOrder.append(serial) }
+                if ops[serial]!.count == (row - 1) * 4 { ops[serial]! += Array(f[1...4]) }
+            }
+        }
+        _ = done
+        flushAssembly()
+        return out
+    }
+
+    public static func parse(_ text: String, keepAltLocs: Bool = false) throws -> PDBFile {
         let lines = splitLines(text)
+        var dropped = 0
         var models: [Molecule] = [], records: [[PDBAtomRecord]] = []
         var curAtoms: [Atom] = [], curRecs: [PDBAtomRecord] = []
         var curCharge = 0
@@ -114,6 +221,15 @@ public enum PDBFormat {
         var conect: [(Int, [Int], Int)] = []   // (line, serials, ...) first = center
 
         func finish() {
+            if !keepAltLocs && !curAtoms.isEmpty {
+                let keep = preferredAltLocs(curRecs)
+                if keep.count < curAtoms.count {
+                    dropped += curAtoms.count - keep.count
+                    curAtoms = keep.enumerated().map { (k, i) in var a = curAtoms[i]; a.id = k; return a }
+                    curRecs = keep.map { curRecs[$0] }
+                    curCharge = curRecs.reduce(0) { $0 + $1.formalCharge }
+                }
+            }
             if !curAtoms.isEmpty {
                 var m = Molecule(atoms: curAtoms, charge: curCharge)
                 m.title = titleParts.joined(separator: " ")
@@ -188,13 +304,17 @@ public enum PDBFormat {
             case "END":
                 if inModel { throw fail(ln + 1, "END inside an unterminated MODEL") }
                 finish()
-                return try build(models: models, records: records, cell: cell, conect: conect)
+                var f = try build(models: models, records: records, cell: cell, conect: conect)
+                f.assemblies = parseAssemblies(text); f.droppedAltLocAtoms = dropped
+                return f
             default: break
             }
         }
         if inModel { throw fail(lines.count, "unterminated MODEL (truncated file?)") }
         finish()
-        return try build(models: models, records: records, cell: cell, conect: conect)
+        var f = try build(models: models, records: records, cell: cell, conect: conect)
+        f.assemblies = parseAssemblies(text); f.droppedAltLocAtoms = dropped
+        return f
     }
 
     private static func build(models: [Molecule], records: [[PDBAtomRecord]], cell: PDBUnitCell?,

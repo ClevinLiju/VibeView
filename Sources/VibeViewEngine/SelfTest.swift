@@ -184,6 +184,7 @@ enum SelfTest {
               "+lobe \(tri) triangles, \(meshes.first?["vertexCount"]?.intValue ?? 0) vertices; \(err(surf))")
 
         await runFeatures(call: call, check: check, err: err, waterXYZ: waterXYZ)
+        await runProtein(call: call, check: check, err: err)
 
         // errors
         let bad = await call("doc.molecule", ["docId": "nope"])

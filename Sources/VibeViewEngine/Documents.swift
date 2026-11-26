@@ -107,7 +107,8 @@ enum Preparation {
     static let formatsWithBondOrders: Set<MoleculeFileFormat> = [.pdb, .mol, .sdf, .cml, .gaussianInput]
 
     static func document(id: String, file: LoadedMolecularFile, path: String?, fileName: String?) -> EngineDocument {
-        var shown = prepared(file.molecule)
+        // PDB models (NMR ensembles) open on the first model, like RCSB/Mol*; the others stay available as frames.
+        var shown = prepared(file.format == .pdb ? (file.molecules.first ?? file.molecule) : file.molecule)
         // Calculation outputs (ORCA, Q-Chem, …) arrive with connectivity perceived by the parser but every bond
         // single, so `prepared` would skip order perception. Perceive orders for formats that never state them.
         if !formatsWithBondOrders.contains(file.format), shown.atoms.count > 1, shown.atoms.count < 2000,
