@@ -438,7 +438,9 @@ extension Checks {
             var nap = naphthalene; nap.perceiveBondOrders(); try expect(nap.kekulize() && orderCount(nap, .double) == 5)
             var p = pyridine; p.perceiveBondOrders(); try expect(p.kekulize() && orderCount(p, .double) == 3)
             // impossible: 5 aromatic carbons (odd ring, no heteroatom)
-            var cp = mol((0..<5).map { (6, ang(1.2, Double($0) * 72, 0)) } + (0..<5).map { (1, ang(2.2, Double($0) * 72, 0)) })
+            let ringC = (0..<5).map { (k: Int) in (6, ang(1.2, Double(k) * 72, 0)) }
+            let ringH = (0..<5).map { (k: Int) in (1, ang(2.2, Double(k) * 72, 0)) }
+            var cp = mol(ringC + ringH)
             for k in 0..<5 { cp.bonds.append(Bond(k, (k + 1) % 5, order: .aromatic)); cp.bonds.append(Bond(k, 5 + k)) }
             let before = cp
             try expect(!cp.kekulize() && cp == before)

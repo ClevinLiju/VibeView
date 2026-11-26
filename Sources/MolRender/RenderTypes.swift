@@ -96,7 +96,11 @@ public struct UnitCell: Sendable, Hashable, Codable {
     }
     /// The 8 corners, index bits (i,j,k) -> origin + i*a + j*b + k*c, i = bit0.
     public var corners: [Vec3] {
-        (0..<8).map { n in origin + Double(n & 1) * a + Double((n >> 1) & 1) * b + Double((n >> 2) & 1) * c }
+        (0..<8).map { (n: Int) -> Vec3 in
+            let i = Double(n & 1), j = Double((n >> 1) & 1), k = Double((n >> 2) & 1)
+            let ab: Vec3 = i * a + j * b
+            return origin + ab + k * c
+        }
     }
     /// The 12 edges as corner-index pairs.
     public static let edges: [(Int, Int)] = [(0,1),(2,3),(4,5),(6,7),(0,2),(1,3),(4,6),(5,7),(0,4),(1,5),(2,6),(3,7)]
