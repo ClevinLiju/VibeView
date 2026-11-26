@@ -1,131 +1,66 @@
-# VibeView
+# VibeView for Windows
 
-VibeView is a native macOS molecular builder and viewer for computational chemistry: sketch a structure, set up a calculation, and look at the results (orbitals, vibrations, spectra) in one app.
+VibeView is a molecular builder and viewer for computational chemistry on Windows. You sketch a structure, set up a calculation and look at the results (orbitals, vibrations, spectra) in one app.
 
 Licensed under the MIT License (see `LICENSE`).
 
 ## Features
 
-- **Sketching:** element tiles, a full periodic table, and a fragment library with thumbnails drawn from each fragment's own geometry.
-  - Click empty space to place.
-  - Click a hydrogen to substitute it.
-  - Click a heavy atom to *replace it in place*: for example, an NH₂ fragment on a benzene carbon gives pyridine.
-  - ⌥-click an atom to grow a new bonded atom.
-- **Link tool:** bond any two atoms, even across fragments, as single, double or triple. ⌥-click a bond to delete it.
-- **Gauge tool:** distance, angle and dihedral monitors that stay on screen. Type a new value and the smaller side of the structure moves.
-- **Selection:** Pick (lasso) and Shift tools. Shift drags the selected atoms, and ⌥-drag rotates them. All edits are undoable.
-- **Deleting atoms:** Delete/Backspace, ⌘⌫, the right-click menu, or `delete` in the console.
-- **Name lookup:** search by name, CAS number, SMILES or CID through PubChem. You see candidates with a picture, formula and synonyms, then sketch with the result, insert it, or open it. SciFinder has no public API, so it isn't searched.
-- **Command line:** a built-in console (⌘⇧C) with history, Tab completion, colored output, and `open`/`cd`/`ls` relative to the document's folder.
+- **Sketching:** element tiles, a periodic table, and functional groups for each element, sorted by hybridization. A fragment library, and building a molecule from a Z-matrix.
+- **Editing:** link, gauge (distance, angle and dihedral monitors) and selection tools. All edits can be undone.
+- **Name lookup:** search by name, CAS number, SMILES or CID through PubChem.
 - **Calculations:** job setup for xtb, ORCA, Gaussian and Q-Chem.
-  - An xtb settings sheet covers GFN level, optimization level, max cycles, solvent, charge/UHF, electronic temperature, threads and extra arguments, with a command preview.
-  - Max-iteration fields for ORCA and Gaussian.
-  - A live log viewer with search, follow mode, Reveal in Finder and Open in Console.
-- **Reading files:** Gaussian, ORCA, Q-Chem, xtb, Molden, fchk, cube, XYZ, PDB, MOL, SDF and CML. Same-named companion files (`.molden.input`, `.hess`, `.fchk`…) load automatically.
-- **Orbitals:** occupied and virtual color schemes, which you can change. Solid, transparent, wireframe or points display, and a grid-quality slider.
-- **Analysis:** vibrations and spectra, point group detection and Symmetrize, hydrogen bonds and a clipping slab.
-- **Sessions:** save and restore sessions (`.vibeview` JSON). Recent files are under File ▸ Open Recent.
-- **Quick Look:** previews in Finder.
+  - Large lists of functionals and basis sets for each program.
+  - An input preview you can edit; the edited text is what runs.
+  - A live job log.
+  - Gaussian checkpoints are turned into `.fchk` files with `formchk` automatically.
+- **Reading files:** Gaussian, ORCA, Q-Chem, xtb, Molden, fchk, cube, XYZ, PDB, MOL, SDF and CML. Companion files with the same name (`.molden.input`, `.hess`, `.fchk`…) load automatically.
+- **Display:**
+  - Ball-and-stick, spacefill and Kekulé bonds.
+  - Protein cartoon with helices and sheets.
+  - Orbitals and density surfaces.
+  - Each open document keeps its own camera.
+- **Analysis:** vibrations and IR/Raman spectra, point-group detection, hydrogen bonds and a Z-matrix view.
+- **Export:** XYZ, PDB, MOL/SDF, CML, Gaussian/ORCA/Q-Chem inputs and Molden. Images, and animated GIFs of optimisation trajectories and vibrations.
+- **Command line:** a built-in console with history and Tab completion.
 
-## Screenshots
+## Install
 
-_TODO: add screenshots to `docs/screenshots/`._
+Requires 64-bit Windows 10 or 11.
 
-## Quick install
+1. Download `VibeView-Setup-<version>.exe` from the GitHub Releases page and run it. It installs per user, so no administrator rights are needed. The installer is not code-signed, so SmartScreen may warn you: choose More info ▸ Run anyway.
+2. Start VibeView from the Start menu or the desktop shortcut.
+3. To uninstall, go to Settings ▸ Apps ▸ Installed apps ▸ VibeView ▸ Uninstall.
 
-Paste this into Terminal:
+The installer includes the Swift and Visual C++ runtimes. External programs (xtb, ORCA, Gaussian, Q-Chem) are installed separately; their locations can be set in Program Locations.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash
-```
-
-It downloads the latest release, installs VibeView in `/Applications`, and opens it. It also clears the download quarantine flag, so the first launch shows no Gatekeeper prompt. Requires an Apple Silicon Mac with macOS 14 or later.
-
-Other options:
-
-```sh
-# install a specific version
-curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash -s -- --version v0.3.0
-# build from source instead (needs Xcode; also works on Intel Macs)
-curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash -s -- --from-source
-# uninstall
-curl -fsSL https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh | bash -s -- --uninstall
-```
-
-To read the script before running it, download it first:
-`curl -fsSLO https://raw.githubusercontent.com/ClevinLiju/VibeView/main/scripts/install.sh`, then `less install.sh`, then `bash install.sh`.
-
-## Install from DMG
-
-Download `VibeView-<version>.dmg`, open it and drag VibeView to Applications.
-
-The app is ad-hoc signed (not notarized), so on first launch macOS will warn about it:
-
-- Right-click (or Control-click) VibeView in Applications, choose Open, then Open; or
-- System Settings ▸ Privacy & Security ▸ Open Anyway; or
-- `xattr -dr com.apple.quarantine /Applications/VibeView.app`
-
-See [docs/INSTALL.md](docs/INSTALL.md) for details.
-
-## Build from source
-
-Requires macOS 14+ and Xcode or the Command Line Tools with Swift 6.
-
-```sh
-swift build
-swift run VibeView
-swift run molscope-check    # self-checks
-scripts/make-app.sh         # dist/VibeView.app
-scripts/make-dmg.sh         # dist/VibeView-<version>.dmg
-```
-
-## Windows
-
-VibeView also builds on 64-bit Windows 10 and 11. It has the same Swift core, run as a headless engine (`vibeview-engine.exe`), with an Electron + three.js front end and an NSIS installer (`VibeView-Setup-<version>.exe`). Quick Look and the other macOS-only parts are not included. To build it from source in PowerShell:
+## Building from source
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\windows\install-prereqs.ps1   # VS Build Tools, Swift, Node, Git (winget)
-powershell -ExecutionPolicy Bypass -File scripts\windows\build.ps1             # engine + installer
+scripts\windows\install-prereqs.ps1   # Swift toolchain, Visual Studio build tools, Node.js
+scripts\windows\build.ps1             # engine, self-checks, front end, installer in windows\dist\
 ```
 
-See [docs/WINDOWS.md](docs/WINDOWS.md) for prerequisites, checks, packaging and known limitations.
+Front-end development commands (run inside `windows\`) are listed in [windows/README.md](windows/README.md).
 
-## Optional external programs
+## Checks
 
-VibeView can run calculations if the programs are installed; viewing and building work without them.
+```powershell
+swift run molscope-check            # chemistry self-checks
+swift run vibeview-engine --selftest
+```
 
-- xtb: `conda install -c conda-forge xtb` or `brew install xtb`
-- ORCA (installed separately from the ORCA download site)
-- Gaussian (commercial, installed separately)
+## Layout
 
-## Developer environment variables
+- `windows/`: the Electron + three.js desktop app.
+- `Sources/VibeViewEngine`: the headless Swift engine (`vibeview-engine.exe`) the app talks to over JSON on stdio. [docs/WINDOWS_PROTOCOL.md](docs/WINDOWS_PROTOCOL.md) defines the protocol.
+- `Sources/MolCore`, `MolIO`, `MolBuild`, `MolAnalysis`, `MolCompute`, `MolCommand`, `MolSIMD`: the chemistry libraries.
+- `Sources/MolChecks`: self-checks (`molscope-check`).
+- `scripts/windows/`: build, staging and prerequisite scripts.
+- [docs/WINDOWS.md](docs/WINDOWS.md): architecture and build details.
 
-- `VIBEVIEW_SNAPSHOT_DIR`: write window snapshots to this directory
-- `VIBEVIEW_SNAPSHOT_DELAY`: delay before taking snapshots
-- `VIBEVIEW_GALLERY`: gallery mode
-- `VIBEVIEW_SELFTEST`: run the built-in self-test
-- `VIBEVIEW_DEBUG_IO`: debug output for file reading
+## Releasing
 
-The older `MOLSCOPE_*` names still work.
-
-## Project layout
-
-Internal modules keep their `Mol*` prefix:
-
-- `Sources/MolCore`: chemistry model
-- `Sources/MolIO`: file formats
-- `Sources/MolCommand`: command-line language
-- `Sources/MolBuild`: builder tools
-- `Sources/MolRender`: SceneKit rendering
-- `Sources/MolAnalysis`: orbitals, spectra, symmetry
-- `Sources/MolCompute`: xtb runner, PubChem lookup
-- `Sources/MolScopeApp`: the app (product `VibeView`)
-- `Extensions/QuickLook`: Quick Look preview extension
-- `scripts/`: packaging (app bundle, icon, DMG)
-
-
-## About
-
-VibeView is an independent, clean-room project, not affiliated with or derived from any commercial molecular viewer. Features were designed from public file-format documentation and general chemistry knowledge. The test fixtures under `Sources/MolChecks/TestData` are either hand-written or produced by small ORCA 6.1.1 runs.
-
-The check suite runs with `swift run molscope-check` (pass a filter to run part of it).
+1. Bump the number in `VERSION`.
+2. Commit, then tag: `git tag vX.Y.Z && git push --tags`.
+3. The GitHub Actions workflow (`.github/workflows/build.yml`) builds, runs the checks, builds the installer and attaches `VibeView-Setup-<version>.exe` to a new GitHub Release.

@@ -6,8 +6,7 @@ import PackageDescription
 // `swift build -c release` fails with "unable to resolve Swift module dependency to a compatible module".
 let testable: [SwiftSetting] = [.unsafeFlags(["-enable-testing"], .when(configuration: .release))]
 
-// Portable core: builds on macOS and Windows (and Linux). Apple-only frameworks (SceneKit, SwiftUI, AppKit,
-// Metal, Charts) live only in MolRender and MolScopeApp, which are macOS-only. See docs/WINDOWS.md.
+// Portable core plus the headless engine for the Windows app (windows/). See docs/WINDOWS.md.
 var targets: [Target] = [
     // `simd` replacement: re-exports Apple's simd on Darwin, pure-Swift implementation elsewhere.
     .target(name: "MolSIMD", swiftSettings: testable),
@@ -32,28 +31,14 @@ var products: [Product] = [
 ]
 var checkDeps: [Target.Dependency] = ["MolCore", "MolIO", "MolBuild", "MolAnalysis", "MolCompute", "MolCommand", "MolSIMD"]
 
-#if os(macOS)
-targets += [
-    .target(name: "MolRender", dependencies: ["MolCore", "MolAnalysis"], swiftSettings: testable),
-    .executableTarget(
-        name: "MolScopeApp",
-        dependencies: ["MolCore", "MolIO", "MolBuild", "MolAnalysis", "MolRender", "MolCompute", "MolCommand"]
-    ),
-]
-products.insert(.executable(name: "VibeView", targets: ["MolScopeApp"]), at: 0)
-checkDeps.append("MolRender")
-#endif
-
 // XCTest/Swift Testing are unavailable without full Xcode; checks run as an executable:
 //   swift run molscope-check [filter]
-// Render checks are compiled only where MolRender exists (`#if canImport(MolRender)`).
 targets.append(
     .executableTarget(name: "MolChecks", dependencies: checkDeps, resources: [.copy("TestData")])
 )
 
 let package = Package(
     name: "MolScope",
-    platforms: [.macOS(.v14)],
     products: products,
     targets: targets,
     swiftLanguageModes: [.v5]

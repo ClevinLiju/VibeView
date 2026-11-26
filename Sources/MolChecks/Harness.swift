@@ -26,18 +26,12 @@ func testDataURL(_ name: String) -> URL {
 
 enum Checks {}
 
-#if !canImport(MolRender)
-// MolRender (SceneKit/AppKit/Metal) exists only on macOS; the RenderChecks*.swift files compile to nothing elsewhere.
-extension Checks { static let render: [Check] = [] }
-#endif
-
 let allChecks: [Check] = ([
     // TEAM REGISTRATION — add one line each, e.g.  Checks.core,
     Checks.core,
     Checks.io,
     Checks.command,
     Checks.analysis,
-    Checks.render,
     Checks.compute,
     Checks.buildCore + Checks.buildCalc + Checks.buildPlacement + Checks.buildGroups,
 ] as [[Check]]).flatMap { $0 }  // each team registers an array (fix by Lead 5, see CONTRACTS change log)
