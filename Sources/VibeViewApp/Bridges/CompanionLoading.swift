@@ -27,7 +27,7 @@ extension EditorModel {
             // Only adopt a result whose geometry matches the open structure.
             if extra.steps.last.map({ $0.atoms.count == molecule.atoms.count }) ?? true {
                 var e = extra
-                e.steps = e.steps.map { IOBridge.prepared($0, perceiveOrders: false) }
+                e.steps = IOBridge.preparedSteps(e.steps)
                 result = e
                 showResults = true
             }
@@ -36,7 +36,7 @@ extension EditorModel {
         var changed = false
         if r.normalModes.isEmpty && !extra.normalModes.isEmpty { r.normalModes = extra.normalModes; changed = true }
         if r.orbitals.isEmpty && !extra.orbitals.isEmpty { r.orbitals = extra.orbitals; changed = true }
-        if r.steps.count <= 1 && extra.steps.count > 1 { r.steps = extra.steps.map { IOBridge.prepared($0, perceiveOrders: false) }; changed = true }
+        if r.steps.count <= 1 && extra.steps.count > 1 { r.steps = IOBridge.preparedSteps(extra.steps); changed = true }
         if changed { result = r }
     }
 

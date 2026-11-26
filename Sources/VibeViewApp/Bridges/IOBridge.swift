@@ -43,7 +43,7 @@ public enum IOBridge {
             if loaded.molecule.atoms.isEmpty && (loaded.result?.steps.isEmpty ?? true) { throw IOBridgeError.empty }
             loaded.molecule = prepared(loaded.molecule)
             if var r = loaded.result {
-                r.steps = r.steps.map { prepared($0, perceiveOrders: false) }
+                r.steps = preparedSteps(r.steps)
                 loaded.result = r
             }
             return loaded
@@ -153,6 +153,27 @@ public enum IOBridge {
             }
         }
         return m
+    }
+
+    /// Frames of an optimization, scan or trajectory, with bond orders. Orders are perceived once on the
+    /// final geometry and copied to every frame with the same connectivity (normally all of them); a frame
+    /// whose bonds differ is perceived on its own when small enough.
+    static func preparedSteps(_ steps: [Molecule]) -> [Molecule] {
+        var out = steps.map { prepared($0, perceiveOrders: false) }
+        guard var last = out.last, last.atoms.count < 2000, !last.bonds.isEmpty else { return out }
+        last.perceiveBondOrders()
+        func key(_ b: Bond) -> Int64 { Int64(b.a) << 32 | Int64(b.b) }
+        let orders = Dictionary(last.bonds.map { (key($0), $0.order) }, uniquingKeysWith: { a, _ in a })
+        let pairs = Set(orders.keys)
+        for i in out.indices {
+            if i == out.count - 1 { out[i].bonds = last.bonds; continue }
+            if Set(out[i].bonds.map(key)) == pairs {
+                for k in out[i].bonds.indices { out[i].bonds[k].order = orders[key(out[i].bonds[k])] ?? .single }
+            } else if out[i].atoms.count < 300 {
+                out[i].perceiveBondOrders()
+            }
+        }
+        return out
     }
 
     /// True when some non-hydrogen atom has no bond although the molecule has bonds elsewhere.

@@ -1,4 +1,8 @@
-# VibeView
+<p align="center">
+  <img src="docs/icon.png" width="160" alt="VibeView icon: two water molecules forming a W">
+</p>
+
+<h1 align="center">VibeView</h1>
 
 VibeView is a native macOS molecular builder and viewer for computational chemistry: sketch a structure, set up a calculation, and look at the results (orbitals, vibrations, spectra) in one app.
 
