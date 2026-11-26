@@ -19,6 +19,8 @@ public struct QChemOutput: Sendable {
         public var finalEnergy: Double?
         public var optimizationCycles: Int = 0
         public var optimizationConverged: Bool?
+        /// Optimizer criteria table ("Gradient / Displacement / Energy change ... Cnvgd?") by index into `geometries`.
+        public var stepInfo: [Int: OptimizationStepInfo] = [:]
         public var normalModes: [NormalMode] = []
         public var alphaOrbitals: [OrbitalEnergy] = []
         public var betaOrbitals: [OrbitalEnergy] = []
@@ -85,6 +87,16 @@ public struct QChemOutput: Sendable {
         return tk.first.flatMap { parseFortranDouble($0) }
     }
 
+    /// One optimizer criterion row: "Gradient   0.012345   0.000300   NO" (value, tolerance, YES/NO). The value may
+    /// overflow its field ("********" on the first cycle's energy change): nil value, still a row.
+    private static func criterion(_ t: String) -> (value: Double?, converged: Bool)? {
+        let tk = tokens(Substring(t))
+        guard tk.count >= 4, let yn = tk.last, yn == "YES" || yn == "NO", parseFortranDouble(tk[tk.count - 2]) != nil else { return nil }
+        let v = tk[tk.count - 3]
+        guard parseFortranDouble(v) != nil || v.allSatisfy({ $0 == "*" }) else { return nil }
+        return (parseFortranDouble(v), yn == "YES")
+    }
+
     private static func parseJob(_ lines: [Substring]) -> Job {
         var job = Job()
         var i = 0
@@ -134,6 +146,14 @@ public struct QChemOutput: Sendable {
                 job.scfEnergies.append(v); job.finalEnergy = v; continue
             }
             if t.hasPrefix("Optimization Cycle:") { job.optimizationCycles += 1; continue }
+            if t.hasPrefix("Gradient") || t.hasPrefix("Displacement") || t.hasPrefix("Energy change"), !job.geometries.isEmpty,
+               let c = criterion(t) {
+                var s = job.stepInfo[job.geometries.count - 1] ?? OptimizationStepInfo()
+                if t.hasPrefix("Gradient") { s.maxForce = c.value } else if t.hasPrefix("Displacement") { s.maxStep = c.value } else { s.energyChange = c.value }
+                s.converged = (s.converged ?? true) && c.converged
+                job.stepInfo[job.geometries.count - 1] = s
+                continue
+            }
             if t.contains("OPTIMIZATION CONVERGED") { job.optimizationConverged = true; continue }
             if t.hasPrefix("Final energy is"), let v = number(after: "is", in: l) { job.finalEnergy = v; continue }
             if t.contains("Zero point vibrational energy:"), let v = number(after: ":", in: l) { job.zeroPointKcal = v; continue }
@@ -276,14 +296,21 @@ public struct QChemOutput: Sendable {
 
     private mutating func buildResult() {
         var r = CalculationResult()
-        var steps: [Molecule] = [], energies: [Double] = []
+        var steps: [Molecule] = [], energies: [Double] = [], info: [OptimizationStepInfo] = []
+        let anyEnergy = jobs.contains { !$0.scfEnergies.isEmpty }
         for job in jobs {
             for (k, g) in job.geometries.enumerated() {
                 let e = k < job.scfEnergies.count ? job.scfEnergies[k] : nil
+                // A geometry without its SCF energy is an unfinished step (running or cut job): keep the arrays parallel.
+                if anyEnergy && e == nil { continue }
                 if let last = steps.last, last.atoms.count == g.atoms.count,
-                   zip(last.atoms, g.atoms).allSatisfy({ simd_length($0.position - $1.position) < 1e-6 }) { continue }
+                   zip(last.atoms, g.atoms).allSatisfy({ simd_length($0.position - $1.position) < 1e-6 }) {
+                    if let s = job.stepInfo[k], info[info.count - 1].isEmpty { info[info.count - 1] = s }
+                    continue
+                }
                 steps.append(g)
                 if let e { energies.append(e) }
+                info.append(job.stepInfo[k] ?? OptimizationStepInfo())
             }
         }
         r.steps = steps; r.energies = energies
@@ -314,6 +341,7 @@ public struct QChemOutput: Sendable {
             r.routeSection = j.rem.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: " ")
         }
         if let opt = jobs.last(where: { $0.optimizationConverged != nil }) { ex.optimizationConverged = opt.optimizationConverged }
+        if info.contains(where: { !$0.isEmpty }) { ex.stepInfo = info }
         if let j = jobs.last(where: { $0.zeroPointKcal != nil || $0.enthalpyKcal != nil }) {
             let k = 627.5094740631
             var th = ThermochemistrySummary()

@@ -21,6 +21,8 @@ public struct OrcaConvergenceItem: Sendable, Codable, Equatable {
 public struct OrcaOptimizationCycle: Sendable, Codable, Equatable {
     public var cycle: Int
     public var items: [OrcaConvergenceItem]
+    /// Index into `geometries` of the structure this table judges (the last one printed before it).
+    public var geometryIndex: Int? = nil
 }
 
 public struct OrcaTransition: Sendable, Codable, Equatable {
@@ -122,6 +124,17 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
         x.gradients = gradients
         x.thermochemistry = thermochemistry
         x.optimizationConverged = optimizationConverged
+        if !optimizationCycles.isEmpty {
+            var byGeometry: [Int: OrcaOptimizationCycle] = [:]
+            for c in optimizationCycles { if let g = c.geometryIndex { byGeometry[g] = c } }
+            x.stepInfo = (0..<r.steps.count).map { g in
+                guard let c = byGeometry[g] else { return OptimizationStepInfo() }
+                func v(_ name: String) -> Double? { c.items.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value }
+                return OptimizationStepInfo(maxForce: v("MAX gradient"), rmsForce: v("RMS gradient"), maxStep: v("MAX step"),
+                                            rmsStep: v("RMS step"), energyChange: v("Energy change"),
+                                            converged: c.items.isEmpty ? nil : c.items.allSatisfy(\.converged))
+            }
+        }
         x.messages = messages
         x.info = info
         if !orbitals.isEmpty {
@@ -134,6 +147,7 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
             else if let ga = gap(a), let gb = gap(b) { x.homoLumoGapEV = min(ga, gb) }
         }
         r.extras = x
+        r.dropRepeatedSteps()
         return r
     }
 
@@ -257,7 +271,8 @@ public struct OrcaOutput: Sendable, Codable, Equatable {
                     k += 1
                 }
                 guard closed else { throw fail(L.count - 1, "truncated convergence table") }
-                out.optimizationCycles.append(OrcaOptimizationCycle(cycle: out.optimizationCycles.count + 1, items: items))
+                out.optimizationCycles.append(OrcaOptimizationCycle(cycle: out.optimizationCycles.count + 1, items: items,
+                                                                    geometryIndex: out.geometries.isEmpty ? nil : out.geometries.count - 1))
                 i = k; continue
             }
             if line.contains("THE OPTIMIZATION HAS CONVERGED") { out.optimizationConverged = true }

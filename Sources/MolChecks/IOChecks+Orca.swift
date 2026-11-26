@@ -64,7 +64,9 @@ extension Checks {
             try expect(o.energies.count == o.geometries.count, "energies per step")
             try expectClose(o.energies[0], -74.963805061084, tol: 1e-10)
             try expectClose(o.energies[3], -74.965901190846, tol: 1e-10)
-            try expect(o.result.steps.count == 5 && o.result.energies.count == 5, "result steps")
+            // The "final energy evaluation at the stationary point" repeats cycle 4 (within 1e-4 Å, 1e-6 Eh): one frame.
+            try expect(o.result.steps.count == 4 && o.result.energies.count == 4, "result steps \(o.result.steps.count)")
+            try expectClose(o.result.energies[3], -74.965901192188, tol: 1e-10)
         },
         Check("io.orca.water.optimization_convergence") {
             let o = try orcaParse("water_optfreq.out")

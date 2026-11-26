@@ -293,6 +293,7 @@ public enum CompanionFiles {
         if fm.fileExists(atPath: u("xtbopt.log").path) {
             if r.steps.count <= 1, let t = try? readText(u("xtbopt.log")), let tr = try? XTBTrajectory.parse(t), tr.molecules.count > 1 {
                 r.steps = tr.molecules; r.energies = tr.energies
+                if let si = tr.result.extras?.stepInfo { r.extrasOrEmpty.stepInfo = si }
                 loaded.molecules = tr.molecules
                 report.append(CompanionFile(url: u("xtbopt.log"), role: .trajectory, used: true, note: "\(tr.molecules.count) optimization frames"))
             } else {

@@ -489,12 +489,26 @@ struct GaussianLogParser {
         log.vibrations = hpModes.isEmpty ? stdModes : hpModes
 
         var r = CalculationResult()
-        let withE = log.geometrySteps.filter { $0.energy != nil && $0.molecule != nil }
-        if !withE.isEmpty {
-            r.steps = withE.compactMap(\.molecule)
-            r.energies = withE.compactMap(\.energy)
-        } else {
-            r.steps = log.geometrySteps.compactMap(\.molecule)
+        // Geometries with an SCF energy (a geometry printed without one is an unfinished step of a running or cut
+        // job); every geometry when no energy was printed at all.
+        let anyE = log.geometrySteps.contains { $0.energy != nil && $0.molecule != nil }
+        let kept = log.geometrySteps.indices.filter { log.geometrySteps[$0].molecule != nil && (!anyE || log.geometrySteps[$0].energy != nil) }
+        r.steps = kept.compactMap { log.geometrySteps[$0].molecule }
+        if anyE { r.energies = kept.compactMap { log.geometrySteps[$0].energy } }
+        // Optimizer tables ("Item Value Threshold Converged?") per kept geometry.
+        var stepInfo: [OptimizationStepInfo]? = nil
+        if !log.optimizationSteps.isEmpty {
+            var byGeometry: [Int: GaussianLog.OptimizationStep] = [:]
+            for s in log.optimizationSteps { if let g = s.geometryIndex { byGeometry[g] = s } }
+            stepInfo = kept.map { g in
+                guard let s = byGeometry[g] else { return OptimizationStepInfo() }
+                func v(_ prefix: String, _ word: String) -> Double? {
+                    s.criteria.first { $0.name.hasPrefix(prefix) && $0.name.hasSuffix(word) }?.value
+                }
+                return OptimizationStepInfo(maxForce: v("Maximum", "Force"), rmsForce: v("RMS", "Force"),
+                                            maxStep: v("Maximum", "Displacement"), rmsStep: v("RMS", "Displacement"),
+                                            converged: s.converged)
+            }
         }
         if !log.mullikenCharges.isEmpty, var last = r.steps.last, last.atoms.count == log.mullikenCharges.count {
             for k in 0..<last.atoms.count { last.atoms[k].charge = log.mullikenCharges[k] }
@@ -543,7 +557,9 @@ struct GaussianLogParser {
         if let g = o.gap { x.homoLumoGapEV = g * 27.211386245988 }
         if !log.optimizationSteps.isEmpty { x.optimizationConverged = log.optimizationCompleted || log.stationaryPointFound }
         if let m = log.errorMessage, log.errorTermination { x.messages.append(m) }
+        x.stepInfo = stepInfo
         r.extras = x
+        r.dropRepeatedSteps()
         log.result = r
         return log
     }

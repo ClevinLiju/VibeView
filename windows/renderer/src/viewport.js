@@ -92,8 +92,21 @@ const tmpS = new THREE.Vector3();
 const tmpP = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 const tmpColor = new THREE.Color();
+// Scratch vectors for the allocation-free per-frame paths (updateMatrices, bondPlaneDirInto, camera steps).
+const sA = new THREE.Vector3(), sB = new THREE.Vector3(), sC = new THREE.Vector3(), sD = new THREE.Vector3();
+const sE = new THREE.Vector3(), sF = new THREE.Vector3();
+const sQ = new THREE.Quaternion();
 
 function v3(a) { return new THREE.Vector3(a[0], a[1], a[2]); }
+
+// Adaptive quality: while the camera moves or atoms animate, frames use a cheaper ambient occlusion (half
+// resolution, fewer samples); IDLE_MS after the last motion one full-quality frame is drawn.
+const IDLE_MS = 150;
+const FAST_AO_MIN_ATOMS = 400; // small molecules are cheap enough to keep full quality while moving
+// Camera feel: wheel/keyboard zoom eases toward its goal (time constant, s); orbit/pan glide after release.
+const ZOOM_TAU = 0.065;
+const INERTIA_TAU = 0.18, INERTIA_MIN_SPEED = 60, INERTIA_STOP = 10, INERTIA_MAX_SPEED = 2500; // s, px/s
+const DRAG_SAMPLE_MS = 80; // release velocity = pointer motion over the last 80 ms
 
 /** LightingRig.apply's test: mean sRGB component below 0.5 (THREE.Color stores linear components). */
 function isDarkBackground(c) {
@@ -351,17 +364,36 @@ export class Viewport {
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(this.renderPass);
     // Ground-truth AO with a depth-aware Poisson denoise: smooth contact shadows (macOS SSAO radius 1.4 Å).
-    this.sao = new GTAOPass(this.scene, this.camera, 1, 1);
-    this.sao.output = GTAOPass.OUTPUT.Default;
-    this.sao.blendIntensity = 0.85;
-    this.sao.updateGtaoMaterial({ radius: 1.4, distanceExponent: 1.5, thickness: 1.5, scale: 1.0, samples: 16, distanceFallOff: 1.0 });
-    this.sao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, radiusExponent: 1, rings: 2, samples: 16 });
+    const makeAO = (samples) => {
+      const p = new GTAOPass(this.scene, this.camera, 1, 1);
+      p.output = GTAOPass.OUTPUT.Default;
+      p.blendIntensity = 0.85;
+      p.updateGtaoMaterial({ radius: 1.4, distanceExponent: 1.5, thickness: 1.5, scale: 1.0, samples, distanceFallOff: 1.0 });
+      p.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, radiusExponent: 1, rings: 2, samples });
+      return p;
+    };
+    this.sao = makeAO(16);
+    // Cheap AO for frames drawn while the view is moving: its G-buffer, AO and denoise run at half resolution
+    // (a quarter of the pixels) with 8 samples, blended over the full-resolution image like the full pass.
+    this.saoFast = makeAO(8);
+    const fastSetSize = this.saoFast.setSize.bind(this.saoFast);
+    this.saoFast.setSize = (w, h) => fastSetSize(Math.max(1, Math.round(w / 2)), Math.max(1, Math.round(h / 2)));
+    this.saoFast.enabled = false;
+    this.aoPasses = [this.sao, this.saoFast];
+    this.fastFrame = false; // the last frame drawn used the cheap path (a full-quality frame is owed)
+    this.motionAt = -1e9; // performance.now() of the last camera move / animated position update
+    this.perf = { full: 0, fast: 0, lastMs: 0, quality: 'auto' }; // devtools: __vibeview.viewport.perf
     // Keep translucent overlays and surfaces out of the AO G-buffer.
     const toggle = (visible) => { const p = new Pass(); p.needsSwap = false; p.render = () => { this.overlayGroup.visible = visible; this.surfaces.visible = visible; }; return p; };
     this.composer.addPass(toggle(false));
     this.composer.addPass(this.sao);
+    this.composer.addPass(this.saoFast);
     this.composer.addPass(toggle(true));
     this.composer.addPass(new OutputPass());
+    // Camera motion: pointer deltas queued by the drag* methods (applied once per frame), eased zoom, inertia.
+    this.cam = { orbit: [0, 0], pan: [0, 0], roll: 0, zoom: 1, zoomGoal: null, vel: null, samples: [], lastT: 0 };
+    this.frameCallbacks = new Set();
+    this.positionsVersion = 0; // bumped whenever displayed positions change (cartoon.sync follows it)
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
@@ -386,6 +418,8 @@ export class Viewport {
     const s = lodSegments(n);
     // Fewer AO samples for very large structures keeps rotation interactive.
     this.sao?.updateGtaoMaterial({ samples: n > 20000 ? 8 : 16 });
+    this.saoFast?.updateGtaoMaterial({ samples: n > 20000 ? 4 : 8 });
+    this.atomCountForLOD = n;
     const key = `${s.sw}/${s.sh}/${s.cyl}`;
     if (key === this.lodKey) return;
     this.lodKey = key;
@@ -400,6 +434,7 @@ export class Viewport {
   }
   setCameraState(s) {
     if (!s) return false;
+    this.cancelMotion();
     this.target.fromArray(s.target); this.distance = s.distance; this.orientation.fromArray(s.orientation).normalize();
     this.updateCamera();
     return true;
@@ -422,8 +457,8 @@ export class Viewport {
 
   updateCamera() {
     const aspect = this.width / this.height;
-    const dir = new THREE.Vector3(0, 0, 1).applyQuaternion(this.orientation);
-    const pos = this.target.clone().addScaledVector(dir, this.distance);
+    const dir = sE.set(0, 0, 1).applyQuaternion(this.orientation);
+    const pos = sF.copy(this.target).addScaledVector(dir, this.distance);
     for (const cam of [this.persp, this.ortho]) {
       cam.position.copy(pos);
       cam.quaternion.copy(this.orientation);
@@ -446,40 +481,123 @@ export class Viewport {
     this.options.projection = mode;
     this.camera = mode === 'orthographic' ? this.ortho : this.persp;
     this.renderPass.camera = this.camera;
-    this.sao.camera = this.camera;
     const persp = this.camera.isPerspectiveCamera ? 1 : 0;
-    for (const m of [this.sao.gtaoMaterial, this.sao.pdMaterial, this.sao.depthRenderMaterial]) {
-      if (m && m.defines && m.defines.PERSPECTIVE_CAMERA !== persp) { m.defines.PERSPECTIVE_CAMERA = persp; m.needsUpdate = true; }
+    for (const ao of this.aoPasses) {
+      ao.camera = this.camera;
+      for (const m of [ao.gtaoMaterial, ao.pdMaterial, ao.depthRenderMaterial]) {
+        if (m && m.defines && m.defines.PERSPECTIVE_CAMERA !== persp) { m.defines.PERSPECTIVE_CAMERA = persp; m.needsUpdate = true; }
+      }
     }
     this.updateCamera();
     this.emit('options', this.options);
   }
 
-  rotate(dx, dy) {
+  // Immediate camera moves (keyboard, console, other modules). Interactive input goes through the queued
+  // drag*/zoomBy methods below, which are applied once per frame in stepCamera().
+  rotate(dx, dy) { this.rotateImpl(dx, dy); this.noteMotion(); this.updateCamera(); }
+  roll(angle) { this.rollImpl(angle); this.noteMotion(); this.updateCamera(); }
+  pan(dx, dy) { this.panImpl(dx, dy); this.noteMotion(); this.updateCamera(); }
+  zoom(factor) {
+    this.cam.zoomGoal = null;
+    this.distance = this.clampDistance(this.distance * factor);
+    this.noteMotion();
+    this.updateCamera();
+  }
+  rotateImpl(dx, dy) {
     const speed = 0.008;
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.orientation);
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.orientation);
-    const q1 = new THREE.Quaternion().setFromAxisAngle(up, -dx * speed);
-    const q2 = new THREE.Quaternion().setFromAxisAngle(right, -dy * speed);
-    this.orientation.premultiply(q1).premultiply(q2).normalize();
-    this.updateCamera();
+    const right = sA.set(1, 0, 0).applyQuaternion(this.orientation);
+    const up = sB.set(0, 1, 0).applyQuaternion(this.orientation);
+    this.orientation.premultiply(sQ.setFromAxisAngle(up, -dx * speed));
+    this.orientation.premultiply(sQ.setFromAxisAngle(right, -dy * speed)).normalize();
   }
-  roll(angle) {
-    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.orientation);
-    this.orientation.premultiply(new THREE.Quaternion().setFromAxisAngle(fwd, angle)).normalize();
-    this.updateCamera();
+  rollImpl(angle) {
+    const fwd = sA.set(0, 0, 1).applyQuaternion(this.orientation);
+    this.orientation.premultiply(sQ.setFromAxisAngle(fwd, angle)).normalize();
   }
-  pan(dx, dy) {
+  panImpl(dx, dy) {
     const halfH = this.distance * Math.tan(THREE.MathUtils.degToRad(this.persp.fov / 2));
     const k = (2 * halfH) / this.height;
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.orientation);
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.orientation);
+    const right = sA.set(1, 0, 0).applyQuaternion(this.orientation);
+    const up = sB.set(0, 1, 0).applyQuaternion(this.orientation);
     this.target.addScaledVector(right, -dx * k).addScaledVector(up, dy * k);
+  }
+  clampDistance(d) { return Math.min(2000, Math.max(0.8, d)); }
+
+  /** Marks the view as moving: frames use the cheap AO path until IDLE_MS after the last call. */
+  noteMotion() { this.motionAt = performance.now(); }
+
+  // ---------- interactive camera (coalesced per frame, eased zoom, inertia) ----------
+  /** Pointer drag deltas in CSS pixels; accumulated and applied once per animation frame. */
+  dragOrbit(dx, dy) { this.cam.orbit[0] += dx; this.cam.orbit[1] += dy; this.dragSample('orbit', dx, dy); this.dirty = true; }
+  dragPan(dx, dy) { this.cam.pan[0] += dx; this.cam.pan[1] += dy; this.dragSample('pan', dx, dy); this.dirty = true; }
+  dragRoll(angle) { this.cam.roll += angle; this.dirty = true; }
+  dragZoom(factor) { this.cam.zoom *= factor; this.dirty = true; }
+  dragSample(kind, dx, dy) {
+    const t = performance.now(), S = this.cam.samples;
+    if (S.length && S[0].kind !== kind) S.length = 0;
+    S.push({ kind, t, dx, dy });
+    while (S.length > 1 && t - S[0].t > DRAG_SAMPLE_MS) S.shift();
+  }
+  /** Pointer pressed: stops an orbit/pan glide where it is. */
+  beginDrag() { this.cam.vel = null; this.cam.samples.length = 0; }
+  /** Pointer released: a quick flick keeps orbiting/panning and slows down (INERTIA_TAU). */
+  endDrag() {
+    const S = this.cam.samples, now = performance.now();
+    this.cam.samples = [];
+    if (!S.length || now - S[S.length - 1].t > 50) return; // the pointer had stopped before release
+    let dx = 0, dy = 0;
+    for (const s of S) { dx += s.dx; dy += s.dy; }
+    const span = Math.max(16, now - S[0].t) / 1000;
+    const speed = Math.hypot(dx, dy) / span;
+    if (speed < INERTIA_MIN_SPEED) return;
+    const k = Math.min(1, INERTIA_MAX_SPEED / speed) / span;
+    const vx = dx * k, vy = dy * k;
+    this.cam.vel = { kind: S[0].kind, x: vx, y: vy };
+    this.dirty = true;
+  }
+  /** Eased zoom (mouse wheel, touchpad, +/- keys): factor < 1 zooms in. Successive calls compound the goal. */
+  zoomBy(factor) {
+    if (!(factor > 0) || !Number.isFinite(factor)) return;
+    this.cam.zoomGoal = this.clampDistance((this.cam.zoomGoal ?? this.distance) * factor);
+    this.dirty = true;
+  }
+  /** Stops inertia and eased zoom where they are (programmatic camera changes call this). */
+  cancelMotion() {
+    const c = this.cam;
+    c.vel = null; c.zoomGoal = null; c.orbit[0] = c.orbit[1] = 0; c.pan[0] = c.pan[1] = 0; c.roll = 0; c.zoom = 1;
+  }
+  /** Applies queued input and finishes the eased zoom immediately, stops inertia (exports call it). */
+  settleCamera() {
+    const goal = this.cam.zoomGoal;
+    this.stepCamera(0);
+    if (goal != null) this.distance = goal;
+    this.cancelMotion();
     this.updateCamera();
   }
-  zoom(factor) {
-    this.distance = Math.min(2000, Math.max(0.8, this.distance * factor));
-    this.updateCamera();
+  /** One frame of camera motion (dt in seconds). Returns true when the camera changed. */
+  stepCamera(dt) {
+    const c = this.cam;
+    let moved = false;
+    if (c.orbit[0] || c.orbit[1]) { this.rotateImpl(c.orbit[0], c.orbit[1]); c.orbit[0] = c.orbit[1] = 0; moved = true; }
+    if (c.pan[0] || c.pan[1]) { this.panImpl(c.pan[0], c.pan[1]); c.pan[0] = c.pan[1] = 0; moved = true; }
+    if (c.roll) { this.rollImpl(c.roll); c.roll = 0; moved = true; }
+    if (c.zoom !== 1) { c.zoomGoal = null; this.distance = this.clampDistance(this.distance * c.zoom); c.zoom = 1; moved = true; }
+    if (c.zoomGoal != null && dt > 0) {
+      const r = c.zoomGoal / this.distance;
+      if (Math.abs(Math.log(r)) < 1e-3) { this.distance = c.zoomGoal; c.zoomGoal = null; }
+      else this.distance *= Math.pow(r, 1 - Math.exp(-dt / ZOOM_TAU)); // geometric easing: same feel at any distance
+      moved = true;
+    }
+    if (c.vel && dt > 0) {
+      const v = c.vel;
+      if (v.kind === 'pan') this.panImpl(v.x * dt, v.y * dt); else this.rotateImpl(v.x * dt, v.y * dt);
+      const k = Math.exp(-dt / INERTIA_TAU);
+      v.x *= k; v.y *= k;
+      if (Math.hypot(v.x, v.y) < INERTIA_STOP) c.vel = null;
+      moved = true;
+    }
+    if (moved) { this.noteMotion(); this.updateCamera(); }
+    return moved;
   }
 
   boundingSphere() {
@@ -526,10 +644,11 @@ export class Viewport {
     const aspect = this.width / this.height;
     const half = Math.min(fov / 2, Math.atan(Math.tan(fov / 2) * aspect));
     const need = ((center.distanceTo(this.target) + radius) / Math.sin(half)) * 1.05;
-    if (need > this.distance) { this.distance = need; this.updateCamera(); }
+    if (need > this.distance) { this.cancelMotion(); this.distance = need; this.updateCamera(); }
   }
 
   fit() {
+    this.cancelMotion();
     const { center, radius } = this.boundingSphere();
     this.target.copy(center);
     const fov = THREE.MathUtils.degToRad(this.persp.fov);
@@ -615,10 +734,11 @@ export class Viewport {
     const L = this.lights;
     if (name === 'metallic') { L.key.intensity = SCN(1100); L.fill.intensity = SCN(250); L.rim.intensity = SCN(dark ? 500 : 300); this.hemi.intensity = SCN(dark ? 250 : 320); }
     else { L.key.intensity = SCN(820); L.fill.intensity = SCN(180); L.rim.intensity = SCN(dark ? 420 : 160); this.hemi.intensity = SCN(dark ? 380 : 480); }
-    this.sao.enabled = !!this.options.ambientOcclusion && name !== 'flat';
+    this.aoOn = !!this.options.ambientOcclusion && name !== 'flat';
+    this.setAOQuality(false);
     // Cartoons get a wider, softer occlusion (Mol*-like depth between helices and sheets); atoms keep the macOS 1.4 Å.
     const aoRadius = this.options.style === 'cartoon' ? 4.0 : 1.4;
-    if (this.aoRadius !== aoRadius) { this.aoRadius = aoRadius; this.sao.updateGtaoMaterial({ radius: aoRadius }); }
+    if (this.aoRadius !== aoRadius) { this.aoRadius = aoRadius; for (const ao of this.aoPasses) ao.updateGtaoMaterial({ radius: aoRadius }); }
     this.dirty = true;
   }
 
@@ -626,6 +746,7 @@ export class Viewport {
   setMolecule(mol, { fit = false, keepSelection = false } = {}) {
     this.molecule = mol;
     this.positions = (mol?.atoms || []).map((a) => v3(a.pos));
+    this.positionsVersion++;
     if (!keepSelection) { this.selection = new Set(); this.hidden.clear(); this.colorOverrides.clear(); }
     else this.selection = new Set([...this.selection].filter((i) => i < this.positions.length));
     this.hover = null;
@@ -695,10 +816,20 @@ export class Viewport {
     const mat = this.options.material === 'flat' ? this.flatMaterial : this.material;
     const n = mol.atoms.length;
     this.setLOD(n);
-    this.atomMesh = new THREE.InstancedMesh(this.atomGeo, mat, n);
+    // Only visible atoms get an instance (in cartoon mode most atoms are hidden: zero-size instances still cost
+    // their full vertex work in every pass). atomInstances[k] = atom drawn by instance k.
+    const radii = this.atomRadii = new Float32Array(n);
+    let visible = 0;
+    for (let i = 0; i < n; i++) { radii[i] = this.atomVisible(i) ? this.atomRadius(mol.atoms[i].z) : 0; if (radii[i] > 0) visible++; }
+    const inst = this.atomInstances = new Int32Array(visible);
+    for (let i = 0, k = 0; i < n; i++) if (radii[i] > 0) inst[k++] = i;
+    this.atomMesh = new THREE.InstancedMesh(this.atomGeo, mat, Math.max(1, visible));
+    this.atomMesh.count = visible;
     this.atomMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.atomMesh.frustumCulled = false; // bounds change every animation frame; molecules are on screen anyway
     const colors = this.colors = this.atomColors();
-    for (let i = 0; i < n; i++) this.atomMesh.setColorAt(i, colors[i]);
+    for (let k = 0; k < visible; k++) this.atomMesh.setColorAt(k, colors[inst[k]]);
+    if (!visible) this.atomMesh.setColorAt(0, tmpColor.set(0xffffff));
     this.molGroup.add(this.atomMesh);
     // bond segments: each segment = {i, j, from(0..1), to, offset vector index, color atom}
     this.buildBondSegments();
@@ -706,12 +837,17 @@ export class Viewport {
     if (segCount) {
       this.bondMesh = new THREE.InstancedMesh(this.bondGeo, mat, segCount);
       this.bondMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.bondMesh.frustumCulled = false;
       this.bondSegs.forEach((s, k) => {
         const c = s.color != null ? colors[s.color] : new THREE.Color(0x999999);
         this.bondMesh.setColorAt(k, c);
       });
       this.molGroup.add(this.bondMesh);
     }
+    // Per-bond plane directions for multiple-bond lines (filled by updateMatrices, no per-frame allocation).
+    this.bondDirs = new Float32Array(mol.bonds.length * 3);
+    this.bondDirStamp = new Uint32Array(mol.bonds.length);
+    this.matrixStamp = 0;
     this.cartoon.build(this.molGroup);
     this.updateMatrices();
   }
@@ -763,68 +899,86 @@ export class Viewport {
   orderOf(a, b) { return this.bondOrders?.get(Math.min(a, b) * 1e6 + Math.max(a, b)); }
 
   /** Perpendicular offset direction for bond a-b (in the plane of a neighbour when possible). */
-  bondPlaneDir(a, b) {
-    const pa = this.positions[a], pb = this.positions[b];
-    const axis = new THREE.Vector3().subVectors(pb, pa).normalize();
+  bondPlaneDir(a, b) { return this.bondPlaneDirInto(a, b, new THREE.Vector3()); }
+  /** bondPlaneDir writing into `out` (no allocation; uses the module scratch vector sC). */
+  bondPlaneDirInto(a, b, out) {
+    const P = this.positions, pa = P[a], pb = P[b];
+    const axis = sC.subVectors(pb, pa).normalize();
     // Prefer a neighbour joined by an aromatic bond (so the inner aromatic line points into the ring),
     // then a heavy atom, then anything.
-    let ref = null, best = -1;
-    for (const [x, y] of [[a, b], [b, a]]) {
-      for (const n of this.neighbors[x] || []) {
+    let best = -1, bx = a, bn = -1;
+    for (let pass = 0; pass < 2; pass++) {
+      const x = pass ? b : a, y = pass ? a : b;
+      const nb = this.neighbors[x];
+      if (!nb) continue;
+      for (let j = 0; j < nb.length; j++) {
+        const n = nb[j];
         if (n === y) continue;
         const score = (this.orderOf(x, n) === 1.5 ? 4 : 0) + (this.molecule.atoms[n].z !== 1 ? 2 : 0) + (x === a ? 1 : 0);
-        if (score > best) { best = score; ref = new THREE.Vector3().subVectors(this.positions[n], this.positions[x]); }
+        if (score > best) { best = score; bx = x; bn = n; }
       }
     }
-    if (!ref) ref = new THREE.Vector3(0, 0, 1).applyQuaternion(this.orientation).cross(axis);
-    let perp = ref.sub(axis.clone().multiplyScalar(ref.dot(axis)));
+    const ref = out;
+    if (bn >= 0) ref.subVectors(P[bn], P[bx]);
+    else ref.set(0, 0, 1).applyQuaternion(this.orientation).cross(axis);
+    ref.addScaledVector(axis, -ref.dot(axis));
     // Collinear neighbours (H–C≡C–H, CO2): offset across the screen instead of along the view direction.
-    if (perp.lengthSq() < 1e-6) perp = new THREE.Vector3(0, 0, 1).applyQuaternion(this.orientation).cross(axis);
-    if (perp.lengthSq() < 1e-6) perp = Math.abs(axis.x) < 0.9 ? new THREE.Vector3(1, 0, 0).cross(axis) : new THREE.Vector3(0, 1, 0).cross(axis);
-    return perp.normalize();
+    if (ref.lengthSq() < 1e-6) ref.set(0, 0, 1).applyQuaternion(this.orientation).cross(axis);
+    if (ref.lengthSq() < 1e-6) { if (Math.abs(axis.x) < 0.9) ref.set(1, 0, 0).cross(axis); else ref.set(0, 1, 0).cross(axis); }
+    return ref.normalize();
   }
 
-  updateMatrices() {
+  /** Writes the atom and bond instance matrices (and the cartoon vertices) for the displayed positions.
+   *  Allocation-free. `animated` marks a per-frame update (trajectory / vibration playback): overlays are only
+   *  refreshed when something is highlighted, and the frame counts as motion for the adaptive quality. */
+  updateMatrices(animated = false) {
     const mol = this.molecule;
     if (!mol || !this.atomMesh) { this.dirty = true; return; }
-    const n = mol.atoms.length;
-    for (let i = 0; i < n; i++) {
-      const r = this.atomVisible(i) ? this.atomRadius(mol.atoms[i].z) : 0;
-      tmpS.set(r, r, r);
-      tmpM.compose(this.positions[i], tmpQ.identity(), tmpS);
-      this.atomMesh.setMatrixAt(i, tmpM);
+    const P = this.positions, R = this.atomRadii, inst = this.atomInstances;
+    const A = this.atomMesh.instanceMatrix.array;
+    for (let k = 0; k < inst.length; k++) {
+      const i = inst[k], r = R[i], p = P[i], o = k * 16;
+      A[o] = r; A[o + 1] = 0; A[o + 2] = 0; A[o + 3] = 0;
+      A[o + 4] = 0; A[o + 5] = r; A[o + 6] = 0; A[o + 7] = 0;
+      A[o + 8] = 0; A[o + 9] = 0; A[o + 10] = r; A[o + 11] = 0;
+      A[o + 12] = p.x; A[o + 13] = p.y; A[o + 14] = p.z; A[o + 15] = 1;
     }
     this.atomMesh.instanceMatrix.needsUpdate = true;
-    if (this.atomMesh.instanceColor) this.atomMesh.instanceColor.needsUpdate = true;
-    this.atomMesh.computeBoundingSphere();
     if (this.bondMesh) {
       const br = this.bondRadius();
-      const planeCache = new Map();
-      this.bondSegs.forEach((s, k) => {
-        const pa = this.positions[s.a], pb = this.positions[s.b];
-        let A = pa, B = pb;
+      const spacing = this.options.style === 'wireframe' ? 0.045 : br; // s.off is in bond radii
+      const segs = this.bondSegs, dirs = this.bondDirs, stamp = this.bondDirStamp;
+      const B = this.bondMesh.instanceMatrix.array;
+      this.matrixStamp = (this.matrixStamp + 1) >>> 0 || 1;
+      const st = this.matrixStamp;
+      const pA = sA, pB = sB, d = sE, mid = tmpP, dir = sF;
+      for (let k = 0; k < segs.length; k++) {
+        const s = segs[k];
+        pA.copy(P[s.a]); pB.copy(P[s.b]);
         if (s.off) {
-          let dir = planeCache.get(s.bond);
-          if (!dir) { dir = this.bondPlaneDir(s.a, s.b); planeCache.set(s.bond, dir); }
-          const spacing = this.options.style === 'wireframe' ? 0.045 : br; // s.off is in bond radii
-          A = pa.clone().addScaledVector(dir, s.off * spacing);
-          B = pb.clone().addScaledVector(dir, s.off * spacing);
+          const j = s.bond * 3;
+          if (stamp[s.bond] !== st) { this.bondPlaneDirInto(s.a, s.b, dir); dirs[j] = dir.x; dirs[j + 1] = dir.y; dirs[j + 2] = dir.z; stamp[s.bond] = st; }
+          const f = s.off * spacing;
+          pA.x += dirs[j] * f; pA.y += dirs[j + 1] * f; pA.z += dirs[j + 2] * f;
+          pB.x += dirs[j] * f; pB.y += dirs[j + 1] * f; pB.z += dirs[j + 2] * f;
         }
-        const p0 = A.clone().lerp(B, s.f0), p1 = A.clone().lerp(B, s.f1);
-        const d = new THREE.Vector3().subVectors(p1, p0);
+        // Segment from A + (B-A) f0 to A + (B-A) f1.
+        d.subVectors(pB, pA);
+        mid.copy(pA).addScaledVector(d, (s.f0 + s.f1) / 2);
+        d.multiplyScalar(s.f1 - s.f0);
         const len = d.length();
-        tmpP.addVectors(p0, p1).multiplyScalar(0.5);
-        tmpQ.setFromUnitVectors(UP, len > 1e-9 ? d.divideScalar(len) : UP);
+        if (len > 1e-9) d.divideScalar(len); else d.copy(UP);
+        tmpQ.setFromUnitVectors(UP, d);
         const r = br * (s.thin || 1);
         tmpS.set(r, len, r);
-        tmpM.compose(tmpP, tmpQ, tmpS);
-        this.bondMesh.setMatrixAt(k, tmpM);
-      });
+        tmpM.compose(mid, tmpQ, tmpS);
+        tmpM.toArray(B, k * 16);
+      }
       this.bondMesh.instanceMatrix.needsUpdate = true;
-      this.bondMesh.computeBoundingSphere();
     }
     this.cartoon.sync();
-    this.updateHighlights();
+    if (!animated || this.selection.size || this.pendingPicks.length || this.hover || this.measurements.length) this.updateHighlights();
+    if (animated) this.noteMotion();
     this.dirty = true;
   }
 
@@ -997,7 +1151,8 @@ export class Viewport {
     for (const d of displacements) maxLen = Math.max(maxLen, Math.hypot(...d));
     const norm = maxLen > 1e-9 ? 1 / maxLen : 0;
     const b = base && base.length === this.molecule.atoms.length ? base : this.molecule.atoms.map((a) => a.pos);
-    this.vibration = { disp: displacements.map((d) => v3(d).multiplyScalar(norm)), amplitude, speed, t0: performance.now(), base: b.map(v3) };
+    // Packed coordinates: the per-frame update is base + s·disp into the displayed positions, in place.
+    this.vibration = { disp: Viewport.packPositions(displacements.map((d) => [d[0] * norm, d[1] * norm, d[2] * norm])), amplitude, speed, t0: performance.now(), base: Viewport.packPositions(b) };
   }
   setVibrationParams({ amplitude, speed }) {
     if (!this.vibration) return;
@@ -1007,8 +1162,7 @@ export class Viewport {
   stopVibration() {
     if (!this.vibration) return;
     this.vibration = null;
-    if (this.molecule) this.positions = this.molecule.atoms.map((a) => v3(a.pos));
-    this.updateMatrices();
+    if (this.molecule) this.setDisplayedPositions(this.molecule.atoms.map((a) => a.pos));
   }
   showArrows(displacements, scale = 1.6, base = null) {
     if (this.arrows) { this.overlayGroup.remove(this.arrows); this.arrows = null; }
@@ -1034,32 +1188,130 @@ export class Viewport {
     this.updateHighlights();
   }
 
-  /** Display a precomputed geometry (trajectory frame) without changing topology. */
+  /** Display a precomputed geometry (trajectory frame) without changing topology. `posArray`: one [x,y,z] per
+   *  atom (e.g. `m.atoms.map((a) => a.pos)`). Same fast in-place path as setPositionsFast. */
   setDisplayedPositions(posArray) {
-    if (!this.molecule || posArray.length !== this.molecule.atoms.length) return false;
-    this.positions = posArray.map(v3);
-    this.updateMatrices();
+    if (!this.molecule || !posArray || posArray.length !== this.molecule.atoms.length) return false;
+    const P = this.positions;
+    if (P.length !== posArray.length) this.positions = posArray.map(v3);
+    else for (let i = 0; i < P.length; i++) { const q = posArray[i]; P[i].set(q[0], q[1], q[2]); }
+    this.positionsVersion++;
+    this.updateMatrices(true);
     return true;
   }
+
+  /**
+   * FAST ENTRY POINT for animated geometry (trajectory playback with interpolation, morphs): call it every
+   * requestAnimationFrame. `coords` is a Float32Array/Float64Array of 3·N numbers (x0, y0, z0, x1, ...) or an
+   * array of N [x, y, z]; N must equal the current molecule's atom count (returns false otherwise, nothing
+   * changes). The displayed positions are overwritten in place (no allocation); the atom/bond instance matrices
+   * and the protein cartoon vertices follow (topology, colours, bonds and selection stay as they are), and the
+   * frame is drawn on the next animation frame with the cheap "moving" quality, refined IDLE_MS after the last
+   * update. The document's molecule is not modified (setMolecule / app edits restore it). Pack frames once with
+   * Viewport.packPositions(m.atoms.map((a) => a.pos)); setInterpolatedPositions(a, b, t) lerps two packed frames.
+   */
+  setPositionsFast(coords) {
+    const mol = this.molecule;
+    if (!mol || !coords) return false;
+    const n = mol.atoms.length, P = this.positions;
+    if (P.length !== n) return false;
+    if (coords.length === 3 * n && typeof coords[0] === 'number') {
+      for (let i = 0, j = 0; i < n; i++, j += 3) P[i].set(coords[j], coords[j + 1], coords[j + 2]);
+    } else if (coords.length === n) {
+      for (let i = 0; i < n; i++) { const q = coords[i]; P[i].set(q[0], q[1], q[2]); }
+    } else return false;
+    this.positionsVersion++;
+    this.updateMatrices(true);
+    return true;
+  }
+
+  /** Alias of setPositionsFast for a flat Float32Array; `count` (optional) is the atom count the caller packed. */
+  setDisplayedPositionsFast(flat, count) {
+    if (count != null && (!this.molecule || count !== this.molecule.atoms.length)) return false;
+    if (!flat || flat.length < 3 * (this.molecule?.atoms.length ?? 0)) return false;
+    return this.setPositionsFast(flat.length === 3 * this.molecule.atoms.length ? flat : flat.subarray(0, 3 * this.molecule.atoms.length));
+  }
+
+  /** Displays a + (b − a)·t for two packed frames (Float32Array 3·N each, see packPositions); fast path. */
+  setInterpolatedPositions(a, b, t) {
+    const mol = this.molecule;
+    const n = mol ? mol.atoms.length : -1, P = this.positions;
+    if (!mol || P.length !== n || !a || !b || a.length !== 3 * n || b.length !== 3 * n) return false;
+    for (let i = 0, j = 0; i < n; i++, j += 3) {
+      P[i].set(a[j] + (b[j] - a[j]) * t, a[j + 1] + (b[j + 1] - a[j + 1]) * t, a[j + 2] + (b[j + 2] - a[j + 2]) * t);
+    }
+    this.positionsVersion++;
+    this.updateMatrices(true);
+    return true;
+  }
+
+  /** [[x,y,z], ...] (or atoms with .pos) → Float32Array of 3·N coordinates for the fast entry points. */
+  static packPositions(list) {
+    const out = new Float32Array(list.length * 3);
+    for (let i = 0; i < list.length; i++) { const q = list[i].pos || list[i]; out[3 * i] = q[0]; out[3 * i + 1] = q[1]; out[3 * i + 2] = q[2]; }
+    return out;
+  }
+
+  /** fn(now, dt) runs every animation frame before drawing (e.g. a trajectory player); returns an unsubscribe. */
+  onFrame(fn) { this.frameCallbacks.add(fn); return () => this.frameCallbacks.delete(fn); }
 
   // ---------- render loop ----------
   loop(now) {
     requestAnimationFrame(this.loop);
-    if (this.vibration) {
-      const v = this.vibration;
+    const dt = this.lastLoopAt ? Math.min(0.1, Math.max(0, (now - this.lastLoopAt) / 1000)) : 1 / 60;
+    this.lastLoopAt = now;
+    this.stepCamera(dt);
+    for (const fn of this.frameCallbacks) { try { fn(now, dt); } catch (e) { console.error(e); } }
+    const v = this.vibration;
+    if (v && this.molecule && v.base.length === 3 * this.positions.length) {
       const s = Math.sin(((now - v.t0) / 1000) * Math.PI * 2 * 0.9 * v.speed) * v.amplitude;
-      this.positions = v.base.map((b, i) => b.clone().addScaledVector(v.disp[i] || new THREE.Vector3(), s));
-      this.updateMatrices();
+      const P = this.positions, B = v.base, D = v.disp;
+      for (let i = 0, j = 0; i < P.length; i++, j += 3) P[i].set(B[j] + D[j] * s, B[j + 1] + D[j + 1] * s, B[j + 2] + D[j + 2] * s);
+      this.positionsVersion++;
+      this.updateMatrices(true);
     }
-    if (!this.dirty) return;
+    const moving = performance.now() - this.motionAt < IDLE_MS;
+    // Draw only when something changed, plus one full-quality frame once motion has stopped.
+    if (!this.dirty && !(this.fastFrame && !moving)) return;
     this.dirty = false;
-    this.renderNow();
+    this.renderNow(moving);
   }
 
-  renderNow() {
+  /** Whether frames drawn while moving use the cheap AO path (perf.quality: 'auto' | 'full' | 'fast'). */
+  useFastPath() {
+    const q = this.perf.quality;
+    if (q === 'full') return false;
+    if (q === 'fast') return true;
+    return !!this.aoOn && ((this.atomCountForLOD || 0) >= FAST_AO_MIN_ATOMS || !!this.cartoon.mesh);
+  }
+
+  /** Enables the full or the cheap AO pass (both off when AO is disabled). */
+  setAOQuality(fast) {
+    this.sao.enabled = !!this.aoOn && !fast;
+    this.saoFast.enabled = !!this.aoOn && fast;
+  }
+
+  /** Draws the scene now. `moving` selects the cheap path (when useFastPath()); exports always draw full quality. */
+  renderNow(moving = false) {
+    const fast = moving && this.useFastPath();
+    if (!fast && !this.fastWarm && this.useFastPath()) {
+      // Compile the cheap AO shaders now (overdrawn by the full frame below), not on the first drag.
+      this.fastWarm = true;
+      this.setAOQuality(true);
+      this.composer.render();
+    }
+    this.setAOQuality(fast);
+    const t0 = performance.now();
     this.composer.render();
     this.drawOverlay(this.octx, this.width, this.height, window.devicePixelRatio || 1);
+    if (fast) this.perf.fast++; else this.perf.full++;
+    this.perf.lastMs = performance.now() - t0;
+    this.fastFrame = fast;
+    if (fast) this.setAOQuality(false);
   }
+  /** Perf harness helpers (devtools): one frame with the given path. */
+  renderFull() { this.renderNow(false); }
+  renderFast() { const q = this.perf.quality; this.perf.quality = 'fast'; this.renderNow(true); this.perf.quality = q; }
 
   labelText(i) {
     const a = this.molecule.atoms[i];
@@ -1116,6 +1368,9 @@ export class Viewport {
   // ---------- export ----------
   /** Renders at width×height and returns a PNG data URL (labels and measurements included). */
   exportPNG(width, height, { transparent = false } = {}) {
+    // Deterministic: queued input and the eased zoom are settled, inertia stops, full-quality AO.
+    this.settleCamera();
+    this.setAOQuality(false);
     const maxSize = this.renderer.capabilities.maxTextureSize || 8192;
     const f = Math.min(1, maxSize / Math.max(width, height));
     width = Math.round(width * f); height = Math.round(height * f);

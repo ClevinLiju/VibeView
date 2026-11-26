@@ -53,6 +53,34 @@ public enum XYZFormat {
         return frames
     }
 
+    /// Energy (Hartree, as written) stated in a trajectory frame's comment line, or nil. Understands
+    /// xtb ("energy: -5.07 gnorm: …"), ORCA _trj.xyz ("Coordinates from ORCA-job x E -74.96"), "E=-76.01",
+    /// "Energy = -76.01" / "energy=-76.01", and a comment that is a single number.
+    public static func commentEnergy(_ title: String) -> Double? {
+        let tk = title.replacingOccurrences(of: "=", with: " = ").replacingOccurrences(of: ":", with: " : ")
+            .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "," })
+        // A lone integer is a frame/step counter, not an energy.
+        if tk.count == 1 { return tk[0].contains(".") ? parseFortranDouble(tk[0]).flatMap { $0.isFinite ? $0 : nil } : nil }
+        for (k, t) in tk.enumerated() {
+            let w = t.lowercased()
+            guard w == "e" || w == "energy" || w == "etot" || w == "e_tot" || w == "total_energy" else { continue }
+            var j = k + 1
+            if j < tk.count, tk[j] == "=" || tk[j] == ":" { j += 1 }
+            if j < tk.count, let v = parseFortranDouble(tk[j]), v.isFinite { return v }
+        }
+        return nil
+    }
+
+    /// Gradient norm in a trajectory comment ("gnorm: 0.0123", xtb), or nil.
+    public static func commentGradientNorm(_ title: String) -> Double? {
+        let tk = title.replacingOccurrences(of: ":", with: " : ").replacingOccurrences(of: "=", with: " = ")
+            .split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard let k = tk.firstIndex(where: { $0.lowercased() == "gnorm" }) else { return nil }
+        var j = k + 1
+        if j < tk.count, tk[j] == ":" || tk[j] == "=" { j += 1 }
+        return j < tk.count ? parseFortranDouble(tk[j]) : nil
+    }
+
     public static func write(_ molecule: Molecule) -> String { write([molecule]) }
 
     public static func write(_ molecules: [Molecule]) -> String {

@@ -144,6 +144,20 @@ extension SelfTest {
               && (el["result"]?["text"]?.stringValue ?? "").components(separatedBy: "$$$$").count == 3, err(el))
         let eb = await call("doc.exportAs", ["docId": .string(tId), "format": "xyz", "frames": [7]])
         check("doc.exportAs bad frame -> bad_request", eb["error"]?["code"]?.stringValue == "bad_request", err(eb))
+        // Trajectory player: every frame's coordinates in one reply, topology flags, comment energies.
+        let fc = await call("doc.frameCoordinates", ["docId": .string(tId)])
+        let fcXYZ = Binary.decodeFloat32(fc["result"]?["positionsB64"]?.stringValue ?? "") ?? []
+        check("doc.frameCoordinates", fc["result"]?["count"]?.intValue == 3 && fcXYZ.count == 27
+              && abs(fcXYZ[9 + 2] - 0.12) < 1e-6 && abs(fcXYZ[18 + 4] - 0.77) < 1e-6
+              && fc["result"]?["sameTopology"] == [false, true, true]
+              && fc["result"]?["atomCounts"] == [3, 3, 3], err(fc))
+        let trajE = traj.replacingOccurrences(of: "f1", with: "energy: -5.07 gnorm: 0.04").replacingOccurrences(of: "f2", with: "E=-5.08")
+        let tjE = await call("doc.openText", ["text": .string(trajE), "format": "xyz", "fileName": "trajE.xyz"])
+        let tEId = tjE["result"]?["docId"]?.stringValue ?? ""
+        let fr = await call("doc.frames", ["docId": .string(tEId)])
+        check("doc.frames comment energies", fr["result"]?["frameEnergies"] == [-5.07, -5.08, nil]
+              && fr["result"]?["steps"]?.arrayValue?.first?["gradientNorm"]?.doubleValue == 0.04 && fr["result"]?["kind"]?.stringValue == "optimization"
+              && fr["result"]?["home"]?.intValue == 2, err(fr))
         let ex = await call("doc.exportAs", ["docId": .string(tId), "format": "nope"])
         check("doc.exportAs unknown format -> bad_request", ex["error"]?["code"]?.stringValue == "bad_request", err(ex))
 

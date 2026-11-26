@@ -24,14 +24,37 @@ export function buildResults(app) {
     { id: 'zmatrix', label: 'Z-Matrix', show: (d) => true, build: buildZMatrixTab }, // zmatrix.js
   ];
   let current = null; let builtFor = null;
+  const seen = new Set(); // documents the panel has shown (the first showing may pick the Trajectory tab)
   const render = () => {
     const d = app.active;
     clear(tabsEl);
     if (!d || !(hasResultData(d) || app.zmatrixOpen)) { clear(body); current?.dispose?.(); current = null; builtFor = null; return; }
     const visible = tabs.filter((t) => t.show(d));
+    const frames = d.summary.frameCount || 1;
+    const isCalcOutput = !!d.summary.program && d.summary.format !== 'pdb';
+    // A geometry optimization (or scan / IRC) opens on its Trajectory tab, unless the file also has vibrations or
+    // excited states to look at first; the "Play" button next to the tabs reaches it from anywhere.
+    if (!seen.has(d.docId)) {
+      seen.add(d.docId);
+      if (frames > 1 && isCalcOutput && !d.summary.modeCount && !d.summary.excitedStateCount) state.tab = 'trajectory';
+    }
     if (!visible.some((t) => t.id === state.tab)) state.tab = visible[0].id;
     for (const t of visible) tabsEl.append(h('button.tab' + (t.id === state.tab ? '.on' : ''), { onclick: () => { state.tab = t.id; render(); } }, t.label));
-    tabsEl.append(h('span.grow'), h('button.icon-btn', { title: 'Hide results (Ctrl+Alt+R)', innerHTML: '&#x2715;', onclick: () => app.command('panel.results') }));
+    tabsEl.append(h('span.grow'));
+    if (frames > 1) {
+      const what = isCalcOutput ? 'optimization' : d.summary.format === 'pdb' ? 'models' : 'frames';
+      tabsEl.append(h('button.btn.small' + (state.tab === 'trajectory' ? '' : '.primary'), {
+        style: { marginRight: '6px', display: 'inline-flex', alignItems: 'center', gap: '4px' },
+        title: `Animate the ${frames} ${isCalcOutput ? 'optimization steps' : what} in the 3D view (Trajectory tab)`,
+        onclick: () => {
+          const st = d.cache.traj || (d.cache.traj = {});
+          st.autoplay = true;
+          if (state.tab === 'trajectory') { builtFor = null; } else state.tab = 'trajectory';
+          render();
+        },
+      }, h('span', { innerHTML: ICONS.play.replace('<svg ', '<svg width="12" height="12" '), style: { display: 'inline-flex' } }), `Play ${what} (${frames})`));
+    }
+    tabsEl.append(h('button.icon-btn', { title: 'Hide results (Ctrl+Alt+R)', innerHTML: '&#x2715;', onclick: () => app.command('panel.results') }));
     const s = d.summary;
     const key = `${d.docId}:${state.tab}:${s.modeCount}:${s.orbitalCount}:${s.frameCount}:${s.excitedStateCount}:${s.atomCount}:${!!s.hasWavefunction}:${!!s.formchkPending}`;
     if (builtFor === key) return;
@@ -42,7 +65,13 @@ export function buildResults(app) {
   };
   app.on('doc', () => render());
   app.on('engine-restarted', () => { builtFor = null; render(); });
-  app.on('results-tab', (id) => { if (id === 'zmatrix') app.zmatrixOpen = true; state.tab = id; builtFor = null; app.settings.panels.results = true; app.emit('panels'); render(); });
+  app.on('results-tab', (req) => {
+    // "trajectory:play" (Play button, smoke tests via VIBEVIEW_SMOKE_TAB) opens the Trajectory tab and starts playback.
+    const [id, arg] = String(req).split(':');
+    if (id === 'zmatrix') app.zmatrixOpen = true;
+    if (id === 'trajectory' && arg === 'play' && app.active) (app.active.cache.traj || (app.active.cache.traj = {})).autoplay = true;
+    state.tab = id; builtFor = null; app.settings.panels.results = true; app.emit('panels'); render();
+  });
   app.on('molecule', () => current?.onMolecule?.());
   installFormchkStatus(app, () => { builtFor = null; render(); });
   render();
@@ -398,87 +427,373 @@ function buildUVVis(app, d, body) {
 }
 
 // ---------- Trajectory ----------
+const KCAL = 627.5095;
+
+/** The energy chart with a fractional playhead and the converged final step marked. */
+class TrajectoryChart extends XYChart {
+  draw() {
+    super.draw();
+    const d = this.data;
+    if (!d || !d.x || !d.x.length || !this.canvas.clientWidth) return;
+    const ctx = this.canvas.getContext('2d'); // super.draw left the DPR transform in place
+    const b = this.bounds(), lay = this.layout();
+    const css = (n, f) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || f;
+    const top = b.ymax * 1.08, y0 = Math.min(0, b.ymin);
+    const yPx = (y) => lay.T + lay.ph - ((y - y0) / (top - y0)) * lay.ph;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(lay.L, lay.T, lay.pw, lay.ph); ctx.clip();
+    if (this.playhead != null) {
+      const px = this.xToPx(this.playhead + 1, b, lay);
+      ctx.strokeStyle = css('--accent', '#3478f6'); ctx.globalAlpha = 0.55; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(px, lay.T); ctx.lineTo(px, lay.T + lay.ph); ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    ctx.restore(); // the final-step ring may overlap the plot border
+    // Final step: a ring (green when the optimizer reported convergence) and a label.
+    const m = this.finalMark;
+    if (m && m.dataIndex != null && m.dataIndex < d.x.length) {
+      const px = this.xToPx(d.x[m.dataIndex], b, lay), py = yPx(d.y[m.dataIndex]);
+      const col = m.converged === true ? css('--ok', '#1f8a4c') : m.converged === false ? css('--warn', '#b26a00') : css('--text-2', '#888');
+      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2); ctx.stroke();
+      if (m.label) {
+        ctx.font = '11px "Segoe UI", sans-serif'; ctx.fillStyle = col; ctx.textBaseline = 'bottom';
+        const tw = ctx.measureText(m.label).width;
+        ctx.textAlign = px + 10 + tw > lay.L + lay.pw ? 'right' : 'left';
+        ctx.fillText(m.label, ctx.textAlign === 'right' ? px - 10 : px + 10, Math.max(lay.T + 14, py - 11));
+      }
+    }
+  }
+}
+
+/**
+ * Frame coordinates for the player: one `doc.frameCoordinates` call (all frames as one Float32 array), or, from an
+ * engine without it, every frame through `doc.molecule`. Cached on the document.
+ */
+async function loadFrameData(d, n, onProgress) {
+  if (d.cache.trajData && d.cache.trajData.count === n) return d.cache.trajData;
+  let out = null;
+  try {
+    const r = await request('doc.frameCoordinates', { docId: d.docId });
+    const xyz = decodeF32(r.positionsB64);
+    out = { count: r.count, atomCounts: r.atomCounts, xyz, sameTopology: r.sameTopology, mols: new Map() };
+  } catch (e) {
+    if (e.code && e.code !== 'bad_request') throw e; // older engine: "unknown method" is a bad_request
+    const mols = new Map(), counts = [], same = [], parts = [];
+    const key = (m) => m.atoms.map((a) => a.z).join(',') + '|' + m.bonds.map((b) => Math.min(b.a, b.b) + '-' + Math.max(b.a, b.b)).sort().join(',');
+    let prev = null;
+    for (let k = 0; k < n; k++) {
+      const m = await request('doc.molecule', { docId: d.docId, frame: k });
+      mols.set(k, m);
+      counts.push(m.atoms.length);
+      const kk = key(m); same.push(k > 0 && kk === prev); prev = kk;
+      const f = new Float32Array(m.atoms.length * 3);
+      m.atoms.forEach((a, i) => { f[3 * i] = a.pos[0]; f[3 * i + 1] = a.pos[1]; f[3 * i + 2] = a.pos[2]; });
+      parts.push(f);
+      onProgress?.(k + 1);
+    }
+    const xyz = new Float32Array(parts.reduce((s, f) => s + f.length, 0));
+    let o = 0; for (const f of parts) { xyz.set(f, o); o += f.length; }
+    out = { count: n, atomCounts: counts, xyz, sameTopology: same, mols };
+  }
+  // Byte offsets per frame and topology groups (frames between rebonds share the drawn bonds).
+  out.offsets = new Int32Array(out.count + 1);
+  out.group = new Int32Array(out.count);
+  for (let k = 0; k < out.count; k++) {
+    out.offsets[k + 1] = out.offsets[k] + out.atomCounts[k] * 3;
+    out.group[k] = k === 0 ? 0 : out.sameTopology[k] ? out.group[k - 1] : out.group[k - 1] + 1;
+  }
+  d.cache.trajData = out;
+  return out;
+}
+
 function buildTrajectory(app, d, body) {
-  const left = h('div.pane.fixed', { style: { width: '330px' } });
+  const left = h('div.pane.fixed', { style: { width: '340px' } });
   const right = h('div.pane.chart');
   body.append(left, right);
   const n = d.summary.frameCount;
   // The document geometry is the last frame, except for PDB models (the document opens on model 1, like RCSB).
-  const home = d.summary.format === 'pdb' ? 0 : n - 1;
-  const st = d.cache.traj || (d.cache.traj = { frame: home, fps: 8, playing: false, loop: true });
-  const frameCache = new Map();
-  const slider = h('input', { type: 'range', min: 0, max: n - 1, step: 1, value: st.frame, oninput: () => go(Number(slider.value)) });
-  const label = h('span', { style: { fontVariantNumeric: 'tabular-nums' } });
-  const fps = h('input', { type: 'number', min: 1, max: 60, value: st.fps, style: { width: '54px' }, onchange: () => { st.fps = Number(fps.value) || 8; } });
-  const play = h('button.btn.small', { onclick: () => toggle() });
-  const loop = h('input', { type: 'checkbox', checked: st.loop, onchange: () => { st.loop = loop.checked; } });
-  const energyInfo = h('div', { style: { fontSize: '12px', color: 'var(--text-2)', marginTop: '6px' } });
+  let home = d.summary.format === 'pdb' ? 0 : n - 1;
+  const st = d.cache.traj || (d.cache.traj = {});
+  if (st.frame == null) st.frame = home;
+  if (st.fps == null) st.fps = 4;
+  if (st.mode == null) st.mode = st.loop === false ? 'once' : 'loop';
+  if (st.smooth == null) st.smooth = true;
+  st.playing = false; // export.js clears this to stop the player; a rebuilt tab starts paused
+  const vp = app.viewport;
+
+  // ----- controls -----
+  const slider = h('input', { type: 'range', min: 0, max: Math.max(1, n - 1), step: 'any', value: st.frame, style: { flex: '1' },
+    oninput: () => { pause(); seek(Number(slider.value)); }, onchange: () => go(Math.round(Number(slider.value))) });
+  const label = h('span', { style: { fontVariantNumeric: 'tabular-nums', minWidth: '78px', textAlign: 'right', fontSize: '12px' } });
+  const fps = h('input', { type: 'number', min: 0.25, max: 60, step: 0.25, value: st.fps, style: { width: '58px' },
+    title: 'Playback speed in optimization steps (frames) per second',
+    onchange: () => { st.fps = Math.min(60, Math.max(0.25, Number(fps.value) || 4)); fps.value = st.fps; } });
+  const iconBtn = (title, icon, onclick) => h('button.icon-btn', { title, innerHTML: icon, onclick });
+  const play = h('button.btn.small.primary', { style: { minWidth: '64px' }, onclick: () => toggle() });
+  const smooth = h('input', { type: 'checkbox', checked: st.smooth, onchange: () => { st.smooth = smooth.checked; render(true); } });
+  const smoothLabel = h('label.check', { title: 'Interpolate atom positions between steps at the display rate (off: jump from step to step)' }, smooth, 'Smooth');
+  const mode = segmented([
+    { value: 'once', label: 'Once', title: 'Play to the last step and stop' },
+    { value: 'loop', label: 'Loop', title: 'Start again from the first step' },
+    { value: 'bounce', label: 'Bounce', title: 'Play forwards and backwards (ping-pong)' },
+  ], st.mode, (v) => { st.mode = v; });
+  const energyInfo = h('div.selectable', { style: { fontSize: '12px', color: 'var(--text-2)', marginTop: '6px', lineHeight: '1.5', fontVariantNumeric: 'tabular-nums' } });
+  const status = h('div', { style: { fontSize: '11.5px', color: 'var(--text-3)', marginTop: '4px' } });
   left.append(
-    h('div.row', {}, h('button.icon-btn', { title: 'First frame', innerHTML: ICONS.prev, onclick: () => go(0) }), play, h('button.icon-btn', { title: 'Last frame', innerHTML: ICONS.next, onclick: () => go(n - 1) }), label),
+    h('div.row', { style: { gap: '2px' } },
+      iconBtn('First step (Home)', ICONS.prev, () => { pause(); go(0); }),
+      iconBtn('Previous step', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-8 7 8 7z"/></svg>', () => { pause(); go(Math.ceil(st.frame - 1e-6) - 1); }),
+      play,
+      iconBtn('Next step', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l8 7-8 7z"/></svg>', () => { pause(); go(Math.floor(st.frame + 1e-6) + 1); }),
+      iconBtn('Last step (End)', ICONS.next, () => { pause(); go(n - 1); }),
+      h('span.grow'), label),
     h('div.row', {}, slider),
-    h('div.row', {}, h('label', {}, 'Frames/s'), fps, h('label.check', {}, loop, 'Loop'), h('span.grow'),
-      h('button.btn.small', { title: 'Make this frame the document geometry (undoable)', onclick: () => adopt() }, 'Use this geometry'),
-      h('button.btn.small', { title: 'Export the trajectory as an animated GIF or video', onclick: () => app.command('file.exportAnimation', { source: 'trajectory' }) }, 'GIF…')),
-    energyInfo);
+    h('div.row', {}, h('label', { title: fps.title }, 'Steps/s'), fps, smoothLabel, h('div.grow', {}, mode)),
+    h('div.row', {}, h('span.grow'),
+      h('button.btn.small', { title: 'Make this step the document geometry (undoable)', onclick: () => adopt() }, 'Use this geometry'),
+      h('button.btn.small', { title: 'Export the trajectory as an animated GIF or video', onclick: () => { pause(); app.command('file.exportAnimation', { source: 'trajectory' }); } }, 'GIF…')),
+    energyInfo, status);
   const canvas = h('canvas.chart-canvas');
   right.append(canvas);
-  const chart = new XYChart(canvas, { onPick: () => {} });
+  const chart = new TrajectoryChart(canvas, { onPick: () => {} });
   canvas.addEventListener('click', (e) => {
     if (!chart.data) return;
     const b = chart.bounds(), lay = chart.layout();
     const x = chart.pxToX(e.offsetX, b, lay);
     let best = 0; for (let i = 0; i < chart.data.x.length; i++) if (Math.abs(chart.data.x[i] - x) < Math.abs(chart.data.x[best] - x)) best = i;
-    go(best);
+    pause(); go(chart.data.x[best] - 1);
   });
-  let energies = [];
-  let timer = null; let busy = false;
-  async function go(i) {
-    i = Math.max(0, Math.min(n - 1, i));
-    st.frame = i; slider.value = i;
-    label.textContent = `Frame ${i + 1} / ${n}`;
-    chart.select(i);
-    if (energies[i] != null) energyInfo.textContent = `E = ${energies[i].toFixed(8)} Eh · ΔE = ${((energies[i] - Math.min(...energies)) * 627.5095).toFixed(2)} kcal/mol`;
-    if (busy) return; busy = true;
-    try {
-      let m = frameCache.get(i);
-      if (!m) { m = await request('doc.molecule', { docId: d.docId, frame: i }); frameCache.set(i, m); }
-      if (app.active !== d) return;
-      if (!app.viewport.setDisplayedPositions(m.atoms.map((a) => a.pos))) app.viewport.setMolecule(m, { keepSelection: true });
-      d.frame = i;
-    } catch (e) { app.status(e.message); } finally { busy = false; }
+
+  // ----- data -----
+  let info = null;      // doc.frames: frameEnergies, steps (optimizer data), converged, kind, home
+  let data = null;      // loadFrameData
+  let energies = [];    // per frame (null where unknown)
+  let eMin = 0;
+  let dataIndexOf = []; // frame -> index into the chart arrays (frames without an energy are not plotted)
+  let disposed = false;
+
+  // ----- display -----
+  // Positions go to the viewport through reused buffers: a flat Float32Array (setDisplayedPositionsFast, when the
+  // viewport has it) or an array of [x, y, z] arrays (setDisplayedPositions).
+  let flat = null, nested = null;
+  let shownGroup = null;   // topology group whose molecule the viewport draws (null: the document molecule)
+  let viewChanged = false; // the viewport shows something other than the document geometry
+  let swapping = false;    // a frame molecule is being fetched for a topology change
+  let lastShown = NaN;
+  // Playback statistics (devtools: __vibeviewTrajectory; logged by the trajectory:play smoke test).
+  const stats = { frames: n, shown: 0, interpolated: 0, swaps: 0, pushMs: 0, frame: 0, fast: !!vp.setDisplayedPositionsFast };
+  window.__vibeviewTrajectory = stats;
+  function ensureBuffers(atoms) {
+    if (!flat || flat.length !== atoms * 3) {
+      flat = new Float32Array(atoms * 3);
+      nested = Array.from({ length: atoms }, () => [0, 0, 0]);
+    }
   }
+  function push(atoms) {
+    if (vp.setDisplayedPositionsFast) {
+      const ok = vp.setDisplayedPositionsFast(flat, atoms);
+      if (ok !== false) return true;
+    }
+    for (let i = 0; i < atoms; i++) { const p = nested[i]; p[0] = flat[3 * i]; p[1] = flat[3 * i + 1]; p[2] = flat[3 * i + 2]; }
+    return vp.setDisplayedPositions(nested);
+  }
+  async function frameMolecule(k) {
+    let m = data.mols.get(k);
+    if (!m) { m = await request('doc.molecule', { docId: d.docId, frame: k }); data.mols.set(k, m); }
+    return m;
+  }
+  /** Shows playhead `t` (fractional frame index). */
+  function render(force = false) {
+    if (!data || disposed || app.active !== d) return;
+    const t = Math.max(0, Math.min(n - 1, st.frame));
+    let i = Math.floor(t + 1e-9); const f = t - i;
+    if (i >= n - 1) i = n - 1;
+    const lerp = st.smooth && f > 1e-4 && i + 1 < n && data.sameTopology[i + 1] && data.atomCounts[i] === data.atomCounts[i + 1];
+    const k = lerp ? i : Math.min(n - 1, st.playing || !st.smooth ? i : Math.round(t));
+    const key = lerp ? t : k;
+    if (!force && key === lastShown) return;
+    const g = data.group[k];
+    const docAtoms = d.molecule?.atoms?.length;
+    const docCompatible = shownGroup == null && docAtoms === data.atomCounts[k] && data.group[home] === g;
+    if (shownGroup !== g && !docCompatible) {
+      // Rebond / different atoms: draw that frame's own molecule (stepping, no interpolation across the change).
+      if (swapping) return;
+      swapping = true;
+      frameMolecule(k).then((m) => {
+        swapping = false;
+        if (disposed || app.active !== d) return;
+        vp.setMolecule(m, { keepSelection: true }); stats.swaps++;
+        shownGroup = g; viewChanged = true; lastShown = NaN;
+        render(true);
+      }, (e) => { swapping = false; app.status(e.message); pause(); });
+      return;
+    }
+    const atoms = data.atomCounts[k];
+    ensureBuffers(atoms);
+    const a = data.offsets[k], xyz = data.xyz;
+    if (lerp) {
+      const b = data.offsets[k + 1], u = 1 - f;
+      for (let j = 0; j < atoms * 3; j++) flat[j] = xyz[a + j] * u + xyz[b + j] * f;
+    } else flat.set(xyz.subarray(a, a + atoms * 3));
+    const t0 = performance.now();
+    const pushed = push(atoms);
+    stats.pushMs = Math.max(stats.pushMs, performance.now() - t0);
+    if (!pushed) {
+      // The viewport holds a different molecule (atom count changed): load the frame itself.
+      shownGroup = -1; lastShown = NaN;
+      return render(true);
+    }
+    lastShown = key;
+    stats.shown++; if (lerp) stats.interpolated++; stats.frame = t;
+    viewChanged = viewChanged || k !== home || lerp;
+    d.frame = k;
+  }
+
+  // ----- readout -----
+  let lastReadout = -1;
+  function readout(force = false) {
+    const t = Math.max(0, Math.min(n - 1, st.frame));
+    const k = Math.min(n - 1, Math.round(t));
+    slider.value = t;
+    chart.playhead = t;
+    if (dataIndexOf[k] != null) chart.selected = dataIndexOf[k];
+    chart.draw();
+    if (k === lastReadout && !force) return;
+    lastReadout = k;
+    const kindWord = info?.kind === 'optimization' ? 'Step' : info?.kind === 'models' ? 'Model' : 'Frame';
+    label.textContent = `${kindWord} ${k + 1} / ${n}`;
+    const lines = [];
+    const e = energies[k];
+    if (e != null) {
+      let s = `E = ${e.toFixed(8)} Eh · ΔE = ${((e - eMin) * KCAL).toFixed(2)} kcal/mol`;
+      const prev = k > 0 ? energies[k - 1] : null;
+      if (prev != null) s += ` · step ΔE = ${((e - prev) * KCAL).toFixed(3)} kcal/mol`;
+      lines.push(s);
+    }
+    const si = info?.steps?.[k];
+    if (si) {
+      const parts = [];
+      const g = (x) => (Math.abs(x) >= 1e-3 ? x.toFixed(6) : x.toExponential(2));
+      if (si.maxForce != null) parts.push(`max force ${g(si.maxForce)}`);
+      if (si.rmsForce != null) parts.push(`RMS force ${g(si.rmsForce)}`);
+      if (si.gradientNorm != null) parts.push(`|grad| ${g(si.gradientNorm)}`);
+      if (si.maxStep != null) parts.push(`max step ${g(si.maxStep)}`);
+      if (si.converged === true) parts.push('criteria met');
+      if (parts.length) lines.push(parts.join(' · '));
+    }
+    if (k === n - 1 && info?.kind === 'optimization' && info.converged != null) {
+      lines.push(info.converged ? 'Final step: optimization converged' : 'Final step: the optimization did not converge');
+    }
+    clear(energyInfo);
+    for (const l of lines) energyInfo.append(h('div', {}, l));
+  }
+
+  // ----- transport -----
+  let raf = 0, lastT = 0, dir = 1, holdUntil = 0;
+  function setPlayLabel() { play.textContent = st.playing ? 'Pause' : 'Play'; }
+  function pause() { if (st.playing) { st.playing = false; setPlayLabel(); } }
   function toggle() {
+    if (!data) return;
     st.playing = !st.playing;
-    play.textContent = st.playing ? 'Pause' : 'Play';
-    clearTimeout(timer);
-    if (st.playing) tick();
+    if (st.playing) {
+      if (st.mode !== 'bounce' && st.frame >= n - 1 - 1e-6) st.frame = 0; // replay from the start
+      dir = st.mode === 'bounce' && st.frame >= n - 1 - 1e-6 ? -1 : 1;
+      holdUntil = 0; lastT = performance.now();
+      if (!raf) raf = requestAnimationFrame(tick);
+    }
+    setPlayLabel();
   }
-  function tick() {
-    if (!st.playing) return;
-    let next = st.frame + 1;
-    if (next >= n) { if (!st.loop) { toggle(); return; } next = 0; }
-    go(next).then(() => { timer = setTimeout(tick, 1000 / st.fps); });
+  let wrapPending = false; // loop mode: holding on the last step before starting over
+  function tick(now) {
+    raf = 0;
+    if (disposed) return;
+    if (!st.playing) { setPlayLabel(); readout(true); return; } // paused, or stopped by the animation exporter
+    const dt = Math.min(0.1, Math.max(0, (now - lastT) / 1000)); lastT = now;
+    if (now >= holdUntil) {
+      if (wrapPending) { wrapPending = false; st.frame = 0; }
+      else {
+        st.frame += dir * dt * st.fps;
+        if (dir > 0 && st.frame >= n - 1) {
+          st.frame = n - 1;
+          // a short hold on the final (converged) step makes the end of the optimization readable
+          if (st.mode === 'once') st.playing = false;
+          else if (st.mode === 'loop') { holdUntil = now + 700; wrapPending = true; }
+          else { dir = -1; holdUntil = now + 400; }
+        } else if (dir < 0 && st.frame <= 0) { st.frame = 0; dir = 1; holdUntil = now + 250; }
+      }
+    }
+    render(); readout();
+    if (st.playing) raf = requestAnimationFrame(tick); else { setPlayLabel(); readout(true); }
   }
+  /** Fractional seek (slider scrubbing): interpolates when Smooth is on. */
+  function seek(t) { st.frame = Math.max(0, Math.min(n - 1, t)); render(); readout(); }
+  function go(i) { st.frame = Math.max(0, Math.min(n - 1, Math.round(i))); render(true); readout(); }
   async function adopt() {
-    const m = frameCache.get(st.frame) || await request('doc.molecule', { docId: d.docId, frame: st.frame });
-    await app.edit({ type: 'replaceMolecule', molecule: m }, { message: `Frame ${st.frame + 1} is now the document geometry` });
+    pause();
+    const k = Math.min(n - 1, Math.round(st.frame));
+    go(k);
+    try {
+      const m = data?.mols.get(k) || await request('doc.molecule', { docId: d.docId, frame: k });
+      await app.edit({ type: 'replaceMolecule', molecule: m }, { message: `Step ${k + 1} is now the document geometry` });
+    } catch (e) { app.status(e.message); }
   }
-  play.textContent = 'Play';
+  const onKey = (e) => {
+    if (app.active !== d || e.target.closest?.('input, textarea, select, [contenteditable]')) return;
+    if (!body.isConnected) return;
+    if (e.key === ' ' && e.target === document.body) { e.preventDefault(); toggle(); }
+  };
+  window.addEventListener('keydown', onKey);
+  setPlayLabel();
+
+  // ----- load -----
+  status.textContent = 'Loading frames…';
   (async () => {
     try {
-      const f = await request('doc.frames', { docId: d.docId });
-      energies = f.energies || [];
-      if (f.profile && f.profile.coordinates?.length) {
-        chart.set({ x: Float32Array.from(f.profile.coordinates), y: Float32Array.from(f.profile.relativeKcal), sticks: [], xLabel: f.profile.xLabel || 'Coordinate', yLabel: 'ΔE (kcal/mol)', line: true, markers: true });
-      } else if (energies.length) {
-        const e0 = Math.min(...energies);
-        chart.set({ x: Float32Array.from(energies.map((_, i) => i + 1)), y: Float32Array.from(energies.map((e) => (e - e0) * 627.5095)), sticks: [], xLabel: 'Frame', yLabel: 'ΔE (kcal/mol)', line: true, markers: true });
-        // chart x is 1-based; select() uses index into data arrays, which matches frame index.
+      info = await request('doc.frames', { docId: d.docId });
+      if (info.home != null) home = info.home;
+      energies = info.frameEnergies || (info.energies || []).slice(-n);
+      while (energies.length < n) energies.unshift(null);
+      const known = energies.filter((e) => e != null);
+      eMin = known.length ? Math.min(...known) : 0;
+      const xs = [], ys = [];
+      dataIndexOf = new Array(n);
+      energies.forEach((e, k) => { if (e != null) { dataIndexOf[k] = xs.length; xs.push(k + 1); ys.push((e - eMin) * KCAL); } });
+      if (xs.length > 1) {
+        chart.finalMark = info.kind === 'optimization' && dataIndexOf[n - 1] != null
+          ? { dataIndex: dataIndexOf[n - 1], converged: info.converged, label: info.converged === true ? 'converged' : info.converged === false ? 'not converged' : '' }
+          : null;
+        chart.set({ x: Float32Array.from(xs), y: Float32Array.from(ys), sticks: [], xLabel: info.kind === 'optimization' ? 'Optimization step' : info.kind === 'models' ? 'Model' : 'Frame',
+          yLabel: 'ΔE (kcal/mol)', line: true, markers: true, xRange: [1, Math.max(2, n)] });
       } else chart.set(null);
-    } catch (e) { chart.set(null); }
+    } catch { chart.set(null); }
+    if (disposed) return;
+    try {
+      data = await loadFrameData(d, n, (k) => { status.textContent = `Loading frames… ${k}/${n}`; });
+    } catch (e) { status.textContent = `Could not load the frames: ${e.message}`; return; }
+    if (disposed) return;
+    status.textContent = data.sameTopology.slice(1).every(Boolean) ? '' : 'Bonds change between some steps: those steps are shown one by one.';
+    // Viewport currently draws the document molecule (or a frame we showed before the tab was rebuilt).
+    shownGroup = d.frame != null && d.frame !== home ? -1 : null;
     go(st.frame);
+    if (st.autoplay) {
+      st.autoplay = false; st.frame = 0; go(0); toggle();
+      // Smoke tests (VIBEVIEW_SMOKE_TAB=trajectory:play) report how playback went.
+      setTimeout(() => { try { api.smokeLog?.(`trajectory: ${JSON.stringify(stats)}`); } catch { /* not in smoke mode */ } }, 1200);
+    }
   })();
+
   return {
-    dispose() { st.playing = false; clearTimeout(timer); chart.ro.disconnect(); if (app.active === d && d.frame != null && d.frame !== home) app.viewport.setMolecule(d.molecule, { keepSelection: true }); d.frame = null; },
+    onMolecule() {
+      // The document changed (Use this geometry, undo, an edit): the viewport now draws the document molecule.
+      shownGroup = null; viewChanged = false; lastShown = NaN; d.frame = null;
+    },
+    dispose() {
+      disposed = true; st.playing = false;
+      if (raf) cancelAnimationFrame(raf);
+      window.removeEventListener('keydown', onKey);
+      chart.ro.disconnect();
+      if (app.active === d && (viewChanged || (d.frame != null && d.frame !== home))) vp.setMolecule(d.molecule, { keepSelection: true });
+      d.frame = null;
+    },
   };
 }

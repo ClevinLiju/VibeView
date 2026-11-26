@@ -46,10 +46,16 @@ enum ExportWriter {
         return out
     }
 
-    /// Energies parallel to `d.frames` (the result may list more energies than geometries).
+    /// Energies parallel to `d.frames` (the result may list more energies than geometries). Without result energies,
+    /// a multi-frame XYZ's comment lines are read ("energy: …" from xtb, "E …" from ORCA, "E=…").
     static func frameEnergies(_ d: EngineDocument) -> [Double?] {
         let n = max(d.frames.count, 1)
         let e = d.result?.energies ?? []
+        // A multi-frame XYZ states its own energies; prefer them unless the result's energies match frame for frame.
+        if d.frames.count > 1, d.format == .xyz, e.count != d.frames.count {
+            let c = d.frames.map { XYZFormat.commentEnergy($0.title) }
+            if c.contains(where: { $0 != nil }) { return c }
+        }
         let off = e.count - n
         return (0..<n).map { k in e.indices.contains(k + off) ? e[k + off] : nil }
     }

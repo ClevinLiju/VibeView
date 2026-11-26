@@ -294,6 +294,7 @@ public struct XTBTrajectory: Sendable, Codable, Equatable {
         var r = CalculationResult()
         r.steps = molecules; r.energies = energies
         var x = CalculationExtras(); x.program = "xtb"; x.finalEnergy = energies.last
+        if gradientNorms.contains(where: { $0 != nil }) { x.stepInfo = gradientNorms.map { OptimizationStepInfo(gradientNorm: $0) } }
         r.extras = x
         return r
     }

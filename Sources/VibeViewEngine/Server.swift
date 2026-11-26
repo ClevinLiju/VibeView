@@ -195,6 +195,7 @@ final class Engine: @unchecked Sendable {
         case "doc.redo": return try await docUndo(p, redo: true)
         case "doc.result": return try await docResult(p)
         case "doc.frames": return try await docFrames(p)
+        case "doc.frameCoordinates": return try await docFrameCoordinates(p)
         case "doc.setSelection": return try await docSetSelection(p)
         // editing / building
         case "edit.apply": return try await editApply(p)

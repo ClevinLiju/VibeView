@@ -4,7 +4,7 @@ import MolIO
 
 // I/O team checks (Lead 2). Sub-arrays live in IOChecks+<Area>.swift, one per worker.
 extension Checks {
-    static let io: [Check] = ioCommon + ioGaussianInput + ioGaussianOutput + ioFormats + ioOrca + ioXTB + ioMolden + ioQChem + ioCalcSpec + ioDetect + ioRunInfo + ioRunInfo2 + ioCompanions + ioPDBOrders + ioPDBProtein + ioCatalog + ioGaussianInputCheck + ioMMCIF
+    static let io: [Check] = ioCommon + ioGaussianInput + ioGaussianOutput + ioFormats + ioOrca + ioXTB + ioMolden + ioQChem + ioCalcSpec + ioDetect + ioRunInfo + ioRunInfo2 + ioCompanions + ioPDBOrders + ioPDBProtein + ioCatalog + ioGaussianInputCheck + ioMMCIF + ioOptTrajectory
 
     static let ioCommon: [Check] = [
         Check("io.common.elements") {

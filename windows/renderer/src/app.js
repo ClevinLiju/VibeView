@@ -513,8 +513,15 @@ export class App {
     let drag = null;
     const pos = (e) => { const r = el.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
     el.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Hover picking runs at most once per animation frame (pointermove can fire several times per frame).
+    let hoverAt = null, hoverRaf = 0;
+    const hoverSoon = (x, y) => {
+      hoverAt = { x, y };
+      if (!hoverRaf) hoverRaf = requestAnimationFrame(() => { hoverRaf = 0; if (!drag && hoverAt) this.updateHover(hoverAt.x, hoverAt.y); });
+    };
     el.addEventListener('pointerdown', (e) => {
       el.focus();
+      vp.beginDrag(); // a press stops an orbit/pan glide where it is
       const p = pos(e);
       const pick = vp.pick(p.x, p.y);
       drag = { x0: p.x, y0: p.y, x: p.x, y: p.y, button: e.button, pick, moved: false, mode: null, e };
@@ -523,7 +530,7 @@ export class App {
     });
     el.addEventListener('pointermove', (e) => {
       const p = pos(e);
-      if (!drag) { this.updateHover(p.x, p.y, e); return; }
+      if (!drag) { hoverSoon(p.x, p.y); return; }
       const dx = p.x - drag.x, dy = p.y - drag.y;
       if (!drag.moved && Math.hypot(p.x - drag.x0, p.y - drag.y0) > 4) {
         drag.moved = true;
@@ -537,10 +544,11 @@ export class App {
         else drag.mode = e.altKey ? 'roll' : 'rotate';
       }
       if (!drag.moved) return;
-      if (drag.mode === 'rotate') vp.rotate(dx, dy);
-      else if (drag.mode === 'roll') vp.roll(dx * 0.01);
-      else if (drag.mode === 'pan') vp.pan(dx, dy);
-      else if (drag.mode === 'zoom') vp.zoom(Math.exp(dy * 0.01));
+      // Camera drags are queued and applied once per frame by the viewport (smooth, one camera update per rAF).
+      if (drag.mode === 'rotate') vp.dragOrbit(dx, dy);
+      else if (drag.mode === 'roll') vp.dragRoll(dx * 0.01);
+      else if (drag.mode === 'pan') vp.dragPan(dx, dy);
+      else if (drag.mode === 'zoom') vp.dragZoom(Math.exp(dy * 0.01));
       else if (drag.mode === 'box') { vp.boxRect = { x: Math.min(drag.x0, p.x), y: Math.min(drag.y0, p.y), w: Math.abs(p.x - drag.x0), h: Math.abs(p.y - drag.y0) }; vp.dirty = true; }
       else if (drag.mode === 'moveSel') {
         const now = vp.unprojectOnTargetPlane(p.x, p.y, vp.positions[drag.pick.index]);
@@ -569,6 +577,7 @@ export class App {
       const dr = drag; drag = null;
       try { el.releasePointerCapture(e.pointerId); } catch { /* released */ }
       const p = pos(e);
+      if (dr.mode === 'rotate' || dr.mode === 'pan') vp.endDrag(); // light inertia after a flick
       if (!dr.moved) {
         if (dr.button === 0) await this.onClick(p.x, p.y, e, dr.pick);
         else if (dr.button === 2) this.contextMenu(e, dr.pick);
@@ -590,7 +599,16 @@ export class App {
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
     el.addEventListener('pointerleave', () => { if (!drag) { vp.setHover(null); tip.hidden = true; } });
-    el.addEventListener('wheel', (e) => { e.preventDefault(); vp.zoom(Math.exp(e.deltaY * 0.0012)); }, { passive: false });
+    // Wheel zoom eases toward its goal (Viewport.zoomBy). A notched wheel sends deltaY ±100 per notch (~12 %);
+    // precision touchpads send many small pixel deltas; line/page modes are converted to pixels; a touchpad
+    // pinch arrives as a ctrl+wheel with small deltas and gets a stronger gain.
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) dy *= 33; else if (e.deltaMode === 2) dy *= vp.height || 600;
+      dy = Math.max(-600, Math.min(600, dy));
+      vp.zoomBy(Math.exp(dy * (e.ctrlKey ? 0.01 : 0.0012)));
+    }, { passive: false });
     el.addEventListener('dblclick', (e) => {
       const p = pos(e); const pick = vp.pick(p.x, p.y);
       if (this.tool === 'select' && pick?.kind === 'atom') {
@@ -636,8 +654,8 @@ export class App {
     const step = e.shiftKey ? 0.4 : 0.1;
     const arrows = { ArrowLeft: [-20, 0], ArrowRight: [20, 0], ArrowUp: [0, -20], ArrowDown: [0, 20] };
     if (arrows[e.key]) { e.preventDefault(); vp.rotate(arrows[e.key][0] * step * 5, arrows[e.key][1] * step * 5); return; }
-    if (e.key === '+' || e.key === '=') { vp.zoom(0.9); return; }
-    if (e.key === '-') { vp.zoom(1.1); return; }
+    if (e.key === '+' || e.key === '=') { vp.zoomBy(0.9); return; }
+    if (e.key === '-') { vp.zoomBy(1.1); return; }
     if (['1', '2', '3'].includes(e.key) && this.tool === 'link') { this.bondOrder = Number(e.key); this.emit('tool', this.tool); return; }
     // Type an element symbol to pick it for the Place tool (e.g. C, N, O, Cl).
     if (/^[a-zA-Z]$/.test(e.key) && !e.altKey) {

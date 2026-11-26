@@ -104,7 +104,77 @@ public struct CalculationExtras: Sendable, Codable, Equatable {
     public var messages: [String] = []
     /// Calculation setup (method, basis, solvation, resources) when the parser recognizes it.
     public var info: CalculationInfo?
+    /// Optimizer convergence data per geometry step, parallel to `CalculationResult.steps` (an empty entry when
+    /// the program printed nothing for that step). Nil when the output has no optimizer data.
+    public var stepInfo: [OptimizationStepInfo]?
     public init() {}
+}
+
+/// What an optimizer printed for one geometry step (units as printed: Hartree/Bohr for forces, Bohr or
+/// Ångström for steps, Hartree for the energy change). Every field is optional.
+public struct OptimizationStepInfo: Sendable, Codable, Equatable {
+    /// Gaussian "Maximum Force", ORCA "MAX gradient", Q-Chem "Gradient".
+    public var maxForce: Double?
+    /// Gaussian "RMS Force", ORCA "RMS gradient".
+    public var rmsForce: Double?
+    /// Gaussian "Maximum Displacement", ORCA "MAX step", Q-Chem "Displacement".
+    public var maxStep: Double?
+    /// Gaussian "RMS Displacement", ORCA "RMS step".
+    public var rmsStep: Double?
+    /// ORCA / Q-Chem "Energy change" (Hartree).
+    public var energyChange: Double?
+    /// xtb "gnorm" (norm of the Cartesian gradient, Eh/Bohr).
+    public var gradientNorm: Double?
+    /// True when every criterion printed for this step was met.
+    public var converged: Bool?
+    public init(maxForce: Double? = nil, rmsForce: Double? = nil, maxStep: Double? = nil, rmsStep: Double? = nil,
+                energyChange: Double? = nil, gradientNorm: Double? = nil, converged: Bool? = nil) {
+        self.maxForce = maxForce; self.rmsForce = rmsForce; self.maxStep = maxStep; self.rmsStep = rmsStep
+        self.energyChange = energyChange; self.gradientNorm = gradientNorm; self.converged = converged
+    }
+    public var isEmpty: Bool {
+        maxForce == nil && rmsForce == nil && maxStep == nil && rmsStep == nil && energyChange == nil
+            && gradientNorm == nil && converged == nil
+    }
+}
+
+extension CalculationResult {
+    /// Removes a geometry step that the next step repeats (same elements, every coordinate within `tolerance` Å,
+    /// energies within `energyTolerance` Eh when known): the converged structure re-printed by a Link1 frequency job,
+    /// ORCA's "final energy evaluation at the stationary point", a Q-Chem follow-up job. The later step survives (it
+    /// carries the final properties) and inherits the dropped step's optimizer data when it has none. `energies` and
+    /// `extras.stepInfo` stay parallel to `steps` when they were parallel before.
+    public mutating func dropRepeatedSteps(tolerance: Double = 1e-4, energyTolerance: Double = 1e-6) {
+        guard steps.count > 1 else { return }
+        let energiesParallel = energies.count == steps.count
+        var info = extras?.stepInfo ?? []
+        let infoParallel = info.count == steps.count
+        var k = steps.count - 2
+        while k >= 0 {
+            let a = steps[k], b = steps[k + 1]
+            var same = a.atoms.count == b.atoms.count && !a.atoms.isEmpty
+            if same {
+                for i in a.atoms.indices {
+                    let p = a.atoms[i], q = b.atoms[i]
+                    let d = p.position - q.position
+                    if p.atomicNumber != q.atomicNumber || abs(d.x) > tolerance || abs(d.y) > tolerance || abs(d.z) > tolerance {
+                        same = false; break
+                    }
+                }
+            }
+            if same, energiesParallel, abs(energies[k] - energies[k + 1]) > energyTolerance { same = false }
+            if same {
+                steps.remove(at: k)
+                if energiesParallel { energies.remove(at: k) }
+                if infoParallel {
+                    if info[k + 1].isEmpty { info[k + 1] = info[k] }
+                    info.remove(at: k)
+                }
+            }
+            k -= 1
+        }
+        if infoParallel, extras != nil { extras?.stepInfo = info }
+    }
 }
 
 extension CalculationResult {

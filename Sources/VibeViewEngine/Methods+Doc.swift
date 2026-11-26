@@ -213,7 +213,70 @@ extension Engine {
             profile = obj(["coordinates": (0..<e.count).map(Double.init), "relativeKcal": e.map { ($0 - first) * 627.509474 },
                            "xLabel": "Step"])
         }
-        return obj(["count": count, "energies": energies, "profile": profile])
+        // Per-frame data for the Trajectory player: energies and optimizer convergence aligned to the frames.
+        let fe = ExportWriter.frameEnergies(d)
+        var steps: JSON = .null
+        if let si = d.result?.extras?.stepInfo, !si.isEmpty, si.contains(where: { !$0.isEmpty }) {
+            let off = si.count - count
+            steps = .array((0..<count).map { k -> JSON in
+                guard si.indices.contains(k + off) else { return .null }
+                let s = si[k + off]
+                return s.isEmpty ? .null : obj(["maxForce": s.maxForce, "rmsForce": s.rmsForce, "maxStep": s.maxStep,
+                                                "rmsStep": s.rmsStep, "energyChange": s.energyChange,
+                                                "gradientNorm": s.gradientNorm, "converged": s.converged])
+            })
+        }
+        // xtbopt.log / xtbopt.xyz opened on their own: the comment lines carry "gnorm:".
+        if steps == .null, d.format == .xyz, d.frames.count > 1 {
+            let g = d.frames.map { XYZFormat.commentGradientNorm($0.title) }
+            if g.contains(where: { $0 != nil }) { steps = .array(g.map { v in v.map { obj(["gradientNorm": $0]) } ?? .null }) }
+        }
+        let converged = d.result?.extras?.optimizationConverged
+        let optimization = converged != nil || steps != .null
+        let kind = d.format == .pdb ? "models" : optimization ? "optimization" : d.result != nil ? "steps" : "trajectory"
+        return obj(["count": count, "energies": energies, "profile": profile, "frameEnergies": fe, "steps": steps,
+                    "converged": converged, "kind": kind, "home": d.format == .pdb ? 0 : count - 1])
+    }
+
+    /// Every frame's coordinates in one reply, for smooth trajectory playback:
+    /// `{count, atomCounts: [n], positionsB64: Float32 x,y,z of all frames back to back (Å),
+    ///   sameTopology, sameElements: [bool], bondChanges: [int]}` — `sameTopology[k]`: frame k has the elements and bonds
+    /// of frame k-1 (bond-perception noise in large structures aside; always false
+    /// for k = 0), so the player may interpolate between them and keep the drawn bonds.
+    func docFrameCoordinates(_ p: Params) async throws -> JSON {
+        let d = try await store.get(try p.docId())
+        let frames = d.frames.isEmpty ? [d.molecule] : d.frames
+        let total = frames.reduce(0) { $0 + $1.atoms.count }
+        guard total <= 50_000_000 else { throw RPCError.badRequest("trajectory too large to send at once (\(total) atom positions)") }
+        let result = try await Offload.run(AsyncCapture(frames)) { input, _ -> JSON? in
+            let frames = input.value
+            var xyz = [Float]()
+            xyz.reserveCapacity(total * 3)
+            var counts: [Int] = [], same: [Bool] = [], sameElements: [Bool] = [], bondChanges: [Int] = []
+            var prevBonds: Set<Int64>? = nil
+            var prevZ: [Int] = []
+            for (k, f) in frames.enumerated() {
+                for a in f.atoms { xyz.append(Float(a.position.x)); xyz.append(Float(a.position.y)); xyz.append(Float(a.position.z)) }
+                counts.append(f.atoms.count)
+                let z = f.atoms.map(\.atomicNumber)
+                // Bonds as the viewer gets them from doc.molecule {frame} (Preparation.prepared).
+                let prepared = f.atoms.count > 1 && f.atoms.count < 200_000 ? Preparation.prepared(f, perceiveOrders: false) : f
+                var bonds = Set<Int64>()
+                bonds.reserveCapacity(prepared.bonds.count)
+                for b in prepared.bonds { bonds.insert(Int64(min(b.a, b.b)) << 32 | Int64(max(b.a, b.b))) }
+                // Distance-based bond perception flickers by a few bonds in large moving structures (PCA modes, MD):
+                // ignore up to 1% changed bonds from 500 atoms up; any change in a smaller molecule is a real rebond.
+                var changes = 0
+                if k > 0, z == prevZ, let pb = prevBonds { changes = bonds.symmetricDifference(pb).count }
+                sameElements.append(k > 0 && z == prevZ)
+                bondChanges.append(changes)
+                same.append(k > 0 && z == prevZ && (changes == 0 || (f.atoms.count >= 500 && changes * 100 <= max(bonds.count, 1))))
+                prevBonds = bonds; prevZ = z
+            }
+            return obj(["count": frames.count, "atomCounts": counts, "positionsB64": Binary.float32(xyz), "sameTopology": same,
+                        "sameElements": sameElements, "bondChanges": bondChanges])
+        }
+        return result
     }
 
     // MARK: Editing

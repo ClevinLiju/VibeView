@@ -5,11 +5,13 @@
 // Catmull-Rom spline through the CA atoms (strand CAs are smoothed to take out the pleat); the ribbon's width direction
 // follows the carbonyl C=O vectors, flipped to stay consistent. All profiles share one vertex count, so a segment is a
 // single continuous tube whose cross-section morphs between round (loops), flat ellipse (helices) and rounded box
-// (strands). Everything is merged into one BufferGeometry, rebuilt from scratch on every build (never added twice).
+// (strands). Everything is merged into one BufferGeometry, rebuilt from scratch on every build (never added twice);
+// new displayed positions (trajectory frames, vibrations) only refill its vertex buffers (CartoonGeometry.update).
 //
 // RCSB/Mol*-like defaults: colour "auto" (one chain: rainbow N→C; several chains: one colour per chain), waters hidden,
 // ligands as ball and stick with their carbons tinted by chain, only the chains of biological assembly 1 shown (its
-// symmetry copies are drawn as transformed copies of the same meshes), chain gaps (missing residues) as dashes.
+// symmetry copies are drawn as transformed copies of the same meshes), chain gaps (missing residues, i.e. a jump in
+// the residue numbering) as dashes; a C-terminus (OXT) ends a segment, and real breaks are left open.
 import * as THREE from 'three';
 import { STYLE_ICONS } from './icons.js';
 import { request } from './api.js';
@@ -66,9 +68,10 @@ export class CartoonLayer {
     this.drawn = null; // Uint8Array per residue: drawn as cartoon
     this.caIndex = null; // Set of CA atoms (pickable stand-ins for hidden residues)
     this.coverKey = null;
-    this.builtFrom = null;
+    this.geom = null; // CartoonGeometry of the current mesh
+    this.builtFrom = -1; // viewport.positionsVersion the vertices were computed for
     this.lastBuildMs = 0;
-    this.lastBuildAt = 0;
+    this.lastSyncMs = 0;
   }
 
   /** Engine result (or null). Must match the viewport's current molecule. */
@@ -171,7 +174,8 @@ export class CartoonLayer {
     if (!this.ready()) return;
     const t0 = performance.now();
     const vp = this.vp;
-    const geo = buildGeometry(this.data, vp.positions, vp.options, this.drawn);
+    this.geom = new CartoonGeometry(this.data, vp.positions, vp.options, this.drawn, vp.molecule);
+    const geo = this.geom.geometry;
     if (geo) {
       let mat;
       if (vp.options.material === 'flat') mat = new THREE.MeshBasicMaterial({ vertexColors: true });
@@ -182,6 +186,7 @@ export class CartoonLayer {
       }
       this.mesh = new THREE.Mesh(geo, mat);
       this.mesh.userData.cartoon = true;
+      this.mesh.frustumCulled = false; // vertices move with trajectory frames; bounds are recomputed lazily
       group.add(this.mesh);
     }
     // Biological assembly copies: the cartoon, atoms and bonds again under each symmetry operator (display only,
@@ -205,18 +210,18 @@ export class CartoonLayer {
         });
       }
     }
-    this.builtFrom = vp.positions;
+    this.builtFrom = vp.positionsVersion;
     this.lastBuildMs = performance.now() - t0;
-    this.lastBuildAt = performance.now();
   }
 
-  /** Called from updateMatrices(): follow displayed positions (trajectory frames, vibrations), throttled. */
+  /** Called from updateMatrices(): follow the displayed positions (trajectory frames, vibrations) by refilling
+   *  the vertex buffers in place (same topology, a few ms for a 500-residue protein). */
   sync() {
-    if (!this.mesh || this.builtFrom === this.vp.positions) return;
-    const now = performance.now();
-    if (this.lastBuildMs > 25 && now - this.lastBuildAt < 8 * this.lastBuildMs) return;
-    const group = this.mesh.parent;
-    if (group) this.build(group);
+    if (!this.mesh || !this.geom || this.builtFrom === this.vp.positionsVersion) return;
+    const t0 = performance.now();
+    this.geom.update(this.vp.positions);
+    this.builtFrom = this.vp.positionsVersion;
+    this.lastSyncMs = performance.now() - t0;
   }
 
   disposeMesh() {
@@ -227,18 +232,11 @@ export class CartoonLayer {
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     this.mesh = null;
+    this.geom = null;
   }
 }
 
 // ---------- geometry ----------
-
-function catmull(p0, p1, p2, p3, t, out) {
-  const t2 = t * t, t3 = t2 * t;
-  for (const c of ['x', 'y', 'z']) {
-    out[c] = 0.5 * ((2 * p1[c]) + (-p0[c] + p2[c]) * t + (2 * p0[c] - 5 * p1[c] + 4 * p2[c] - p3[c]) * t2 + (-p0[c] + 3 * p1[c] - 3 * p2[c] + p3[c]) * t3);
-  }
-  return out;
-}
 
 /** Index of a chain in the engine's chain list (the same colour as the chain's ligand carbons). */
 function chainColorIndex(data, name) {
@@ -276,233 +274,366 @@ function residueColors(data, options, drawn) {
   return { colors: out, smoothColors: mode === 'rainbow' };
 }
 
-function buildGeometry(data, positions, options, drawn) {
-  const segments = data.segments.filter(([s]) => !drawn || drawn[s]);
-  const total = segments.reduce((a, [s, e]) => a + (e - s), 0);
-  if (!total) return null;
-  const S = total > 6000 ? 4 : total > 2000 ? 6 : 10; // samples per residue
-  const M = total > 6000 ? 10 : 16; // vertices per ring
-  const { colors, smoothColors } = residueColors(data, options, drawn);
-  const pos = [], nor = [], col = [], idx = [];
-  // profile unit circle
-  const cosA = [], sinA = [];
-  for (let k = 0; k < M; k++) { const a = (k / M) * Math.PI * 2; cosA.push(Math.cos(a)); sinA.push(Math.sin(a)); }
-
-  /** Round tube along a polyline (lone residues, gap dashes), with flat end caps. */
-  const tube = (pts, radius, color) => {
-    if (pts.length < 2) return;
-    const rings = [];
-    let prevN = null;
-    for (let k = 0; k < pts.length; k++) {
-      const T = new THREE.Vector3().subVectors(pts[Math.min(k + 1, pts.length - 1)], pts[Math.max(k - 1, 0)]).normalize();
-      let N = prevN ? prevN.clone().addScaledVector(T, -prevN.dot(T)) : new THREE.Vector3(0, 0, 1).cross(T);
-      if (N.lengthSq() < 1e-6) N = new THREE.Vector3(1, 0, 0).cross(T);
-      N.normalize(); prevN = N;
-      const B = new THREE.Vector3().crossVectors(T, N);
-      rings.push(pos.length / 3);
-      for (let m = 0; m < M; m++) {
-        const d = N.clone().multiplyScalar(cosA[m]).addScaledVector(B, sinA[m]);
-        pos.push(pts[k].x + d.x * radius, pts[k].y + d.y * radius, pts[k].z + d.z * radius);
-        nor.push(d.x, d.y, d.z); col.push(color.r, color.g, color.b);
-      }
-    }
-    for (let k = 0; k + 1 < rings.length; k++) {
-      for (let m = 0; m < M; m++) {
-        const a = rings[k], b = rings[k + 1], m2 = (m + 1) % M;
-        idx.push(a + m, a + m2, b + m, a + m2, b + m2, b + m);
-      }
-    }
-    for (const [k, sign] of [[0, -1], [pts.length - 1, 1]]) {
-      const T = new THREE.Vector3().subVectors(pts[Math.min(k + 1, pts.length - 1)], pts[Math.max(k - 1, 0)]).normalize().multiplyScalar(sign);
-      const center = pos.length / 3;
-      pos.push(pts[k].x, pts[k].y, pts[k].z); nor.push(T.x, T.y, T.z); col.push(color.r, color.g, color.b);
-      const ring = pos.length / 3;
-      for (let m = 0; m < M; m++) { const v = rings[k] + m; pos.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]); nor.push(T.x, T.y, T.z); col.push(color.r, color.g, color.b); }
-      for (let m = 0; m < M; m++) { const m2 = (m + 1) % M; if (sign > 0) idx.push(center, ring + m, ring + m2); else idx.push(center, ring + m2, ring + m); }
-    }
-  };
-  const P = (i) => (i >= 0 ? positions[i] : null);
-
-  // Missing residues inside a chain (a break between consecutive segments of the same chain): a dashed line between
-  // the two CA atoms, like Mol*.
-  for (let k = 0; k + 1 < segments.length; k++) {
-    const e = segments[k][1] - 1, s2 = segments[k + 1][0];
-    if (data.chain[e] !== data.chain[s2] || s2 !== e + 1) continue;
-    const a = P(data.ca[e]), b = P(data.ca[s2]);
-    if (!a || !b) continue;
-    const len = a.distanceTo(b);
-    if (len < 4.2 || len > 80) continue;
-    const dash = 0.5, period = 1.0, nd = Math.floor(len / period);
-    const c = new THREE.Color(0xa0a4aa);
-    for (let j = 0; j < nd; j++) {
-      const t0 = (j * period + (len - nd * period + period - dash) / 2) / len, t1 = t0 + dash / len;
-      if (t1 > 1) break;
-      tube([a.clone().lerp(b, t0), a.clone().lerp(b, t1)], 0.12, c);
-    }
+/** C-terminal residues: an OXT (or CHARMM OT2) oxygen in the residue. A chain that continues after one (two
+ *  proteins concatenated in one chain without TER) starts a new, unconnected segment. The OXT belongs to the residue
+ *  whose carbonyl C precedes it in file order (PDB atom order); bonds are not used, since a distorted frame can
+ *  bond it to a neighbouring residue's C too. */
+function terminalResidues(data, atoms) {
+  const R = data.residueCount, term = new Uint8Array(R);
+  if (!atoms) return term;
+  const cs = [];
+  for (let r = 0; r < R; r++) if (data.c[r] >= 0) cs.push([data.c[r], r]);
+  cs.sort((x, y) => x[0] - y[0]);
+  for (let i = 0; i < atoms.length; i++) {
+    const l = atoms[i].label;
+    if (l !== 'OXT' && l !== 'OT2') continue;
+    let lo = 0, hi = cs.length - 1, best = -1; // last C index below i
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (cs[m][0] < i) { best = m; lo = m + 1; } else hi = m - 1; }
+    if (best >= 0) term[cs[best][1]] = 1;
   }
+  return term;
+}
 
-  for (const [s, e] of segments) {
-    const n = e - s;
-    if (n < 2) {
-      // Lone residue (neighbours missing): a short loop tube N–CA–C.
-      const pts = [P(data.n[s]), P(data.ca[s]), P(data.c[s])].filter(Boolean).map((p) => p.clone());
-      tube(pts, LOOP.w, colors[s]);
-      continue;
-    }
-    const ss = []; for (let r = s; r < e; r++) ss.push(kind(data.ss[r]));
-    // Control points (CA), strands smoothed.
-    const ca = [];
-    for (let r = s; r < e; r++) ca.push(positions[data.ca[r]].clone());
-    const ctrl = ca.map((p, i) => {
-      if (ss[i] === 'strand' && i > 0 && i < n - 1 && ss[i - 1] === 'strand' && ss[i + 1] === 'strand') {
-        return p.clone().multiplyScalar(0.5).addScaledVector(ca[i - 1], 0.25).addScaledVector(ca[i + 1], 0.25);
+/** The engine's continuous backbone segments, also split after every C-terminal residue. */
+function cartoonSegments(data, term) {
+  const out = [];
+  for (const [s, e] of data.segments) {
+    let a = s;
+    for (let r = s; r < e - 1; r++) if (term[r]) { out.push([a, r + 1]); a = r + 1; }
+    out.push([a, e]);
+  }
+  return out;
+}
+
+const CA_STEP = 3.8; // Å between consecutive CA atoms (trans peptide)
+
+/**
+ * Cartoon mesh with a fixed topology: the plan (segments, samples, cross-section profiles, colours, triangles)
+ * is made once in the constructor; update(positions) recomputes the spline, the frames and every vertex position
+ * and normal into the same buffers, allocation-free, so trajectory frames and vibrations only cost that refill.
+ */
+class CartoonGeometry {
+  constructor(data, positions, options, drawn, mol) {
+    this.geometry = null;
+    const term = terminalResidues(data, mol?.atoms);
+    const segments = cartoonSegments(data, term).filter(([s]) => !drawn || drawn[s]);
+    const total = segments.reduce((a, [s, e]) => a + (e - s), 0);
+    if (!total) return;
+    const S = total > 6000 ? 4 : total > 2000 ? 6 : 10; // samples per residue
+    const M = this.M = total > 6000 ? 10 : 16; // vertices per ring
+    const { colors, smoothColors } = residueColors(data, options, drawn);
+    this.cosA = new Float64Array(M); this.sinA = new Float64Array(M);
+    for (let k = 0; k < M; k++) { const a = (k / M) * Math.PI * 2; this.cosA[k] = Math.cos(a); this.sinA[k] = Math.sin(a); }
+    const items = this.items = [];
+    const col = [], idx = [];
+    let nv = 0;
+    const pushColor = (c, count) => { for (let k = 0; k < count; k++) col.push(c.r, c.g, c.b); };
+    const ringBand = (a, b) => {
+      for (let m = 0; m < M; m++) { const m2 = (m + 1) % M; idx.push(a + m, a + m2, b + m, a + m2, b + m2, b + m); }
+    };
+    const capFan = (center, sign) => {
+      const ring = center + 1;
+      for (let m = 0; m < M; m++) { const m2 = (m + 1) % M; if (sign > 0) idx.push(center, ring + m, ring + m2); else idx.push(center, ring + m2, ring + m); }
+    };
+    /** Round tube through `count` points (lone residues, gap dashes): rings, then two flat end caps. */
+    const addTube = (item, count, radius, color) => {
+      item.count = count; item.radius = radius; item.v0 = nv; item.pts = new Float64Array(count * 3);
+      for (let k = 0; k + 1 < count; k++) ringBand(nv + k * M, nv + (k + 1) * M);
+      pushColor(color, count * M);
+      const c0 = nv + count * M, c1 = c0 + M + 1;
+      capFan(c0, -1); capFan(c1, 1);
+      pushColor(color, 2 * (M + 1));
+      nv += count * M + 2 * (M + 1);
+      items.push(item);
+    };
+    const P = (i) => (i >= 0 ? positions[i] : null);
+
+    // Missing residues inside a chain (a numbering gap between consecutive segments of the same chain): a dashed
+    // line between the two CA atoms, like Mol*. Nothing is drawn across a real break: after a C-terminus (OXT),
+    // between consecutively numbered residues (two molecules in one chain), or when the CA atoms are farther
+    // apart than the missing residues could span (CA_STEP per residue).
+    const dashColor = new THREE.Color(0xa0a4aa);
+    for (let k = 0; k + 1 < segments.length; k++) {
+      const e = segments[k][1] - 1, s2 = segments[k + 1][0];
+      if (data.chain[e] !== data.chain[s2] || s2 !== e + 1 || term[e]) continue;
+      const gap = Array.isArray(data.seq) ? data.seq[s2] - data.seq[e] - 1 : null;
+      if (gap != null && !(gap >= 1)) continue;
+      const a = P(data.ca[e]), b = P(data.ca[s2]);
+      if (!a || !b) continue;
+      const len = a.distanceTo(b);
+      const maxLen = gap != null ? Math.min(60, CA_STEP * (gap + 1) + 1) : 20;
+      if (len < 4.2 || len > maxLen) continue;
+      const dash = 0.5, period = 1.0, nd = Math.floor(len / period);
+      for (let j = 0; j < nd; j++) {
+        const t0 = (j * period + (len - nd * period + period - dash) / 2) / len, t1 = t0 + dash / len;
+        if (t1 > 1) break;
+        addTube({ kind: 'dash', a: data.ca[e], b: data.ca[s2], j, nd, dash, period }, 2, 0.12, dashColor);
       }
-      return p;
-    });
-    // Guides: C=O direction, made consistent and orthogonal to the local trace.
-    const guide = [];
-    for (let i = 0; i < n; i++) {
-      const r = s + i;
-      const tan = new THREE.Vector3().subVectors(ctrl[Math.min(i + 1, n - 1)], ctrl[Math.max(i - 1, 0)]).normalize();
-      let g;
-      const o = data.o[r], c = data.c[r];
-      if (o >= 0 && c >= 0 && positions[o] && positions[c]) g = new THREE.Vector3().subVectors(positions[o], positions[c]);
-      else if (i > 0 && i < n - 1) g = new THREE.Vector3().subVectors(ca[i - 1], ca[i]).cross(new THREE.Vector3().subVectors(ca[i + 1], ca[i]));
-      else g = new THREE.Vector3(0, 1, 0);
-      g.addScaledVector(tan, -g.dot(tan));
-      if (g.lengthSq() < 1e-8) g = new THREE.Vector3(1, 0, 0).cross(tan);
-      g.normalize();
-      if (i > 0 && g.dot(guide[i - 1]) < 0) g.negate();
-      guide.push(g);
     }
-    // Smooth strand guides (remove the alternation left after flipping).
-    const sg = guide.map((g, i) => {
-      if (ss[i] !== 'strand') return g;
-      const a = guide[Math.max(i - 1, 0)], b = guide[Math.min(i + 1, n - 1)];
-      return g.clone().multiplyScalar(2).add(a).add(b).normalize();
-    });
 
-    // Shape at parameter t (residue units, 0..n-1).
-    const shapeAt = (t) => {
-      const i = Math.min(n - 1, Math.max(0, Math.round(t)));
-      const lo = Math.floor(t), hi = Math.min(n - 1, lo + 1), f = t - lo;
-      const prof = (k) => (k === 'helix' ? HELIX : k === 'strand' ? STRAND : LOOP);
-      // Arrow: last strand residue (next is not strand). Base at t=i-0.5, tip at t=i+0.6.
-      for (let j = Math.max(0, Math.floor(t - 0.6)); j <= Math.min(n - 1, Math.ceil(t + 0.5)); j++) {
-        if (ss[j] === 'strand' && (j === n - 1 || ss[j + 1] !== 'strand') && j > 0 && ss[j - 1] === 'strand') {
-          if (t >= j - 0.5 && t <= j + 0.6) {
-            const u = (t - (j - 0.5)) / 1.1;
-            return { w: ARROW * (1 - u) + LOOP.w * u, h: STRAND.h * (1 - u) + LOOP.h * u, n: STRAND.n * (1 - u) + 2 * u, ss: 'strand', res: j };
+    for (const [s, e] of segments) {
+      const n = e - s;
+      if (n < 2) {
+        // Lone residue (neighbours missing): a short loop tube N–CA–C.
+        const atoms = [data.n[s], data.ca[s], data.c[s]].filter((i) => P(i));
+        if (atoms.length >= 2) addTube({ kind: 'lone', atoms }, atoms.length, LOOP.w, colors[s]);
+        continue;
+      }
+      const ss = []; for (let r = s; r < e; r++) ss.push(kind(data.ss[r]));
+      const it = { kind: 'seg', n, v0: nv };
+      it.ca = Int32Array.from({ length: n }, (_, i) => data.ca[s + i]);
+      it.o = Int32Array.from({ length: n }, (_, i) => data.o[s + i]);
+      it.c = Int32Array.from({ length: n }, (_, i) => data.c[s + i]);
+      // Strand CAs are smoothed (pleat removed); strand guides are averaged with their neighbours.
+      it.smooth = Uint8Array.from({ length: n }, (_, i) => (ss[i] === 'strand' && i > 0 && i < n - 1 && ss[i - 1] === 'strand' && ss[i + 1] === 'strand' ? 1 : 0));
+      it.strand = Uint8Array.from(ss, (k) => (k === 'strand' ? 1 : 0));
+      it.ctrl = new Float64Array(n * 3); it.guide = new Float64Array(n * 3); it.sg = new Float64Array(n * 3);
+
+      // Shape at parameter t (residue units, 0..n-1).
+      const shapeAt = (t) => {
+        const i = Math.min(n - 1, Math.max(0, Math.round(t)));
+        const lo = Math.floor(t), hi = Math.min(n - 1, lo + 1), f = t - lo;
+        const prof = (k) => (k === 'helix' ? HELIX : k === 'strand' ? STRAND : LOOP);
+        // Arrow: last strand residue (next is not strand). Base at t=i-0.5, tip at t=i+0.6.
+        for (let j = Math.max(0, Math.floor(t - 0.6)); j <= Math.min(n - 1, Math.ceil(t + 0.5)); j++) {
+          if (ss[j] === 'strand' && (j === n - 1 || ss[j + 1] !== 'strand') && j > 0 && ss[j - 1] === 'strand') {
+            if (t >= j - 0.5 && t <= j + 0.6) {
+              const u = (t - (j - 0.5)) / 1.1;
+              return { w: ARROW * (1 - u) + LOOP.w * u, h: STRAND.h * (1 - u) + LOOP.h * u, n: STRAND.n * (1 - u) + 2 * u, res: j };
+            }
+            if (t > j + 0.6 && t < j + 1) return { ...LOOP, res: Math.min(n - 1, j + 1) };
           }
-          if (t > j + 0.6 && t < j + 1) return { ...LOOP, ss: ss[Math.min(n - 1, j + 1)], res: Math.min(n - 1, j + 1) };
+        }
+        const A = prof(ss[lo]), B = prof(ss[hi]);
+        // A strand that just ended in an arrow must not blend back up into the next residue.
+        if (ss[lo] === 'strand' && ss[hi] !== 'strand') return { ...B, res: i };
+        const m = ss[lo] === ss[hi] ? 0 : smooth(f);
+        return { w: A.w + (B.w - A.w) * m, h: A.h + (B.h - A.h) * m, n: A.n + (B.n - A.n) * m, res: i };
+      };
+
+      // Samples along the spline: t, plus three extra samples at each arrow base (narrow end, wide start).
+      const samples = [];
+      const steps = (n - 1) * S;
+      for (let k = 0; k <= steps; k++) samples.push({ t: k / S, at: k / S });
+      for (let j = 1; j < n; j++) {
+        if (!(ss[j] === 'strand' && ss[j - 1] === 'strand' && (j === n - 1 || ss[j + 1] !== 'strand'))) continue;
+        const tb = j - 0.5;
+        const k = samples.findIndex((q) => q.t > tb);
+        if (k <= 0) continue;
+        samples.splice(k, 0, { t: tb - 1e-4, at: tb, forceBody: true }, { t: tb, at: tb, cap: true }, { t: tb, at: tb });
+      }
+      const ns = it.ns = samples.length;
+      it.sI = new Int32Array(ns); it.sF = new Float64Array(ns); it.capN = new Uint8Array(ns);
+      it.prof = new Float32Array(ns * M * 4); // per ring vertex: x, y offsets and unit normal (nx, ny) in the frame
+      it.sp = new Float64Array(ns * 3); it.sgS = new Float64Array(ns * 3);
+      for (let k = 0; k < ns; k++) {
+        const q = samples[k];
+        const i = Math.min(n - 2, Math.floor(q.at));
+        it.sI[k] = i; it.sF[k] = q.at - i;
+        it.capN[k] = q.cap || (k > 0 && samples[k - 1].cap) ? 1 : 0;
+        let sh = shapeAt(q.t);
+        if (q.forceBody) sh = { ...STRAND, res: Math.round(q.t + 0.5) };
+        if (q.cap) sh = { ...STRAND, w: ARROW, res: Math.round(q.t + 0.5) };
+        // Rainbow interpolates smoothly; the others switch at residue boundaries.
+        let cr = colors[s + Math.min(n - 1, Math.max(0, sh.res))];
+        if (smoothColors) {
+          const lo = Math.min(n - 2, Math.floor(q.t)), f = q.t - lo;
+          cr = colors[s + lo].clone().lerp(colors[s + lo + 1], Math.max(0, Math.min(1, f)));
+        }
+        pushColor(cr, M);
+        const e2 = 2 / sh.n;
+        for (let m = 0; m < M; m++) {
+          const cx = this.cosA[m], sy = this.sinA[m];
+          // Superellipse point and normal ∝ (sign(c)|c|^(2-2/n)/w, sign(s)|s|^(2-2/n)/h).
+          const x = Math.sign(cx) * Math.pow(Math.abs(cx), e2) * sh.w;
+          const y = Math.sign(sy) * Math.pow(Math.abs(sy), e2) * sh.h;
+          let nx = Math.sign(cx) * Math.pow(Math.abs(cx), 2 - e2) / sh.w;
+          let ny = Math.sign(sy) * Math.pow(Math.abs(sy), 2 - e2) / sh.h;
+          const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+          const o = (k * M + m) * 4;
+          it.prof[o] = x; it.prof[o + 1] = y; it.prof[o + 2] = nx; it.prof[o + 3] = ny;
         }
       }
-      const A = prof(ss[lo]), B = prof(ss[hi]);
-      // A strand that just ended in an arrow must not blend back up into the next residue.
-      if (ss[lo] === 'strand' && ss[hi] !== 'strand') return { ...B, ss: ss[i], res: i };
-      const m = ss[lo] === ss[hi] ? 0 : smooth(f);
-      return { w: A.w + (B.w - A.w) * m, h: A.h + (B.h - A.h) * m, n: A.n + (B.n - A.n) * m, ss: ss[i], res: i };
-    };
+      for (let k = 0; k + 1 < ns; k++) ringBand(nv + k * M, nv + (k + 1) * M);
+      // End caps, coloured like their ring.
+      const c0 = nv + ns * M, c1 = c0 + M + 1;
+      capFan(c0, -1); capFan(c1, 1);
+      const lastRing = (ns - 1) * M * 3, colAt = (v) => new THREE.Color(col[v], col[v + 1], col[v + 2]);
+      const first = colAt(nv * 3), last = colAt(nv * 3 + lastRing);
+      pushColor(first, M + 1); pushColor(last, M + 1);
+      nv += ns * M + 2 * (M + 1);
+      items.push(it);
+    }
+    if (!nv) return;
+    this.pos = new Float32Array(nv * 3);
+    this.nor = new Float32Array(nv * 3);
+    const g = this.geometry = new THREE.BufferGeometry();
+    this.posAttr = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.norAttr = new THREE.BufferAttribute(this.nor, 3).setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('position', this.posAttr);
+    g.setAttribute('normal', this.norAttr);
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(nv > 65535 ? new THREE.Uint32BufferAttribute(idx, 1) : new THREE.Uint16BufferAttribute(idx, 1));
+    this.update(positions);
+  }
 
-    // Sample the spline.
-    const samples = [];
-    const steps = (n - 1) * S;
-    const P = new THREE.Vector3();
-    for (let k = 0; k <= steps; k++) {
-      const t = k / S;
-      const i = Math.min(n - 2, Math.floor(t)), f = t - i;
-      const p0 = ctrl[Math.max(i - 1, 0)], p1 = ctrl[i], p2 = ctrl[i + 1], p3 = ctrl[Math.min(i + 2, n - 1)];
-      catmull(p0, p1, p2, p3, f, P);
-      const g = sg[i].clone().lerp(sg[i + 1], f);
-      samples.push({ t, p: P.clone(), g });
+  /** Recomputes every vertex position and normal for `positions` (Vector3 per atom) into the existing buffers. */
+  update(positions) {
+    if (!this.geometry) return;
+    for (const it of this.items) {
+      if (it.kind === 'seg') this.updateSegment(it, positions);
+      else this.updateTube(it, positions);
     }
-    // Insert the arrow base (two extra samples at the same position: narrow end + wide start).
-    for (let j = 1; j < n; j++) {
-      if (!(ss[j] === 'strand' && ss[j - 1] === 'strand' && (j === n - 1 || ss[j + 1] !== 'strand'))) continue;
-      const tb = j - 0.5;
-      const k = samples.findIndex((q) => q.t > tb);
-      if (k <= 0) continue;
-      const a = samples[k - 1], b = samples[k];
-      const f = (tb - a.t) / (b.t - a.t);
-      const p = a.p.clone().lerp(b.p, f), g = a.g.clone().lerp(b.g, f);
-      samples.splice(k, 0, { t: tb - 1e-4, p, g, forceBody: true }, { t: tb, p: p.clone(), g: g.clone(), cap: true }, { t: tb, p: p.clone(), g: g.clone() });
+    this.posAttr.needsUpdate = true;
+    this.norAttr.needsUpdate = true;
+    const g = this.geometry;
+    g.boundingBox = null; // recomputed lazily (zoom-to-fit); the mesh is not frustum culled
+    g.boundingSphere = null;
+  }
+
+  updateTube(it, P) {
+    const M = this.M, pts = it.pts, cnt = it.count, pos = this.pos, nor = this.nor, r = it.radius;
+    if (it.kind === 'dash') {
+      const a = P[it.a], b = P[it.b];
+      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, len = Math.hypot(dx, dy, dz) || 1;
+      const t0 = Math.max(0, (it.j * it.period + (len - it.nd * it.period + it.period - it.dash) / 2) / len);
+      const t1 = Math.min(1, t0 + it.dash / len);
+      pts[0] = a.x + dx * t0; pts[1] = a.y + dy * t0; pts[2] = a.z + dz * t0;
+      pts[3] = a.x + dx * t1; pts[4] = a.y + dy * t1; pts[5] = a.z + dz * t1;
+    } else {
+      for (let k = 0; k < cnt; k++) { const p = P[it.atoms[k]]; pts[3 * k] = p.x; pts[3 * k + 1] = p.y; pts[3 * k + 2] = p.z; }
     }
-    // Frames and rings.
-    const ringStart = [];
-    for (let k = 0; k < samples.length; k++) {
-      const q = samples[k];
-      const a = samples[Math.max(k - 1, 0)].p, b = samples[Math.min(k + 1, samples.length - 1)].p;
-      let T = new THREE.Vector3().subVectors(b, a);
-      if (T.lengthSq() < 1e-10) T = k > 0 ? samples[k - 1].T.clone() : new THREE.Vector3(1, 0, 0);
-      T.normalize();
-      q.T = T;
-      const W = q.g.clone().addScaledVector(T, -q.g.dot(T));
-      if (W.lengthSq() < 1e-8) W.copy(k > 0 ? samples[k - 1].W : new THREE.Vector3(0, 1, 0).cross(T));
-      W.normalize();
-      q.W = W;
-      const B = new THREE.Vector3().crossVectors(T, W);
-      let sh = shapeAt(q.t);
-      if (q.forceBody) sh = { ...STRAND, ss: 'strand', res: Math.round(q.t + 0.5) };
-      if (q.cap) sh = { ...STRAND, w: ARROW, ss: 'strand', res: Math.round(q.t + 0.5) };
-      const c = colors[s + Math.min(n - 1, Math.max(0, sh.res))];
-      // Rainbow interpolates smoothly; the others switch at residue boundaries.
-      let cr = c;
-      if (smoothColors) {
-        const lo = Math.min(n - 2, Math.floor(q.t)), f = q.t - lo;
-        cr = colors[s + lo].clone().lerp(colors[s + lo + 1], Math.max(0, Math.min(1, f)));
-      }
-      ringStart.push(pos.length / 3);
-      const e2 = 2 / sh.n;
+    const tangent = (k, out) => {
+      const i1 = Math.min(k + 1, cnt - 1) * 3, i0 = Math.max(k - 1, 0) * 3;
+      let x = pts[i1] - pts[i0], y = pts[i1 + 1] - pts[i0 + 1], z = pts[i1 + 2] - pts[i0 + 2];
+      const l = Math.hypot(x, y, z) || 1; out[0] = x / l; out[1] = y / l; out[2] = z / l;
+    };
+    const T = TT, N = TN;
+    let hasPrev = false;
+    for (let k = 0; k < cnt; k++) {
+      tangent(k, T);
+      let nx, ny, nz;
+      if (hasPrev) { const d = N[0] * T[0] + N[1] * T[1] + N[2] * T[2]; nx = N[0] - T[0] * d; ny = N[1] - T[1] * d; nz = N[2] - T[2] * d; }
+      else { nx = -T[1]; ny = T[0]; nz = 0; } // (0,0,1) × T
+      if (nx * nx + ny * ny + nz * nz < 1e-6) { nx = 0; ny = -T[2]; nz = T[1]; } // (1,0,0) × T
+      const l = Math.hypot(nx, ny, nz) || 1; N[0] = nx / l; N[1] = ny / l; N[2] = nz / l; hasPrev = true;
+      const bx = T[1] * N[2] - T[2] * N[1], by = T[2] * N[0] - T[0] * N[2], bz = T[0] * N[1] - T[1] * N[0];
+      const px = pts[3 * k], py = pts[3 * k + 1], pz = pts[3 * k + 2];
       for (let m = 0; m < M; m++) {
-        const cx = cosA[m], sy = sinA[m];
-        const x = Math.sign(cx) * Math.pow(Math.abs(cx), e2) * sh.w;
-        const y = Math.sign(sy) * Math.pow(Math.abs(sy), e2) * sh.h;
-        // Superellipse normal ∝ (sign(c)|c|^(2-2/n)/w, sign(s)|s|^(2-2/n)/h).
-        const nx = Math.sign(cx) * Math.pow(Math.abs(cx), 2 - e2) / sh.w;
-        const ny = Math.sign(sy) * Math.pow(Math.abs(sy), 2 - e2) / sh.h;
-        pos.push(q.p.x + W.x * x + B.x * y, q.p.y + W.y * x + B.y * y, q.p.z + W.z * x + B.z * y);
-        let N;
-        if (q.cap || (k > 0 && samples[k - 1].cap)) N = T.clone().negate();
-        else N = new THREE.Vector3().addScaledVector(W, nx).addScaledVector(B, ny).normalize();
-        nor.push(N.x, N.y, N.z);
-        col.push(cr.r, cr.g, cr.b);
+        const c = this.cosA[m], s = this.sinA[m];
+        const dx = N[0] * c + bx * s, dy = N[1] * c + by * s, dz = N[2] * c + bz * s;
+        const o = (it.v0 + k * M + m) * 3;
+        pos[o] = px + dx * r; pos[o + 1] = py + dy * r; pos[o + 2] = pz + dz * r;
+        nor[o] = dx; nor[o + 1] = dy; nor[o + 2] = dz;
       }
     }
-    for (let k = 0; k + 1 < samples.length; k++) {
-      const a = ringStart[k], b = ringStart[k + 1];
+    this.writeCaps(it.v0, cnt, (k, out) => { out[0] = pts[3 * k]; out[1] = pts[3 * k + 1]; out[2] = pts[3 * k + 2]; },
+      (k, sign, out) => { tangent(k, out); out[0] *= sign; out[1] *= sign; out[2] *= sign; });
+  }
+
+  /** The two flat end caps after `rings` rings starting at v0: centre vertex + a copy of the end ring. */
+  writeCaps(v0, rings, center, normal) {
+    const M = this.M, pos = this.pos, nor = this.nor, C = TC, Nn = TB;
+    let v = v0 + rings * M;
+    for (const [k, sign] of [[0, -1], [rings - 1, 1]]) {
+      center(k, C); normal(k, sign, Nn);
+      let o = v * 3;
+      pos[o] = C[0]; pos[o + 1] = C[1]; pos[o + 2] = C[2]; nor[o] = Nn[0]; nor[o + 1] = Nn[1]; nor[o + 2] = Nn[2];
       for (let m = 0; m < M; m++) {
-        const m2 = (m + 1) % M;
-        idx.push(a + m, a + m2, b + m, a + m2, b + m2, b + m);
+        o = (v + 1 + m) * 3; const src = (v0 + k * M + m) * 3;
+        pos[o] = pos[src]; pos[o + 1] = pos[src + 1]; pos[o + 2] = pos[src + 2];
+        nor[o] = Nn[0]; nor[o + 1] = Nn[1]; nor[o + 2] = Nn[2];
       }
-    }
-    // End caps.
-    for (const [k, sign] of [[0, -1], [samples.length - 1, 1]]) {
-      const q = samples[k];
-      const base = ringStart[k];
-      const center = pos.length / 3;
-      const c = new THREE.Color(col[base * 3], col[base * 3 + 1], col[base * 3 + 2]);
-      pos.push(q.p.x, q.p.y, q.p.z); nor.push(q.T.x * sign, q.T.y * sign, q.T.z * sign); col.push(c.r, c.g, c.b);
-      const ring = pos.length / 3;
-      for (let m = 0; m < M; m++) {
-        const v = base + m;
-        pos.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
-        nor.push(q.T.x * sign, q.T.y * sign, q.T.z * sign);
-        col.push(c.r, c.g, c.b);
-      }
-      for (let m = 0; m < M; m++) {
-        const m2 = (m + 1) % M;
-        if (sign > 0) idx.push(center, ring + m, ring + m2); else idx.push(center, ring + m2, ring + m);
-      }
+      v += M + 1;
     }
   }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  g.setIndex(pos.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(idx, 1) : new THREE.Uint16BufferAttribute(idx, 1));
-  g.computeBoundingSphere();
-  return g;
+
+  updateSegment(it, P) {
+    const M = this.M, n = it.n, pos = this.pos, nor = this.nor;
+    const ctrl = it.ctrl, G = it.guide, SG = it.sg, ca = it.ca;
+    // Control points (CA), strands smoothed.
+    for (let i = 0; i < n; i++) {
+      const p = P[ca[i]], j = 3 * i;
+      if (it.smooth[i]) {
+        const a = P[ca[i - 1]], b = P[ca[i + 1]];
+        ctrl[j] = 0.5 * p.x + 0.25 * (a.x + b.x); ctrl[j + 1] = 0.5 * p.y + 0.25 * (a.y + b.y); ctrl[j + 2] = 0.5 * p.z + 0.25 * (a.z + b.z);
+      } else { ctrl[j] = p.x; ctrl[j + 1] = p.y; ctrl[j + 2] = p.z; }
+    }
+    // Guides: C=O direction, made consistent and orthogonal to the local trace.
+    for (let i = 0; i < n; i++) {
+      const i1 = Math.min(i + 1, n - 1) * 3, i0 = Math.max(i - 1, 0) * 3;
+      let tx = ctrl[i1] - ctrl[i0], ty = ctrl[i1 + 1] - ctrl[i0 + 1], tz = ctrl[i1 + 2] - ctrl[i0 + 2];
+      const tl = Math.hypot(tx, ty, tz); if (tl > 0) { tx /= tl; ty /= tl; tz /= tl; }
+      let gx, gy, gz;
+      const o = it.o[i], c = it.c[i];
+      if (o >= 0 && c >= 0 && P[o] && P[c]) { gx = P[o].x - P[c].x; gy = P[o].y - P[c].y; gz = P[o].z - P[c].z; }
+      else if (i > 0 && i < n - 1) {
+        const q = P[ca[i]], a = P[ca[i - 1]], b = P[ca[i + 1]];
+        const ux = a.x - q.x, uy = a.y - q.y, uz = a.z - q.z, wx = b.x - q.x, wy = b.y - q.y, wz = b.z - q.z;
+        gx = uy * wz - uz * wy; gy = uz * wx - ux * wz; gz = ux * wy - uy * wx;
+      } else { gx = 0; gy = 1; gz = 0; }
+      const d = gx * tx + gy * ty + gz * tz;
+      gx -= tx * d; gy -= ty * d; gz -= tz * d;
+      if (gx * gx + gy * gy + gz * gz < 1e-8) { gx = 0; gy = -tz; gz = ty; } // (1,0,0) × tan
+      const gl = Math.hypot(gx, gy, gz) || 1; gx /= gl; gy /= gl; gz /= gl;
+      const j = 3 * i;
+      if (i > 0 && gx * G[j - 3] + gy * G[j - 2] + gz * G[j - 1] < 0) { gx = -gx; gy = -gy; gz = -gz; }
+      G[j] = gx; G[j + 1] = gy; G[j + 2] = gz;
+    }
+    // Smooth strand guides (remove the alternation left after flipping).
+    for (let i = 0; i < n; i++) {
+      const j = 3 * i;
+      if (!it.strand[i]) { SG[j] = G[j]; SG[j + 1] = G[j + 1]; SG[j + 2] = G[j + 2]; continue; }
+      const a = Math.max(i - 1, 0) * 3, b = Math.min(i + 1, n - 1) * 3;
+      const x = 2 * G[j] + G[a] + G[b], y = 2 * G[j + 1] + G[a + 1] + G[b + 1], z = 2 * G[j + 2] + G[a + 2] + G[b + 2];
+      const l = Math.hypot(x, y, z) || 1; SG[j] = x / l; SG[j + 1] = y / l; SG[j + 2] = z / l;
+    }
+    // Sample the Catmull-Rom spline and the guides.
+    const ns = it.ns, sp = it.sp, sgS = it.sgS;
+    for (let k = 0; k < ns; k++) {
+      const i = it.sI[k], t = it.sF[k], t2 = t * t, t3 = t2 * t;
+      const a = Math.max(i - 1, 0) * 3, b = i * 3, c = (i + 1) * 3, d = Math.min(i + 2, n - 1) * 3, o = 3 * k;
+      for (let x = 0; x < 3; x++) {
+        const p0 = ctrl[a + x], p1 = ctrl[b + x], p2 = ctrl[c + x], p3 = ctrl[d + x];
+        sp[o + x] = 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+        sgS[o + x] = SG[b + x] + (SG[c + x] - SG[b + x]) * t;
+      }
+    }
+    // Frames and rings.
+    let Tx = 1, Ty = 0, Tz = 0, Wx = 0, Wy = 1, Wz = 0;
+    let T0x = 1, T0y = 0, T0z = 0;
+    const prof = it.prof;
+    for (let k = 0; k < ns; k++) {
+      const a = Math.max(k - 1, 0) * 3, b = Math.min(k + 1, ns - 1) * 3;
+      let tx = sp[b] - sp[a], ty = sp[b + 1] - sp[a + 1], tz = sp[b + 2] - sp[a + 2];
+      if (tx * tx + ty * ty + tz * tz < 1e-10) { if (k > 0) { tx = Tx; ty = Ty; tz = Tz; } else { tx = 1; ty = 0; tz = 0; } }
+      let l = Math.hypot(tx, ty, tz); tx /= l; ty /= l; tz /= l;
+      const o = 3 * k, gx = sgS[o], gy = sgS[o + 1], gz = sgS[o + 2];
+      const d = gx * tx + gy * ty + gz * tz;
+      let wx = gx - tx * d, wy = gy - ty * d, wz = gz - tz * d;
+      if (wx * wx + wy * wy + wz * wz < 1e-8) {
+        if (k > 0) { wx = Wx; wy = Wy; wz = Wz; } else { wx = tz; wy = 0; wz = -tx; } // (0,1,0) × T
+      }
+      l = Math.hypot(wx, wy, wz) || 1; wx /= l; wy /= l; wz /= l;
+      const bx = ty * wz - tz * wy, by = tz * wx - tx * wz, bz = tx * wy - ty * wx;
+      Tx = tx; Ty = ty; Tz = tz; Wx = wx; Wy = wy; Wz = wz;
+      if (k === 0) { T0x = tx; T0y = ty; T0z = tz; }
+      const px = sp[o], py = sp[o + 1], pz = sp[o + 2], cap = it.capN[k];
+      for (let m = 0; m < M; m++) {
+        const q = (k * M + m) * 4, x = prof[q], y = prof[q + 1], nx = prof[q + 2], ny = prof[q + 3];
+        const v = (it.v0 + k * M + m) * 3;
+        pos[v] = px + wx * x + bx * y; pos[v + 1] = py + wy * x + by * y; pos[v + 2] = pz + wz * x + bz * y;
+        if (cap) { nor[v] = -tx; nor[v + 1] = -ty; nor[v + 2] = -tz; }
+        else { nor[v] = wx * nx + bx * ny; nor[v + 1] = wy * nx + by * ny; nor[v + 2] = wz * nx + bz * ny; }
+      }
+    }
+    const last = (ns - 1) * 3;
+    this.writeCaps(it.v0, ns, (k, out) => { const o = k ? last : 0; out[0] = sp[o]; out[1] = sp[o + 1]; out[2] = sp[o + 2]; },
+      (k, sign, out) => { if (k) { out[0] = Tx * sign; out[1] = Ty * sign; out[2] = Tz * sign; } else { out[0] = T0x * sign; out[1] = T0y * sign; out[2] = T0z * sign; } });
+  }
 }
+// Scratch for CartoonGeometry (single-threaded, not re-entrant).
+const TT = new Float64Array(3), TN = new Float64Array(3), TC = new Float64Array(3), TB = new Float64Array(3);
 
 // ---------- app wiring ----------
 
