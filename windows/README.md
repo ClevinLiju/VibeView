@@ -22,7 +22,7 @@ stdio; the contract is [`docs/WINDOWS_PROTOCOL.md`](../docs/WINDOWS_PROTOCOL.md)
 | `npm run dev` | Build, then start the app with the menu's reload/DevTools items. |
 | `npm run dev:mock` | Same, but always with the mock engine. |
 | `npm run smoke` | Headless check: opens `water_optfreq.out`, renders, writes `dist/smoke.png` and `dist/smoke-viewport.png`, exits. |
-| `npm run icon` | Rebuilds the app icon (`build/icon.ico`, `build/icon.png`) from `build/icon-master.png`, the macOS icon. |
+| `npm run icon` | Rebuilds the app icon (`build/icon.ico`, `build/icon.png`) by scaling `build/icon-master.png`, the macOS icon. |
 | `npm run dist` | Builds the NSIS installer and the portable zip in `dist/`. Run `scripts/windows/stage-engine.ps1` first so `windows/engine/` holds the engine and its Swift runtime DLLs. |
 
 ## Finding the engine

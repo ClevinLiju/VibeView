@@ -1,9 +1,6 @@
 // Builds the VibeView app icon to match the macOS app: two water molecules side by side, each bent like a "V",
-// together reading as a "W", on a rounded blue tile.
-// - 128 px and up: downscaled from build/icon-master.png, the 512 px icon the macOS app renders with its own
-//   molecule renderer (Sources/VibeViewApp/Shell/IconRenderer.swift on main, exported as docs/icon.png).
-// - 64 px and down: the same W drawn as flat shapes, as IconRenderer.drawVectorW does on macOS, because shaded
-//   spheres turn into blobs at small sizes.
+// together reading as a "W", on a rounded blue tile. Every size is downscaled from build/icon-master.png, the
+// 512 px icon the macOS app renders with its own molecule renderer (IconRenderer.swift on main, docs/icon.png).
 // Writes build/icon.ico (16–256 px PNG entries) and build/icon.png (512 px). No dependencies beyond zlib.
 const fs = require('fs');
 const path = require('path');
@@ -37,90 +34,25 @@ function decodePNG(buf) {
   return { W, H, rgba: out };
 }
 
-// Area-average downscale by an integer factor, in premultiplied alpha.
+// Area-average downscale to any smaller size (each output pixel averages the source area it covers, weighted by
+// partial coverage), in premultiplied alpha.
 function downscale({ W, rgba }, S) {
-  const k = W / S; if (!Number.isInteger(k)) throw new Error(`cannot scale ${W} to ${S}`);
-  const out = Buffer.alloc(S * S * 4);
+  const k = W / S, out = Buffer.alloc(S * S * 4);
+  const spans = (i) => { // source pixels and weights covered by output pixel i
+    const a = i * k, b = a + k, list = [];
+    for (let j = Math.floor(a); j < Math.min(W, Math.ceil(b)); j++) list.push([j, Math.min(b, j + 1) - Math.max(a, j)]);
+    return list;
+  };
+  const cover = Array.from({ length: S }, (_, i) => spans(i));
   for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-    let r = 0, g = 0, b = 0, a = 0;
-    for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) {
-      const o = ((y * k + j) * W + x * k + i) * 4, al = rgba[o + 3] / 255;
-      r += rgba[o] * al; g += rgba[o + 1] * al; b += rgba[o + 2] * al; a += al;
+    let r = 0, g = 0, b = 0, a = 0, wsum = 0;
+    for (const [sy, wy] of cover[y]) for (const [sx, wx] of cover[x]) {
+      const o = (sy * W + sx) * 4, w = wx * wy, al = (rgba[o + 3] / 255) * w;
+      r += rgba[o] * al; g += rgba[o + 1] * al; b += rgba[o + 2] * al; a += al; wsum += w;
     }
     const o = (y * S + x) * 4;
     out[o] = a ? Math.round(r / a) : 0; out[o + 1] = a ? Math.round(g / a) : 0; out[o + 2] = a ? Math.round(b / a) : 0;
-    out[o + 3] = Math.round((a / (k * k)) * 255);
-  }
-  return out;
-}
-
-// ---- Small sizes: vector W (port of IconRenderer.tile(small: true) + drawVectorW) ----
-// Two waters with real geometry (0.96 Å, 104.5°), each turned 58° about its vertical axis; projected x, y (y up).
-function waterW() {
-  const turn = 58 * Math.PI / 180, half = 104.5 / 2 * Math.PI / 180, r = 0.96, gap = 0.06;
-  const dx = r * Math.sin(half), dy = r * Math.cos(half), px = dx * Math.cos(turn);
-  const pts = [];
-  for (const side of [-1, 1]) {
-    const cx = side * (px + gap);
-    pts.push([cx, 0], [cx + side * px, dy], [cx - side * px, dy]); // O, outer H, inner H
-  }
-  return pts;
-}
-
-function renderSmall(S) {
-  const inset = S * 0.04, Wd = S - 2 * inset, x0 = inset, y0 = inset, rad = Wd * 0.225;
-  const midX = S / 2, midY = S / 2;
-  const pts = waterW();
-  const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
-  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-  const scale = Wd * 0.62 / (maxX - minX);
-  // macOS draws y-up with the centre 2% below the middle; here y grows downward.
-  const P = ([x, y]) => [midX + (x - (minX + maxX) / 2) * scale, midY + Wd * 0.02 - (y - (minY + maxY) / 2) * scale * 1.35];
-  const order = [1, 0, 2, 5, 3, 4].map((i) => P(pts[i])); // outer H, O, inner H | inner H, O, outer H
-  const lw = Wd * 0.11;
-  const oxy = [P(pts[0]), P(pts[3])], oR = lw * 1.05;
-  const rimW = Math.max(1, S * 0.004);
-  const glowC = [midX, midY - Wd * 0.04], glowR = Wd * 0.55;
-  // NSGradient at 90°: navy at the bottom, mid blue, cyan at the top.
-  const stops = [[0.07, 0.12, 0.30], [0.10, 0.33, 0.62], [0.18, 0.62, 0.78]];
-  const grad = (t) => { // t = 0 bottom .. 1 top
-    const u = Math.max(0, Math.min(1, t)) * 2, i = Math.min(1, Math.floor(u)), f = u - i;
-    return [0, 1, 2].map((c) => stops[i][c] + (stops[i + 1][c] - stops[i][c]) * f);
-  };
-  const tileDist = (x, y) => { // signed distance to the rounded tile (negative inside)
-    const qx = Math.abs(x - midX) - (Wd / 2 - rad), qy = Math.abs(y - midY) - (Wd / 2 - rad);
-    return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - rad;
-  };
-  const segDist = (x, y, [ax, ay], [bx, by]) => {
-    const dx = bx - ax, dy = by - ay, t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
-    return Math.hypot(x - ax - t * dx, y - ay - t * dy);
-  };
-  const shade = (x, y) => {
-    const d = tileDist(x, y);
-    if (d > 0) return null;
-    let c = grad((y0 + Wd - y) / Wd), a;
-    // soft radial glow behind the molecules
-    const g = Math.hypot(x - glowC[0], y - glowC[1]) / glowR;
-    if (g < 1) { a = 0.22 * (1 - g); c = c.map((v) => v * (1 - a) + a); }
-    // H–O–H–O–H outline
-    let inW = false;
-    for (let i = 0; i + 1 < order.length; i++) if (segDist(x, y, order[i], order[i + 1]) <= lw / 2) { inW = true; break; }
-    if (inW) c = [0.96, 0.96, 0.96];
-    for (const o of oxy) if (Math.hypot(x - o[0], y - o[1]) <= oR) c = [0.93, 0.16, 0.16];
-    // thin highlight rim (stroke centred on the tile edge; only the inner half lands inside)
-    if (d > -rimW / 2) c = c.map((v) => v * 0.82 + 0.18);
-    return c;
-  };
-  const ss = 8, out = Buffer.alloc(S * S * 4);
-  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-    let r = 0, g = 0, b = 0, n = 0;
-    for (let sy = 0; sy < ss; sy++) for (let sx = 0; sx < ss; sx++) {
-      const c = shade(x + (sx + 0.5) / ss, y + (sy + 0.5) / ss);
-      if (c) { r += c[0]; g += c[1]; b += c[2]; n++; }
-    }
-    const o = (y * S + x) * 4;
-    if (n) { out[o] = Math.round(r / n * 255); out[o + 1] = Math.round(g / n * 255); out[o + 2] = Math.round(b / n * 255); }
-    out[o + 3] = Math.round(n / (ss * ss) * 255);
+    out[o + 3] = Math.round((a / wsum) * 255);
   }
   return out;
 }
@@ -154,7 +86,7 @@ function ico(images) {
 
 const outDir = __dirname;
 const master = decodePNG(fs.readFileSync(path.join(outDir, 'icon-master.png')));
-const rgbaFor = (s) => (s <= 64 ? renderSmall(s) : s === master.W ? master.rgba : downscale(master, s));
+const rgbaFor = (s) => (s === master.W ? master.rgba : downscale(master, s));
 const sizes = [16, 24, 32, 48, 64, 128, 256];
 const images = sizes.map((s) => ({ size: s, data: png(s, rgbaFor(s)) }));
 fs.writeFileSync(path.join(outDir, 'icon.ico'), ico(images));
