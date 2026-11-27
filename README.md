@@ -1,4 +1,8 @@
-# VibeView for Windows
+<p align="center">
+  <img src="docs/icon.png" width="160" alt="VibeView icon: two water molecules forming a W">
+</p>
+
+<h1 align="center">VibeView for Windows</h1>
 
 VibeView is a molecular builder and viewer for computational chemistry on Windows. You sketch a structure, set up a calculation and look at the results (orbitals, vibrations, spectra) in one app.
 
@@ -23,6 +27,20 @@ Licensed under the MIT License (see `LICENSE`).
 - **Analysis:** vibrations and IR/Raman spectra, point-group detection, hydrogen bonds and a Z-matrix view.
 - **Export:** XYZ, PDB, MOL/SDF, CML, Gaussian/ORCA/Q-Chem inputs and Molden. Images, and animated GIFs of optimisation trajectories and vibrations.
 - **Command line:** a built-in console with history and Tab completion.
+
+## Screenshots
+
+![Formaldehyde HOMO drawn as an orbital surface, with the orbital energy diagram below](docs/screenshots/orbital.png)
+*Orbitals: the HOMO of formaldehyde from an ORCA TD-DFT run, with the energy level diagram and surface controls.*
+
+![Formaldehyde normal modes with the simulated IR spectrum](docs/screenshots/vibrations.png)
+*Vibrations: normal modes from an ORCA frequency job, each with its character, and the broadened IR spectrum.*
+
+![Crambin (PDB 1CRN) drawn as a protein cartoon](docs/screenshots/protein.png)
+*Proteins: crambin (PDB 1CRN) as a cartoon with helices and sheets.*
+
+![Calculation Setup dialog with an editable ORCA input for ethanol](docs/screenshots/calculation.png)
+*Calculations: ORCA job setup for ethanol, with the input file you can edit before it runs.*
 
 ## Install
 
